@@ -1,14 +1,14 @@
 """
-title: Tool Template
-id: tool_template
-description: Example toolkit with multiple functions and Pydantic specs.
-author: suurt8ll
-author_url: https://github.com/suurt8ll
-funding_url: https://github.com/suurt8ll/open_webui_functions
+title: Basic Tools
+id: basic_tools
+description: Toolkit showcasing echo, calculator and weather functions.
+author: open-webui
 license: MIT
 version: 0.0.0
 requirements: requests
 """
+
+from __future__ import annotations
 
 import os
 from datetime import datetime
@@ -18,20 +18,14 @@ from pydantic import BaseModel, Field
 
 
 class Tool:
-    citation = True
-    # file_handler = True
-
     class Valves(BaseModel):
         pass
-
-    class UserValves(BaseModel):
-        favorite_city: str = Field("New York, NY", description="Default city for weather")
 
     class EchoInput(BaseModel):
         text: str = Field(..., description="Text to echo back")
 
     class CalcInput(BaseModel):
-        equation: str = Field(..., description="Mathematical equation to evaluate")
+        equation: str = Field(..., description="Math equation to evaluate")
 
     class WeatherInput(BaseModel):
         city: str = Field("New York, NY", description="City for the weather report")
@@ -59,16 +53,21 @@ class Tool:
         },
     ]
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.valves = self.Valves()
-        print(f"{[__name__]} Tool has been initialized.")
 
     async def echo(self, text: str) -> str:
-        """Return the provided text."""
+        """Return ``text`` as-is.
+
+        :param text: The string to echo back.
+        """
         return text
 
     async def calculator(self, equation: str) -> str:
-        """Evaluate a math expression. Avoid ``eval`` in production code."""
+        """Evaluate a math expression.
+
+        :param equation: Expression to evaluate.
+        """
         try:
             result = eval(equation)
             return f"{equation} = {result}"
@@ -76,21 +75,11 @@ class Tool:
             return "Invalid equation"
 
     async def get_current_time(self) -> str:
-        """Return the current time as a string."""
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    async def get_current_weather(
-        self, city: str | None = None, __user__: dict | None = None
-    ) -> str:
-        """Fetch the current weather for ``city`` using OpenWeatherMap.
+    async def get_current_weather(self, city: str = "New York, NY") -> str:
+        """Look up the weather for ``city`` using OpenWeatherMap."""
 
-        :param city: Optional city name. Defaults to the user's favorite city.
-        :param __user__: Injected user info from Open WebUI.
-        """
-        if city is None and __user__:
-            city = getattr(__user__.get("valves"), "favorite_city", "New York, NY")
-        if city is None:
-            city = "New York, NY"
         api_key = os.getenv("OPENWEATHER_API_KEY")
         if not api_key:
             return "OPENWEATHER_API_KEY is not set"
