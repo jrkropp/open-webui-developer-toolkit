@@ -1,11 +1,13 @@
 name: Deploy OpenWebUI Extensions
 
 on:
-  push:
-    branches: [ main ]                      # 🚀 deploy pipeline only on main
-    paths:
-      - 'src/openwebui_devtoolkit/**.py'    # run when a plugin changes
-      - 'scripts/publish_to_webui.py'
+  # Temporarily disabled automatic triggers
+  workflow_dispatch:
+  # push:
+  #   branches: [ main ]                      # 🚀 deploy pipeline only on main
+  #   paths:
+  #     - 'src/openwebui_devtoolkit/**.py'    # run when a plugin changes
+  #     - 'scripts/publish_to_webui.py'
 
 jobs:
 # ───────────────────────────────────────────

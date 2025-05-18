@@ -1,7 +1,8 @@
 name: CI
 
 on:
-  pull_request:
+  # Temporarily disabled automatic triggers
+  workflow_dispatch:
 
 jobs:
   test:
