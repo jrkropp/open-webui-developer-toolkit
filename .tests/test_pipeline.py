@@ -52,7 +52,7 @@ async def test_build_responses_payload(dummy_chat):
         },
     }
 
-    payload = await pipeline.assemble_responses_input("chat1")
+    payload = await pipeline.load_chat_input("chat1")
     assert payload == [
         {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
         {"role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
@@ -179,13 +179,13 @@ async def test_build_params_includes_reasoning(dummy_chat):
         "top_p": 0.9,
         "reasoning_effort": "high",
     }
-    params = await pipeline.assemble_responses_payload(
+    params = await pipeline.prepare_payload(
         pipe.valves,
-        "chat1",
         body,
         "ins",
         [{"type": "function"}],
         "me@example.com",
+        chat_id="chat1",
     )
     assert params["tool_choice"] == "auto"
     assert params["max_output_tokens"] == 50
@@ -200,13 +200,13 @@ async def test_build_params_drops_reasoning_for_base_model(dummy_chat):
     pipeline = _reload_pipeline()
     pipe = pipeline.Pipe()
     body = {"model": "openai_responses.gpt-4.1", "reasoning_effort": "high"}
-    params = await pipeline.assemble_responses_payload(
+    params = await pipeline.prepare_payload(
         pipe.valves,
-        "chat1",
         body,
         "ins",
         [],
         None,
+        chat_id="chat1",
     )
     assert "reasoning" not in params
 
@@ -215,13 +215,13 @@ async def test_build_params_drops_reasoning_for_base_model(dummy_chat):
 async def test_assemble_payload_omits_tool_fields_when_none(dummy_chat):
     pipeline = _reload_pipeline()
     pipe = pipeline.Pipe()
-    params = await pipeline.assemble_responses_payload(
+    params = await pipeline.prepare_payload(
         pipe.valves,
-        "chat1",
         {},
         "ins",
         None,
         None,
+        chat_id="chat1",
     )
     assert "tools" not in params
     assert "tool_choice" not in params
@@ -279,7 +279,7 @@ async def test_build_responses_payload_complex(dummy_chat):
             },
         },
     }
-    payload = await pipeline.assemble_responses_input("chat1")
+    payload = await pipeline.load_chat_input("chat1")
     assert payload == [
         {
             "role": "user",
@@ -702,7 +702,7 @@ async def test_function_call_output_persisted(dummy_chat):
             pass
     await pipe.on_shutdown()
 
-    payload = await pipeline.assemble_responses_input("chat1")
+    payload = await pipeline.load_chat_input("chat1")
     assert {"type": "function_call", "call_id": "c1", "name": "t", "arguments": "{}"} in payload
     assert {"type": "function_call_output", "call_id": "c1", "output": "42"} in payload
 
@@ -764,7 +764,7 @@ async def test_persist_tool_results_valve_off(dummy_chat):
             pass
     await pipe.on_shutdown()
 
-    payload = await pipeline.assemble_responses_input("chat1")
+    payload = await pipeline.load_chat_input("chat1")
     assert {
         "type": "function_call",
         "call_id": "c1",

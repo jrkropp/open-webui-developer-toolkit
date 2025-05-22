@@ -354,13 +354,13 @@ class Pipe:
             self.log.debug(pretty_log_block(tools, "tools"))
             self.log.debug(pretty_log_block(instructions, "instructions"))
 
-        request_params = await assemble_responses_payload(
+        request_params = await prepare_payload(
             valves,
-            chat_id,
             body,
             instructions,
             tools,
             __user__.get("email"),
+            chat_id=chat_id,
         )
         usage_total: dict[str, Any] = {}
         last_response_id = None
@@ -909,8 +909,8 @@ def prepare_tools(registry: dict | None) -> list[dict]:
     return tools_out
 
 
-async def assemble_responses_input(chat_id: str) -> list[dict]:
-    """Convert WebUI chat history to Responses API input format."""
+async def load_chat_input(chat_id: str) -> list[dict]:
+    """Return chat history formatted for the Responses API."""
     logger.debug("Retrieving message history for chat_id=%s", chat_id)
     chat_model = await asyncio.to_thread(Chats.get_chat_by_id, chat_id)
     chat = chat_model.chat if chat_model else {"history": {"messages": {}, "currentId": None}}
@@ -919,32 +919,25 @@ async def assemble_responses_input(chat_id: str) -> list[dict]:
     thread = get_message_list(msg_lookup, current_id) or []
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(pretty_log_block(thread, "history_thread"))
+    return convert_messages(thread, from_history=True)
 
+
+def convert_messages(messages: list[dict], *, from_history: bool = False) -> list[dict]:
+    """Convert chat ``messages`` to Responses API input format."""
     input_items: list[dict] = []
-    for m in thread:
-        role = m["role"]
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            continue
         from_assistant = role == "assistant"
-        if from_assistant:
+        if from_history and from_assistant:
             for src in m.get("sources", ()):
                 for fc in src.get("_fc", ()):
                     cid = fc.get("call_id") or fc.get("id")
                     if not cid:
                         continue
-                    input_items.append(
-                        {
-                            "type": "function_call",
-                            "call_id": cid,
-                            "name": fc.get("name") or fc.get("n"),
-                            "arguments": fc.get("arguments") or fc.get("a"),
-                        }
-                    )
-                    input_items.append(
-                        {
-                            "type": "function_call_output",
-                            "call_id": cid,
-                            "output": fc.get("output") or fc.get("o"),
-                        }
-                    )
+                    input_items.append({"type": "function_call", "call_id": cid, "name": fc.get("name") or fc.get("n"), "arguments": fc.get("arguments") or fc.get("a")})
+                    input_items.append({"type": "function_call_output", "call_id": cid, "output": fc.get("output") or fc.get("o")})
         blocks: list[dict] = []
         raw_blocks = m.get("content", []) or []
         if not isinstance(raw_blocks, list):
@@ -952,48 +945,22 @@ async def assemble_responses_input(chat_id: str) -> list[dict]:
         for b in raw_blocks:
             if b is None:
                 continue
-            text = b["text"] if isinstance(b, dict) else str(b)
-            if from_assistant and not text.strip():
-                continue
-            blocks.append({"type": "output_text" if from_assistant else "input_text", "text": text})
-        for f in m.get("files", ()):
-            if f and f.get("type") in ("image", "image_url"):
-                blocks.append({"type": "input_image" if role == "user" else "output_image", "image_url": f.get("url") or f.get("image_url", {}).get("url")})
-        if blocks:
-            input_items.append({"role": role, "content": blocks})
-    return input_items
-
-
-def messages_to_responses_input(messages: list[dict]) -> list[dict]:
-    """Convert OpenAI style messages to Responses API input."""
-    input_items: list[dict] = []
-    for m in messages:
-        role = m.get("role")
-        if role == "system":
-            continue
-        blocks = m.get("content", []) or []
-        if not isinstance(blocks, list):
-            blocks = [blocks]
-        out: list[dict] = []
-        for b in blocks:
-            if b is None:
-                continue
             if isinstance(b, dict) and b.get("type") in ("image", "image_url"):
                 url = b.get("url") or b.get("image_url", {}).get("url")
                 if url:
-                    out.append({
-                        "type": "input_image" if role == "user" else "output_image",
-                        "image_url": url,
-                    })
+                    blocks.append({"type": "input_image" if role == "user" else "output_image", "image_url": url})
             else:
                 text = b.get("text") if isinstance(b, dict) else str(b)
+                if from_history and from_assistant and not text.strip():
+                    continue
                 if text.strip():
-                    out.append({
-                        "type": "input_text" if role == "user" else "output_text",
-                        "text": text,
-                    })
-        if out:
-            input_items.append({"role": role, "content": out})
+                    blocks.append({"type": "input_text" if role == "user" else "output_text", "text": text})
+        if from_history:
+            for f in m.get("files", ()):
+                if f and f.get("type") in ("image", "image_url"):
+                    blocks.append({"type": "input_image" if role == "user" else "output_image", "image_url": f.get("url") or f.get("image_url", {}).get("url")})
+        if blocks:
+            input_items.append({"role": role, "content": blocks})
     return input_items
 
 
@@ -1026,27 +993,22 @@ def simplify_user_agent(ua: str) -> str:
     return ua.split()[0]
 
 
-async def assemble_responses_payload(
+async def prepare_payload(
     valves: Pipe.Valves,
-    chat_id: str | None,
     body: dict[str, Any],
     instructions: str,
     tools: list[dict[str, Any]] | None,
     user_email: str | None,
-    input_messages: list[dict] | None = None,
+    chat_id: str | None = None,
+    chat_history: list[dict] | None = None,
 ) -> dict[str, Any]:
-    """Combine chat history and parameters into a request payload.
-
-    ``tools`` may be ``None`` to omit tool-related fields entirely.
-    """
-    model = body.get("model", valves.MODEL_ID.split(",")[0])
-    if "." in str(model):
-        model = str(model).split(".", 1)[1]
-    if input_messages is None:
+    """Return the JSON payload for the Responses API."""
+    model = (body.get("model") or valves.MODEL_ID.split(",")[0]).split(".", 1)[-1]
+    if chat_history is None:
         if chat_id:
-            input_messages = await assemble_responses_input(chat_id)
+            chat_history = await load_chat_input(chat_id)
         else:
-            input_messages = messages_to_responses_input(body.get("messages", []))
+            chat_history = convert_messages(body.get("messages", []))
 
     params = {
         "model": model,
@@ -1057,10 +1019,9 @@ async def assemble_responses_payload(
         "top_p": body.get("top_p") or 1.0,
         "user": user_email,
         "text": {"format": {"type": "text"}},
-        "truncation": "auto",
         "stream": True,
         "store": True,
-        "input": input_messages,
+        "input": chat_history,
     }
 
     if tools is not None:
