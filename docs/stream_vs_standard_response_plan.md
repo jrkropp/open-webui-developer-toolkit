@@ -1,6 +1,6 @@
 # Split streaming logic in OpenAI Responses pipe
 
-This document outlines the refactor to handle streaming and non-streaming
+This document outlines the refactor to handle streaming and non‑streaming
 responses separately.
 
 ## Motivation
@@ -12,7 +12,7 @@ to extend.
 1. **Introduce two helper methods**:
    - `_streaming_response(...)` – implements the current streaming loop.
    - `_non_streaming_response(...)` – wraps the existing `get_responses()` call
-     and yields the final text.
+     and yields the final text once the response completes.
 2. **Switch `pipe()`** to check `body.get("stream", False)` and delegate to the
    appropriate helper.
 3. Each helper will receive the prepared request parameters, http client and
@@ -27,6 +27,7 @@ paths for easier maintenance.
 1. Move the non-streaming branch of `pipe()` into
    `Pipe._non_stream_response(...)`. The method should:
    - call `get_responses()`
+   - process function calls just like the streaming path
    - emit usage stats and completion events
    - yield the final assistant text when available.
 2. Move the current streaming loop into
@@ -77,6 +78,14 @@ curl https://api.openai.com/v1/responses \
   -d '{"model":"gpt-4.1","input":"Hello"}'
 ```
 The response body contains the final `output` array and a `usage` object.
+
+## Non-streaming vs streaming behaviour
+The tool calling loop should be identical in both helpers so that
+function calls work regardless of the `stream` flag. The
+`_stream_response` helper yields text chunks as they arrive, while
+`_non_stream_response` waits for the loop to finish and yields the final
+assistant text. Usage accounting and event emission remain the same in
+both paths.
 
 ## Implementation Tips
 1. Keep the new helper methods private (`_stream_response` and `_non_stream_response`).
