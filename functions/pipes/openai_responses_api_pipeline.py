@@ -49,6 +49,7 @@ requirements: httpx
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -56,11 +57,10 @@ import re
 import sys
 import time
 import traceback
-from datetime import datetime
 from dataclasses import dataclass
+from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Literal
-import inspect
 
 import httpx
 from fastapi import Request
@@ -308,47 +308,13 @@ class Pipe:
         )
 
         client = await self.get_http_client()
-        # TODO Consider setting the user system prompt (if specified) as a developer message rather than replacing the model system prompt.  Right now it get's the last instance of system message (user system prompt takes precidence)
-        instructions = self._extract_instructions(body)
-
-        if valves.INJECT_CURRENT_DATE:
-            instructions += "\n\n" + self._get_current_date_suffix()
-
-        injection_lines: list[str] = []
-        if valves.INJECT_USER_INFO:
-            injection_lines.append(self._get_user_info_suffix(__user__))
-        if valves.INJECT_BROWSER_INFO:
-            injection_lines.append(self._get_browser_info_suffix(__request__))
-        if valves.INJECT_IP_INFO:
-            injection_lines.append(self._get_ip_info_suffix(__request__))
-        if injection_lines:
-            note_parts = []
-            if valves.INJECT_USER_INFO:
-                note_parts.append("`user_info`")
-            if valves.INJECT_BROWSER_INFO:
-                note_parts.append("`browser_info`")
-            if valves.INJECT_IP_INFO:
-                note_parts.append("`ip_info`")
-            note = "Note: " + ", ".join(note_parts) + " provided solely for AI contextual enrichment."
-            injection_lines.append(note)
-            instructions += "\n\n" + "\n".join(injection_lines)
+        instructions = build_instructions(self, body, valves, __user__, __request__)
 
         model = body.get("model", valves.MODEL_ID.split(",")[0])
         if "." in str(model):
             model = str(model).split(".", 1)[1]
 
-        tools: list[dict[str, Any]] | None
-        if model in NATIVE_TOOL_UNSUPPORTED_MODELS:
-            tools = None
-        else:
-            tools = prepare_tools(__tools__)
-            if valves.ENABLE_WEB_SEARCH and model in WEB_SEARCH_MODELS:
-                tools.append(
-                    {
-                        "type": "web_search",
-                        "search_context_size": valves.SEARCH_CONTEXT_SIZE,
-                    }
-                )
+        tools = select_tools(model, valves, __tools__)
 
         if self.log.isEnabledFor(logging.DEBUG):
             self.log.debug(pretty_log_block(tools, "tools"))
@@ -882,10 +848,58 @@ class Pipe:
                 total[key] = total.get(key, 0) + value
             elif isinstance(value, dict):
                 inner = total.setdefault(key, {})
-                for subkey, subval in value.items():
-                    if isinstance(subval, (int, float)):
-                        inner[subkey] = inner.get(subkey, 0) + subval
+        for subkey, subval in value.items():
+            if isinstance(subval, (int, float)):
+                inner[subkey] = inner.get(subkey, 0) + subval
         total["loops"] = loops
+
+
+def build_instructions(
+    pipe: "Pipe",
+    body: dict[str, Any],
+    valves: "Pipe.Valves",
+    user: Dict[str, Any],
+    request: Request | None,
+) -> str:
+    """Return system instructions with optional contextual injections."""
+    instructions = pipe._extract_instructions(body)
+    if valves.INJECT_CURRENT_DATE:
+        instructions += "\n\n" + pipe._get_current_date_suffix()
+
+    injections: list[str] = []
+    if valves.INJECT_USER_INFO:
+        injections.append(pipe._get_user_info_suffix(user))
+    if valves.INJECT_BROWSER_INFO:
+        injections.append(pipe._get_browser_info_suffix(request))
+    if valves.INJECT_IP_INFO:
+        injections.append(pipe._get_ip_info_suffix(request))
+
+    if injections:
+        note_parts = []
+        if valves.INJECT_USER_INFO:
+            note_parts.append("`user_info`")
+        if valves.INJECT_BROWSER_INFO:
+            note_parts.append("`browser_info`")
+        if valves.INJECT_IP_INFO:
+            note_parts.append("`ip_info`")
+        injections.append(
+            "Note: " + ", ".join(note_parts) + " provided solely for AI contextual enrichment."
+        )
+        instructions += "\n\n" + "\n".join(injections)
+
+    return instructions
+
+
+def select_tools(model: str, valves: "Pipe.Valves", registry: dict[str, Any]) -> list[dict] | None:
+    """Return a list of tools for ``model`` or ``None`` if unsupported."""
+    if model in NATIVE_TOOL_UNSUPPORTED_MODELS:
+        return None
+
+    tools = prepare_tools(registry)
+    if valves.ENABLE_WEB_SEARCH and model in WEB_SEARCH_MODELS:
+        tools.append({"type": "web_search", "search_context_size": valves.SEARCH_CONTEXT_SIZE})
+
+    return tools
 
 
 async def stream_responses(
