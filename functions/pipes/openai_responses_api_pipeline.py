@@ -102,6 +102,8 @@ class ResponsesEvent:
     item: Any | None = None
     response: Any | None = None
     annotation: Any | None = None
+    partial_image_index: int | None = None
+    partial_image_b64: str | None = None
 
 
 class _MemHandler(logging.Handler):
@@ -467,6 +469,40 @@ class Pipe:
                     if et == "response.output_text.done":
                         # This delta marks the end of the current output block.
                         continue
+                    if et in {
+                        "response.image_generation_call.in_progress",
+                        "response.image_generation_call.generating",
+                    }:
+                        await self._emit_status(
+                            __event_emitter__,
+                            "🖼️ Generating image...",
+                            last_status,
+                        )
+                        continue
+                    if et == "response.image_generation_call.partial_image":
+                        if __event_emitter__ and event.partial_image_b64:
+                            await __event_emitter__(
+                                {
+                                    "type": "files",
+                                    "data": {
+                                        "files": [
+                                            {
+                                                "type": "image",
+                                                "url": f"data:image/png;base64,{event.partial_image_b64}",
+                                            }
+                                        ]
+                                    },
+                                }
+                            )
+                        continue
+                    if et == "response.image_generation_call.completed":
+                        await self._emit_status(
+                            __event_emitter__,
+                            "🖼️ Image generation completed",
+                            last_status,
+                            done=True,
+                        )
+                        continue
                     if et == "response.output_item.added":
                         item = getattr(event, "item", None)
                         if getattr(item, "type", None) == "function_call":
@@ -496,6 +532,27 @@ class Pipe:
                             await self._emit_status(
                                 __event_emitter__,
                                 "🔍 Searching the internet...",
+                                last_status,
+                                done=True,
+                            )
+                        elif getattr(item, "type", None) == "image_generation_call":
+                            if __event_emitter__ and getattr(item, "result", None):
+                                await __event_emitter__(
+                                    {
+                                        "type": "files",
+                                        "data": {
+                                            "files": [
+                                                {
+                                                    "type": "image",
+                                                    "url": f"data:image/png;base64,{item.result}",
+                                                }
+                                            ]
+                                        },
+                                    }
+                                )
+                            await self._emit_status(
+                                __event_emitter__,
+                                "🖼️ Image generation completed",
                                 last_status,
                                 done=True,
                             )
@@ -1205,6 +1262,8 @@ def parse_responses_sse(event_type: str | None, data: str) -> ResponsesEvent:
         item=item,
         response=response,
         annotation=annotation,
+        partial_image_index=payload.get("partial_image_index"),
+        partial_image_b64=payload.get("partial_image_b64"),
     )
 
 
