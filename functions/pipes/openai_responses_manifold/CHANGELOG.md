@@ -9,6 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - Added missing output items to subsequent requests.
 - Guarded reasoning event emission when no emitter is provided.
 
+## [0.8.3] - 2025-06-06
+- Improved error handling in `_multi_turn_streaming`.
+- Flushed partial reasoning when streaming is interrupted.
+
 ## [0.8.1] - 2025-06-05
 - Refactored `_multi_turn_streaming` for simplicity and removed unused output buffer.
 - Fixed log citation retrieval when debugging.

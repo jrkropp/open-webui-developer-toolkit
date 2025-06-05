@@ -5,7 +5,7 @@ author: Justin Kropp
 author_url: https://github.com/jrkropp
 funding_url: https://github.com/jrkropp/open-webui-developer-toolkit
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
-version: 0.8.2
+version: 0.8.3
 license: MIT
 requirements: orjson
 """
@@ -369,80 +369,88 @@ class Pipe:
             self.log.debug(
                 "Starting loop %d of %d", loop_idx + 1, valves.MAX_TOOL_CALL_LOOPS
             )
-            async for event in self._call_llm_sse(
-                transformed_body,
-                api_key=valves.API_KEY,
-                base_url=valves.BASE_URL,
-            ):
-                event_type = event.get("type")
-                self.log.debug("SSE event type: %s", event_type)
+            try:
+                async for event in self._call_llm_sse(
+                    transformed_body,
+                    api_key=valves.API_KEY,
+                    base_url=valves.BASE_URL,
+                ):
+                    event_type = event.get("type")
+                    self.log.debug("SSE event type: %s", event_type)
 
-                # Partial text output
-                if event_type == "response.output_text.delta":
-                    delta = event.get("delta", "")
-                    if delta:
-                        yield delta  # Yield partial text to Open WebUI
+                    # Partial text output
+                    if event_type == "response.output_text.delta":
+                        delta = event.get("delta", "")
+                        if delta:
+                            yield delta  # Yield partial text to Open WebUI
 
-                    continue # continue to next event
+                        continue  # continue to next event
 
-                # Partial reasoning summary output
-                elif event_type == "response.reasoning_summary_text.delta":
-                    idx = event.get("summary_index", 0)
-                    delta = event.get("delta", "")
-                    if delta:
-                        # 1) Accumulate for this summary_index
-                        reasoning_map[idx] = reasoning_map.get(idx, "") + delta
+                    # Partial reasoning summary output
+                    elif event_type == "response.reasoning_summary_text.delta":
+                        idx = event.get("summary_index", 0)
+                        delta = event.get("delta", "")
+                        if delta:
+                            # 1) Accumulate for this summary_index
+                            reasoning_map[idx] = reasoning_map.get(idx, "") + delta
 
-                        # 2) Merge all blocks (sorted), separated by ---
-                        all_text = "\n\n --- \n\n".join(reasoning_map[i] for i in sorted(reasoning_map))
-
-                        # 3) Extract latest title, else fallback to 'Thinking...'
-                        matches = re.findall(r"\*\*(.+?)\*\*", all_text, flags=re.DOTALL)
-                        latest_title = matches[-1].strip() if matches else "Thinking..."
-
-                        # 4) Build a minimal snippet (omit type="reasoning")
-                        snippet = (
-                            f"<details type=\"{__name__}.reasoning\" done=\"false\">\n"
-                            f"<summary>🧠{latest_title}</summary>\n"
-                            f"{all_text}\n"
-                            "</details>"
-                        )
-
-                        # 5) Emit to the front end
-                        if event_emitter:
-                            await event_emitter(
-                                {"type": "chat:completion", "data": {"content": snippet}}
+                            # 2) Merge all blocks (sorted), separated by ---
+                            all_text = "\n\n --- \n\n".join(
+                                reasoning_map[i] for i in sorted(reasoning_map)
                             )
 
-                    continue
+                            # 3) Extract latest title, else fallback to 'Thinking...'
+                            matches = re.findall(r"\*\*(.+?)\*\*", all_text, flags=re.DOTALL)
+                            latest_title = matches[-1].strip() if matches else "Thinking..."
 
-                # Output item added (e.g., tool call started, reasoning started, etc..)
-                elif event_type == "response.output_item.added":
-                    item = event.get("item", {})
-                    item_type = item.get("type", "")
+                            # 4) Build a minimal snippet (omit type="reasoning")
+                            snippet = (
+                                f"<details type=\"{__name__}.reasoning\" done=\"false\">\n"
+                                f"<summary>🧠{latest_title}</summary>\n"
+                                f"{all_text}\n"
+                                "</details>"
+                            )
 
-                    self.log.debug("output_item.added event received: %s", json.dumps(item, indent=2, ensure_ascii=False))
+                            # 5) Emit to the front end
+                            if event_emitter:
+                                await event_emitter(
+                                    {"type": "chat:completion", "data": {"content": snippet}}
+                                )
 
-                    if item_type in started_msgs:
-                        template = random.choice(started_msgs[item_type])
-                        msg = template.format(fn=item.get("name", "a tool"))
-                        await self._emit_status(event_emitter, msg, done=False, hidden=False)
-                    
-                    continue  # continue to next event
+                        continue
 
-                # Output item done (e.g., tool call finished, reasoning done, etc.)
-                elif event_type == "response.output_item.done":
-                    item = event.get("item", {})
-                    item_type = item.get("type", "")
+                    # Output item added (e.g., tool call started, reasoning started, etc..)
+                    elif event_type == "response.output_item.added":
+                        item = event.get("item", {})
+                        item_type = item.get("type", "")
 
-                    if item_type in finished_msgs:
-                        template = random.choice(finished_msgs[item_type])
-                        msg = template.format(fn=item.get("name", "Tool"))
-                        await self._emit_status(event_emitter, msg, done=True, hidden=False)
+                        self.log.debug(
+                            "output_item.added event received: %s",
+                            json.dumps(item, indent=2, ensure_ascii=False),
+                        )
 
-                    if item_type == "reasoning":
-                        # Merge all partial reasoning so far
-                        all_text = "\n\n --- \n\n".join(reasoning_map[i] for i in sorted(reasoning_map))
+                        if item_type in started_msgs:
+                            template = random.choice(started_msgs[item_type])
+                            msg = template.format(fn=item.get("name", "a tool"))
+                            await self._emit_status(event_emitter, msg, done=False, hidden=False)
+
+                        continue  # continue to next event
+
+                    # Output item done (e.g., tool call finished, reasoning done, etc.)
+                    elif event_type == "response.output_item.done":
+                        item = event.get("item", {})
+                        item_type = item.get("type", "")
+
+                        if item_type in finished_msgs:
+                            template = random.choice(finished_msgs[item_type])
+                            msg = template.format(fn=item.get("name", "Tool"))
+                            await self._emit_status(event_emitter, msg, done=True, hidden=False)
+
+                        if item_type == "reasoning":
+                            # Merge all partial reasoning so far
+                            all_text = "\n\n --- \n\n".join(
+                                reasoning_map[i] for i in sorted(reasoning_map)
+                            )
 
                         if all_text:
                             all_text += "\n\n --- \n\n"
@@ -458,19 +466,40 @@ class Pipe:
                         else:
                             await self._emit_status(event_emitter, "Done thinking!", done=True, hidden=False)
 
-                        reasoning_map.clear()
+                            reasoning_map.clear()
 
-                    continue  # continue to next event
+                        continue  # continue to next event
 
-                # Response completed event
-                elif event_type == "response.completed":
-                    self.log.debug("Response completed event received.")
-                    final_response_data = event.get("response", {})
-                    break # Exit the streaming loop to process the final response
+                    # Response completed event
+                    elif event_type == "response.completed":
+                        self.log.debug("Response completed event received.")
+                        final_response_data = event.get("response", {})
+                        break  # Exit the streaming loop to process the final response
 
-            # If no final response data, we exit the loop.
+            except Exception as exc:  # noqa: PERF203 - full stack helpful here
+                await self._emit_error(
+                    event_emitter,
+                    exc,
+                    show_error_message=True,
+                    show_error_log_citation=True,
+                    done=True,
+                )
+                return
+
+            # If no final response data we exit the loop. Flush any pending
+            # reasoning snippet so partial thoughts are not lost.
             if not final_response_data:
                 self.log.debug("No final response data after SSE. Exiting loop.")
+                if reasoning_map:
+                    all_text = "\n\n --- \n\n".join(reasoning_map[i] for i in sorted(reasoning_map))
+                    final_snippet = (
+                        f'<details type="{__name__}.reasoning" done="true">\n'
+                        f"<summary>Done thinking!</summary>\n"
+                        f"{all_text}\n"
+                        "</details>"
+                    )
+                    yield final_snippet
+                    reasoning_map.clear()
                 break
 
             # Capture the final output items
@@ -496,12 +525,22 @@ class Pipe:
                 break # LLM response is complete, no further tool calls
         
         
+        if reasoning_map:
+            all_text = "\n\n --- \n\n".join(reasoning_map[i] for i in sorted(reasoning_map))
+            final_snippet = (
+                f'<details type="{__name__}.reasoning" done="true">\n'
+                f"<summary>Done thinking!</summary>\n"
+                f"{all_text}\n"
+                "</details>"
+            )
+            yield final_snippet
+            reasoning_map.clear()
+
         if event_emitter:
             await self._emit_completion(
                 event_emitter,
                 {
                     "done": True,
-                    #"content": TBD
                     **({"usage": total_usage} if total_usage else {}),
                 },
             )
