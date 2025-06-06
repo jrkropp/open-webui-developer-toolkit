@@ -4,6 +4,9 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2025-06-09
+- Fixed per-session log level filtering using `ContextVar`-based filters.
+
 ## [0.9.1] - 2025-06-08
 - Returned OpenAI-compatible dict from `_handle_task`.
 

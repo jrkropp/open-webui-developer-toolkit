@@ -5,7 +5,7 @@ author: Justin Kropp
 author_url: https://github.com/jrkropp
 funding_url: https://github.com/jrkropp/open-webui-developer-toolkit
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
-version: 0.9.1
+version: 0.9.2
 license: MIT
 requirements: orjson
 """
@@ -69,6 +69,21 @@ FEATURE_SUPPORT = {
 current_session_id = ContextVar("current_session_id", default=None)
 current_log_level = ContextVar("current_log_level", default=logging.INFO)
 logs_by_msg_id = defaultdict(list)
+
+
+class SessionIDFilter(logging.Filter):
+    """Attach the current session ID to each log record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        record.session_id = getattr(record, "session_id", None) or current_session_id.get()
+        return True
+
+
+class ContextLevelFilter(logging.Filter):
+    """Filter records using the per-session log level from :data:`current_log_level`."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        return record.levelno >= current_log_level.get()
 
 # Precompiled regex for stripping <details> blocks from assistant text
 DETAILS_RE = re.compile(r"<details\b[^>]*>.*?<\/details>", flags=re.IGNORECASE | re.DOTALL)
@@ -143,8 +158,8 @@ class Pipe:
         if not self.log.handlers:  # Prevent duplicate logs
             self.log.propagate = False
             self.log.setLevel(logging.DEBUG)
-            self.log.addFilter(lambda r: (setattr(r, "session_id", getattr(r, "session_id", None) or current_session_id.get()) or True))
-            self.log.addFilter(lambda r: r.levelno >= current_log_level.get())
+            self.log.addFilter(SessionIDFilter())
+            self.log.addFilter(ContextLevelFilter())
 
             console = logging.StreamHandler(sys.stdout)
             console.setFormatter(logging.Formatter("%(levelname)s [mid=%(session_id)s] %(message)s"))
