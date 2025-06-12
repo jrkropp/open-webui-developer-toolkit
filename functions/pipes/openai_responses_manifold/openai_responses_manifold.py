@@ -1344,7 +1344,10 @@ ENCODED_ID_PATTERN = re.compile(f"[{ZERO}{ONE}]+")  # e.g., ZERO="\u200b", ONE="
 
 CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
+
 def _encode_base32(value: int, length: int) -> str:
+    """Return ``value`` encoded in Crockford Base32 with ``length`` characters."""
+
     chars = []
     for _ in range(length):
         chars.append(CROCKFORD_ALPHABET[value & 31])
@@ -1352,19 +1355,22 @@ def _encode_base32(value: int, length: int) -> str:
     return "".join(reversed(chars))
 
 def generate_ulid() -> str:
-    """Generate a time-sortable ULID string."""
+    """Generate a 26 character ULID using millisecond precision."""
+
     timestamp_ms = int(datetime.datetime.utcnow().timestamp() * 1000)
     random_part = int.from_bytes(os.urandom(10), "big")
     return _encode_base32(timestamp_ms, 10) + _encode_base32(random_part, 16)
 
 def encode_id(item_id: str) -> str:
-    """Encode a plain identifier into zero-width characters."""
+    """Return ``item_id`` encoded as a zero-width string."""
+
     bits = "".join(f"{ord(ch):08b}" for ch in item_id)
     return "".join(ZERO if bit == "0" else ONE for bit in bits)
 
 
 def decode_id(encoded: str) -> str:
     """Decode a zero-width encoded identifier back to text."""
+
     bits = "".join("0" if ch == ZERO else "1" for ch in encoded if ch in (ZERO, ONE))
     chars = [chr(int(bits[i : i + 8], 2)) for i in range(0, len(bits), 8)]
     return "".join(chars)
@@ -1378,7 +1384,7 @@ def extract_encoded_ids(content: str) -> List[str]:
     return [decode_id(match) for match in ENCODED_ID_PATTERN.findall(content)]
 
 def split_content_by_encoded_ids(content: str) -> List[Dict[str, str]]:
-    """Splits content into an ordered list of text and encoded ID segments."""
+    """Return ``content`` broken into alternating text and encoded ID pieces."""
     segments = []
     parts = re.split(f"({ENCODED_ID_PATTERN.pattern})", content)
 
@@ -1393,7 +1399,7 @@ def split_content_by_encoded_ids(content: str) -> List[Dict[str, str]]:
     return segments
 
 def fetch_items_by_ids(chat_id: str, item_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Fetch persisted item payloads by ID from the chat database."""
+    """Return a mapping of ``item_id`` to its persisted payload."""
     chat_model = Chats.get_chat_by_id(chat_id)
     if not chat_model:
         return {}
@@ -1407,9 +1413,10 @@ def fetch_items_by_ids(chat_id: str, item_ids: List[str]) -> Dict[str, Dict[str,
     return lookup
 
 def build_openai_input(body_messages: List[Dict[str, str]], chat_id: str) -> List[Dict[str, Any]]:
-    """
-    Constructs an OpenAI-compatible input array from provided body_messages, resolving encoded IDs
-    to persisted items as needed. Efficiently minimizes database operations.
+    """Translate ``body['messages']`` back into the Responses API format.
+
+    Zero-width encoded identifiers found in assistant message content are
+    resolved to their full payloads in a single database lookup.
     """
     openai_input = []
 
