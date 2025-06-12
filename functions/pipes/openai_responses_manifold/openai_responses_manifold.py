@@ -7,7 +7,7 @@ funding_url: https://github.com/jrkropp/open-webui-developer-toolkit
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.3
-version: 0.8.5
+version: 0.8.6
 license: MIT
 requirements: orjson
 """
@@ -54,6 +54,9 @@ FEATURE_SUPPORT = {
     "reasoning": {"o3", "o4-mini", "o3-mini","o3-pro"}, # OpenAI's reasoning models.
     "reasoning_summary": {"o3", "o4-mini", "o4-mini-high", "o3-mini", "o3-mini-high", "o3-pro"}, # OpenAI's reasoning summary feature.  May require OpenAI org verification before use.
 }
+
+# Invisible zero-width characters used for encoding item identifiers
+ZERO, ONE = "\u200b", "\u200c"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Data Models
@@ -1348,11 +1351,22 @@ def remove_details_tags_by_type(text: str, removal_types: list[str]) -> str:
 
 #####################
 
-# Rough ideas on functions I'll need to implement to support new persistent item approach
-
+# Helper utilities for persistent item ID encoding/decoding
 
 # Pre-compiled regex for performance
 ENCODED_ID_PATTERN = re.compile(f"[{ZERO}{ONE}]+")  # e.g., ZERO="\u200b", ONE="\u200c"
+
+def encode_id(item_id: str) -> str:
+    """Encode a plain identifier into zero-width characters."""
+    bits = "".join(f"{ord(ch):08b}" for ch in item_id)
+    return "".join(ZERO if bit == "0" else ONE for bit in bits)
+
+
+def decode_id(encoded: str) -> str:
+    """Decode a zero-width encoded identifier back to text."""
+    bits = "".join("0" if ch == ZERO else "1" for ch in encoded if ch in (ZERO, ONE))
+    chars = [chr(int(bits[i : i + 8], 2)) for i in range(0, len(bits), 8)]
+    return "".join(chars)
 
 def is_encoded(content: str) -> bool:
     """Quickly checks if the content contains encoded IDs."""
@@ -1378,9 +1392,18 @@ def split_content_by_encoded_ids(content: str) -> List[Dict[str, str]]:
     return segments
 
 def fetch_items_by_ids(chat_id: str, item_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Fetches persisted items by IDs from the database, returning a lookup map."""
-    fetched_items = db_fetch_items(chat_id, item_ids)  # Placeholder DB call
-    return {item["item_id"]: item["payload"] for item in fetched_items}
+    """Fetch persisted item payloads by ID from the chat database."""
+    chat_model = Chats.get_chat_by_id(chat_id)
+    if not chat_model:
+        return {}
+
+    items_store = chat_model.chat.get("openai_responses_pipe", {}).get("items", {})
+    lookup: Dict[str, Dict[str, Any]] = {}
+    for item_id in item_ids:
+        item = items_store.get(item_id)
+        if item:
+            lookup[item_id] = item.get("payload", {})
+    return lookup
 
 def build_openai_input(body_messages: List[Dict[str, str]], chat_id: str) -> List[Dict[str, Any]]:
     """
@@ -1422,7 +1445,9 @@ def build_openai_input(body_messages: List[Dict[str, str]], chat_id: str) -> Lis
                     if item:
                         openai_input.append(item)
                     else:
-                        logger.warning("Missing persisted item for ID: %s", item_id)
+                        logging.getLogger(__name__).warning(
+                            "Missing persisted item for ID: %s", item_id
+                        )
                 elif segment["type"] == "text":
                     text = segment["text"].strip()
                     if text:

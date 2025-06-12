@@ -4,6 +4,9 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.6] - 2025-06-12
+- Added helper utilities for zero-width encoded item persistence.
+
 ## [0.8.5] - 2025-06-10
 - Added `TRUNCATION` valve to configure automatic truncation behaviour.
 
