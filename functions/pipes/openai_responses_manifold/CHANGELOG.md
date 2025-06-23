@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - Fixed missing final message when streaming disabled by emitting the
   complete text via `chat:completion`.
 
+## [0.8.14] - 2025-06-23
+- Added experimental `MCP` valve for remote MCP server support.
+- Updated README with configuration instructions.
+
 ## [0.8.13] - 2025-06-19
 - Emitted an initial reasoning block when using reasoning models to make
   the interface show progress immediately.

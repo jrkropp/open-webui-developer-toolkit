@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.3
-version: 0.8.13
+version: 0.8.14
 license: MIT
 """
 
@@ -18,7 +18,6 @@ from __future__ import annotations
 # Standard library, third-party, and Open WebUI imports
 # Standard library imports
 import asyncio
-from copy import deepcopy
 import datetime
 import inspect
 from io import StringIO
@@ -425,6 +424,13 @@ class Pipe:
             default=True,
             description="Persist tool call results across conversation turns. When disabled, tool results are not stored in the chat history.",
         )
+        MCP: Optional[str] = Field(
+            default=None,
+            description=(
+                "\U0001f9ea Experimental: JSON describing one or more MCP servers to "
+                "append to every request's tools array. Format may change."
+            ),
+        )
         USER_ID_FIELD: Literal["id", "email"] = Field(
             default="id",
             description=(
@@ -527,6 +533,20 @@ class Pipe:
                     "region": "BC",
                 }
             })
+
+        # Experimental MCP tool support
+        if valves.MCP:
+            responses_body.tools = responses_body.tools or []
+            try:
+                mcp_defs = json.loads(valves.MCP)
+                if isinstance(mcp_defs, dict):
+                    mcp_defs = [mcp_defs]
+                for spec in mcp_defs:
+                    if isinstance(spec, dict):
+                        tool = {"type": "mcp", **spec}
+                        responses_body.tools.append(tool)
+            except Exception as e:  # pragma: no cover - malformed config
+                self.logger.error("Invalid MCP valve: %s", e)
 
         # Check if tools are enabled but native function calling is disabled
         # If so, update the OpenWebUI model parameter to enable native function calling for future requests.
