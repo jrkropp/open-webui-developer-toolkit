@@ -192,26 +192,47 @@ The frontend marks the chat as complete and prominently displays the error, ensu
 
 #### ✅ Attaching Files (`chat:message:files` or `files`)
 
-Attach or update files in the current message (e.g. providing a generated report or image as output):
+Attach or update files in the current message. Files are stored under
+`open_webui.config.UPLOAD_DIR` (by default `<repo>/backend/data/uploads`).
+Since this code runs server side, you can save the files directly:
 
 ```python
+from open_webui.config import UPLOAD_DIR
+from pathlib import Path
+import uuid
+
+img_id = str(uuid.uuid4())
+img_path = Path(UPLOAD_DIR) / f"{img_id}_plot.png"
+img_path.write_bytes(generated_png_bytes)
+
+txt_id = str(uuid.uuid4())
+txt_path = Path(UPLOAD_DIR) / f"{txt_id}_report.txt"
+txt_path.write_text(report_text)
+
 await __event_emitter__({
     "type": "files",  # or "chat:message:files"
     "data": {
         "files": [
-            {"type": "image", "url": "https://example.com/generated.png"}
+            {
+                "id": img_id,
+                "type": "image",
+                "name": "plot.png",
+                "url": f"/api/v1/files/{img_id}"
+            },
+            {
+                "id": txt_id,
+                "type": "file",
+                "name": "report.txt",
+                "url": f"/api/v1/files/{txt_id}"
+            }
         ]
     }
 })
 ```
 
-Each file object must include a `type` (for example `"image"` or `"file"`) and a
-`url`. Optional fields like `name` or `size` can also be supplied.  The frontend
-uses `type` to determine whether to render the file inline as an image or as a
-downloadable item.
-
-This event updates the message attachments in the UI but does not persist files
-to the database automatically.
+Each item should include its `id`, human-readable `name`, and `type`
+(for example `"image"`, `"file"`, `"doc"`).  The event only updates the UI; files
+must already exist in `UPLOAD_DIR` as shown above.
 
 ---
 
@@ -292,13 +313,13 @@ Show a toast notification to the user (non-intrusive alert at the bottom/top of 
 await __event_emitter__({
     "type": "notification",
     "data": {
-        "kind": "success",  # could be "info", "warning", "error"
-        "message": "Your data was successfully saved!"
+        "type": "success",  # "info", "warning" or "error" are also valid
+        "content": "Your data was successfully saved!"
     }
 })
 ```
 
-This will display a small **Success** notification to the user. (The `kind` or type field indicates the style of notification.)
+This displays a small success toast. The `type` field controls the style of the notification and `content` is the text shown to the user.
 
 ---
 
@@ -332,7 +353,12 @@ Prompt the user with an input dialog and retrieve their text input:
 ```python
 user_name = await __event_call__({
     "type": "input",
-    "data": {"prompt": "Enter your name:"}
+    "data": {
+        "title": "Input Required",
+        "message": "Enter your name:",
+        "placeholder": "Name",
+        "value": ""
+    }
 })
 ```
 
@@ -347,11 +373,11 @@ Run client-side JavaScript code on the user's browser and get the result:
 ```python
 result = await __event_call__({
     "type": "execute",
-    "data": {"script": "return window.location.href;"}
+    "data": {"code": "return window.location.href;"}
 })
 ```
 
-This will execute the given script in the user's browser context and populate `result` with the return value. For example, the above code snippet returns the current page URL. Use this for advanced integrations that need to query or manipulate the client environment.
+This executes the provided JavaScript in the user's browser and populates `result` with its return value. For example, the snippet above returns the current page URL. Use this for advanced integrations that need to query or manipulate the client environment.
 
 ---
 
@@ -437,7 +463,12 @@ For example, prompting for input will send an event to that user’s browser and
 ```python
 user_input = await __event_call__({
     "type": "input",
-    "data": {"prompt": "Enter your name:"}
+    "data": {
+        "title": "Input Required",
+        "message": "Enter your name:",
+        "placeholder": "Name",
+        "value": ""
+    }
 })
 ```
 
