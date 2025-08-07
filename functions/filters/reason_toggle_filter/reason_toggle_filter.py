@@ -15,7 +15,7 @@ from open_webui.models.models import Models
 class Filter:
     class Valves(BaseModel):
         MODEL: str = "o4-mini"
-        REASONING_EFFORT: Literal["low", "medium", "high", "not set"] = "not set"
+        REASONING_EFFORT: Literal["minimal", "low", "medium", "high", "not set"] = "not set"
         priority: int = Field(
             default=0, description="Priority level for the filter operations."
         )
