@@ -841,13 +841,27 @@ class Pipe:
 
                     self.logger.debug("Set text.verbosity=%s based on regenerate directive '%s'",verbosity_value, last_user_text)
 
-        # STEP 10: Log the transformed request body
+        # STEP 10: Remove ephemeral objects from input when store is false
+        if responses_body.store is False:
+            input_items = (
+                responses_body.input if isinstance(responses_body.input, list) else None
+            )
+            if input_items:
+                new_input = []
+                for item in input_items:
+                    if not item.get("role"):
+                        self.logger.debug(f"Removed ephemeral input item:\n{item}\n")
+                        continue
+                    new_input.append(item)
+                responses_body.input = new_input
+        
+        # STEP 11: Log the transformed request body
         self.logger.debug(
             "Transformed ResponsesBody: %s",
             json.dumps(responses_body.model_dump(exclude_none=True), indent=2, ensure_ascii=False),
         )
 
-        # STEP 11: Send to OpenAI Responses API
+        # STEP 12: Send to OpenAI Responses API
         if responses_body.stream:
             # Return async generator for partial text
             return await self._run_streaming_loop(responses_body, valves, __event_emitter__, __metadata__, __tools__)
