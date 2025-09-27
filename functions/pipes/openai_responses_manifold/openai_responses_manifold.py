@@ -61,7 +61,7 @@ class ModelFamily:
 
         "gpt-5":                {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5-mini":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
-        "gpt-5-nano":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5-nano":           {"features": {"function_calling","reasoning","reasoning_summary","image_gen_tool","verbosity"}},
 
         "gpt-4.1":              {"features": {"function_calling","web_search_tool","image_gen_tool"}},
         "gpt-4.1-mini":         {"features": {"function_calling","web_search_tool","image_gen_tool"}},
