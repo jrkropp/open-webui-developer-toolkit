@@ -5,6 +5,18 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2025-10-10
+- Add support for GPT-5 Pro across FEATURE_SUPPORT gates (web_search, image_gen, function_calling,
+  reasoning, reasoning_summary, verbosity).
+- Normalize model IDs to strip any function/module prefixes before sending to OpenAI
+  (prevents model_not_found when IDs like `openai_responses.gpt-5-pro` are used).
+- For GPT-5 family, drop unsupported sampling params (`temperature`, `top_p`) with warnings to
+  avoid 4xx errors.
+- Log full 4xx response bodies for both streaming and non‑streaming requests to aid debugging.
+- Note: deep‑research models (o3-deep-research, o4-mini-deep-research) function as expected in
+  smoke tests, including visible reasoning; they remain marked experimental pending broader
+  validation.
+
 ## [0.8.28] - 2025-08-21
 - Resolved compatibility with Open WebUI v0.6.23 by awaiting `__tools__` when
   it is provided as a coroutine.
