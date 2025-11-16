@@ -8,27 +8,23 @@ Keep this note open whenever you work in `functions/pipes/openai_responses_manif
 - Open WebUI imports a **single file**: `openai_responses_manifold.py`.
 - That file is **generated**; you should only edit code under `src/openai_responses_manifold/` and then rebuild.
 
-At runtime, there are three main layers:
+At runtime there are a few clear layers:
 
 - **Core** (`src/openai_responses_manifold/core/`)
-  - Capabilities table and model aliases (`capabilities.py`).
-  - Pydantic models (`CompletionsBody`, `ResponsesBody`) and conversion helpers.
-  - Marker utilities and the `SessionLogger`.
+  - Pure helpers: IDs, capabilities, Pydantic API models, markers, and message transforms.
+- **Services** (`src/openai_responses_manifold/services/`)
+  - History (builder + persistence), tools (build/execute), routing.
+- **Infra** (`src/openai_responses_manifold/infra/`)
+  - Talks to OpenAI (`OpenAIResponsesClient`) and OpenWebUI (`ItemStore`).
+- **Utils** (`src/openai_responses_manifold/utils/`)
+  - `SessionLogger` plus event helpers.
 - **Engine** (`src/openai_responses_manifold/engine.py`)
-  - `ResponsesEngine` – the “Responses API engine” that:
-    - Streams events from OpenAI.
-    - Orchestrates tool/function calls and retries.
-    - Emits Open WebUI events (`chat:message`, `chat:completion`, `citation`, `notification`, status).
-    - Persists extra items via the infra layer.
-- **Pipe adapter** (`src/openai_responses_manifold/main.py`)
-  - `class Pipe` with nested `Valves` / `UserValves` – exactly what Open WebUI expects.
-  - Shapes Open WebUI’s `body` / `__user__` / `__metadata__` / `__tools__` into a `ResponsesBody`.
-  - Calls helpers from `features/`, then delegates the actual work to `ResponsesEngine`.
+  - `ResponsesEngine` orchestrates streaming, tool loops, persistence, and Open WebUI events.
+- **Adapter** (`src/openai_responses_manifold/main.py`)
+  - `Pipe` with nested `Valves` / `UserValves`; it builds `ResponsesBody`, routes auto models, and delegates to the engine.
 
 Other important pieces:
 
-- `src/openai_responses_manifold/features/` – tool building and GPT‑5 router (`build_tools`, `route_gpt5_auto`).
-- `src/openai_responses_manifold/infra/` – `OpenAIResponsesClient` and persistence helpers.
 - `tests/` – pytest suite that imports modules directly from `src/` (via `tests/conftest.py` stubs) so helpers run against the editable package.
 - `scripts/build.py` – the bundler that flattens the package into the single file that Open WebUI imports.
 
@@ -44,10 +40,12 @@ functions/pipes/openai_responses_manifold/
 ├─ src/
 │  └─ openai_responses_manifold/
 │     ├─ __init__.py       # re-exports Pipe, ResponsesEngine, core helpers
-│     ├─ core/             # capabilities, models, markers, session logger, utils
+│     ├─ model_catalog.py  # canonical place to add/modify supported models
+│     ├─ core/             # ids, capabilities, API models, markers, message helpers
 │     ├─ engine.py         # ResponsesEngine + EventEmitter
-│     ├─ features/         # tool building, GPT-5 router, etc.
-│     ├─ infra/            # OpenAIResponsesClient + persistence helpers
+│     ├─ services/         # history, tools, routing
+│     ├─ infra/            # OpenAIResponsesClient + ItemStore
+│     ├─ utils/            # SessionLogger + event helpers
 │     ├─ settings.py       # shared Pipe valve definitions/defaults
 │     └─ main.py           # Pipe + nested Valves/UserValves (Open WebUI adapter)
 ├─ tests/                  # pytest suite (imports package modules via conftest)
@@ -130,6 +128,6 @@ When modifying engine behavior:
 
 - Always treat `openai_responses_manifold.py` as generated; edit the package under `src/openai_responses_manifold/` instead.
 - When adding new features:
-  - Prefer to put shared logic in `core/`, `engine.py`, `features/`, or `infra/`, and keep `Pipe` as a thin adapter.
-  - Update `scripts/build.py` if you introduce new top‑level modules in the package.
+  - Prefer to put pure logic in `core/`, shared orchestration in `services/`, infra-specific calls in `infra/`, and keep `main.Pipe` thin.
+  - Update `scripts/build.py` if you introduce new top‑level modules in the package so the bundler stays in sync.
 - Keep this guide in sync with structural changes so future agents don’t have to rediscover how the manifold and bundler work. 

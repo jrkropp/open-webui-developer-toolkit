@@ -1,4 +1,4 @@
-"""Request-scoped logger used throughout the manifold."""
+"""Session-scoped logger that buffers lines for the Logs citation."""
 
 from __future__ import annotations
 
@@ -45,3 +45,6 @@ class SessionLogger:
         logger.addHandler(mem_handler)
 
         return logger
+
+
+__all__ = ["SessionLogger"]

@@ -58,3 +58,18 @@ def test_responses_body_from_completions_converts_messages() -> None:
     content = assistant_block["content"][0]  # type: ignore[index]
     assert content["type"] == "output_text"
     assert content["text"] == "intermediate result"
+
+
+def test_responses_body_prefers_history_input_when_provided() -> None:
+    completions = CompletionsBody(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "ignored"}],
+    )
+    history_input = [
+        {"role": "assistant", "content": [{"type": "output_text", "text": "restored"}]},
+    ]
+    responses = ResponsesBody.from_completions(
+        completions,
+        history_input=history_input,
+    )
+    assert responses.input == history_input

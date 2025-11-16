@@ -113,9 +113,8 @@ class PipeValves(BaseModel):
     )
 
 
-class PipeUserValves(BaseModel):
+class UserValves(BaseModel):
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"] = Field(
         default="INHERIT",
         description="Select logging level. 'INHERIT' uses the pipe default.",
     )
-

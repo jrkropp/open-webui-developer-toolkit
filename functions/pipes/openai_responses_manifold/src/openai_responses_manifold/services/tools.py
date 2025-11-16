@@ -1,0 +1,237 @@
+"""Tool declaration and execution helpers."""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import json
+import logging
+from typing import Any
+
+from ..core.api_models import ResponsesBody
+from ..core.capabilities import supports
+from ..core.errors import ToolExecutionError
+
+logger = logging.getLogger(__name__)
+
+
+def build_tools(
+    responses_body: ResponsesBody,
+    valves: Any,
+    openwebui_tools: dict[str, Any] | None = None,
+    *,
+    features: dict[str, Any] | None = None,
+    extra_tools: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the OpenAI Responses-API tool spec list for this request."""
+
+    features = features or {}
+    if not supports("function_calling", responses_body.model):
+        return []
+
+    tools: list[dict[str, Any]] = []
+    tools.extend(_transform_owui_tools(openwebui_tools, strict=getattr(valves, "ENABLE_STRICT_TOOL_CALLING", False)))
+
+    allow_web = (
+        supports("web_search_tool", responses_body.model)
+        and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
+        and ((responses_body.reasoning or {}).get("effort", "").lower() != "minimal")
+    )
+    if allow_web:
+        web_search_tool: dict[str, Any] = {
+            "type": "web_search",
+            "search_context_size": getattr(valves, "WEB_SEARCH_CONTEXT_SIZE", "medium"),
+        }
+        user_location = getattr(valves, "WEB_SEARCH_USER_LOCATION", None)
+        if user_location:
+            try:
+                web_search_tool["user_location"] = json.loads(user_location)
+            except Exception as exc:
+                logger.warning("WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring: %s", exc)
+        tools.append(web_search_tool)
+
+    remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
+    if remote_mcp:
+        tools.extend(_build_mcp_tools(remote_mcp))
+
+    if isinstance(extra_tools, list) and extra_tools:
+        tools.extend(extra_tools)
+
+    return _dedupe_tools(tools)
+
+
+async def execute_tool_calls(
+    calls: list[dict[str, Any]],
+    registry: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Execute tool calls and return Responses-ready outputs."""
+
+    async def _invoke(call: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        name = call.get("name")
+        arguments_json = call.get("arguments", "{}")
+        try:
+            args = json.loads(arguments_json)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ToolExecutionError(f"Invalid JSON arguments for tool {name}: {exc}") from exc
+
+        tool_cfg = registry.get(name)
+        if not tool_cfg:
+            return call, f"Tool '{name}' not found"
+
+        fn = tool_cfg.get("callable")
+        if not callable(fn):
+            return call, f"Tool '{name}' is not callable"
+
+        try:
+            if inspect.iscoroutinefunction(fn):
+                result = await fn(**args)
+            else:
+                result = await asyncio.to_thread(fn, **args)
+        except Exception as exc:
+            logger.warning("Tool %s raised an exception: %s", name, exc)
+            return call, f"{type(exc).__name__}: {exc}"
+
+        return call, str(result)
+
+    results = await asyncio.gather(*(_invoke(call) for call in calls))
+    outputs: list[dict[str, Any]] = []
+    for call, output in results:
+        outputs.append(
+            {
+                "type": "function_call_output",
+                "call_id": call.get("call_id"),
+                "output": output,
+            }
+        )
+    return outputs
+
+
+def _transform_owui_tools(
+    openwebui_tools: dict[str, dict[str, Any]] | None,
+    *,
+    strict: bool = False,
+) -> list[dict[str, Any]]:
+    if not openwebui_tools:
+        return []
+
+    tools: list[dict[str, Any]] = []
+    for item in openwebui_tools.values():
+        spec = item.get("spec") or {}
+        name = spec.get("name")
+        if not name:
+            continue
+
+        params = spec.get("parameters") or {"type": "object", "properties": {}}
+        tool = {
+            "type": "function",
+            "name": name,
+            "description": spec.get("description") or name,
+            "parameters": _strictify_schema(params) if strict else params,
+        }
+        if strict:
+            tool["strict"] = True
+        tools.append(tool)
+    return tools
+
+
+def _strictify_schema(schema: Any) -> dict[str, Any]:
+    if not isinstance(schema, dict):
+        return {}
+
+    data = json.loads(json.dumps(schema))
+
+    def _enforce(node: dict[str, Any]) -> None:
+        node_type = node.get("type")
+        is_object = (
+            node_type == "object"
+            or (isinstance(node_type, list) and "object" in node_type)
+            or "properties" in node
+        )
+        if is_object:
+            props = node.setdefault("properties", {})
+            if not isinstance(props, dict):
+                props = {}
+                node["properties"] = props
+
+            original_required = set(node.get("required") or [])
+            node["additionalProperties"] = False
+            node["required"] = list(props.keys())
+
+            for name, prop in props.items():
+                if not isinstance(prop, dict):
+                    continue
+                if name not in original_required:
+                    ptype = prop.get("type")
+                    if isinstance(ptype, str) and ptype != "null":
+                        prop["type"] = [ptype, "null"]
+                    elif isinstance(ptype, list) and "null" not in ptype:
+                        prop["type"] = [*ptype, "null"]
+                _enforce(prop)
+
+        items = node.get("items")
+        if isinstance(items, dict):
+            _enforce(items)
+        elif isinstance(items, list):
+            for entry in items:
+                if isinstance(entry, dict):
+                    _enforce(entry)
+
+        for key in ("anyOf", "oneOf"):
+            branches = node.get(key)
+            if isinstance(branches, list):
+                for branch in branches:
+                    if isinstance(branch, dict):
+                        _enforce(branch)
+
+    _enforce(data)
+    return data
+
+
+def _build_mcp_tools(mcp_json: str) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(mcp_json)
+    except Exception as exc:  # pragma: no cover - valved bug
+        logger.warning("REMOTE_MCP_SERVERS_JSON is not valid JSON: %s", exc)
+        return []
+
+    entries = parsed if isinstance(parsed, list) else [parsed]
+    tools: list[dict[str, Any]] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        tool = {
+            "type": "mcp",
+            "server_label": item.get("server_label"),
+            "server_url": item.get("server_url"),
+        }
+        for key in (
+            "model_preference",
+            "client_capabilities",
+            "require_approval",
+            "allowed_tools",
+        ):
+            if key in item:
+                tool[key] = item[key]
+        tools.append(tool)
+    return tools
+
+
+def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not tools:
+        return []
+
+    seen: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for tool in tools:
+        tool_type = tool.get("type")
+        if not isinstance(tool_type, str):
+            continue
+        identifier: str | None = None
+        if tool_type == "function":
+            name = tool.get("name")
+            if isinstance(name, str):
+                identifier = name
+        seen[(tool_type, identifier)] = tool
+    return list(seen.values())
+
+
+__all__ = ["build_tools", "execute_tool_calls"]

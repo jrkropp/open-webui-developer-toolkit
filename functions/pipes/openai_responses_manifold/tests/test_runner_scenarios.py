@@ -28,18 +28,20 @@ async def test_streaming_flow_emits_single_completion(
         ]
     )
     runner = orm.ResponsesEngine(
-        client=fake_responses_client, logger=orm.SessionLogger.get_logger(__name__)
+        client=fake_responses_client,
+        item_store=orm.ItemStore(),
+        logger=orm.SessionLogger.get_logger(__name__),
     )
 
     chat_store.ensure("chat-1", {"id": "chat-1"})
     metadata = metadata_factory()
 
-    result = await runner.stream(
+    result = await runner.run_streaming_turn(
         responses_body_factory(),
-        valves,
-        spy_event_emitter,
-        metadata,
-        tools={},
+        valves=valves,
+        metadata=metadata,
+        event_emitter=spy_event_emitter,
+        tool_registry={},
     )
 
     assert result == "Hello world"
@@ -86,7 +88,9 @@ async def test_function_call_loop_executes_local_tools(
         ]
     )
     runner = orm.ResponsesEngine(
-        client=fake_responses_client, logger=orm.SessionLogger.get_logger("runner")
+        client=fake_responses_client,
+        item_store=orm.ItemStore(),
+        logger=orm.SessionLogger.get_logger("runner"),
     )
     chat_store.ensure("chat-9", {"id": "chat-9"})
     metadata = metadata_factory(chat_id="chat-9", message_id="msg-9")
@@ -94,12 +98,12 @@ async def test_function_call_loop_executes_local_tools(
     def echo(value: str) -> str:
         return f"echo:{value}"
 
-    await runner.stream(
+    await runner.run_streaming_turn(
         responses_body_factory(model="gpt-4o"),
-        valves,
-        spy_event_emitter,
-        metadata,
-        tools={"echo": {"callable": echo}},
+        valves=valves,
+        metadata=metadata,
+        event_emitter=spy_event_emitter,
+        tool_registry={"echo": {"callable": echo}},
     )
 
     assert len(fake_responses_client.stream_calls) == 2, "runner should retry after tool output"
@@ -127,19 +131,21 @@ async def test_errors_emit_log_citation(
         [{"type": "response.error", "error": {"message": "boom"}}]
     )
     runner = orm.ResponsesEngine(
-        client=fake_responses_client, logger=orm.SessionLogger.get_logger("runner")
+        client=fake_responses_client,
+        item_store=orm.ItemStore(),
+        logger=orm.SessionLogger.get_logger("runner"),
     )
     chat_store.ensure("chat-err", {"id": "chat-err"})
     metadata = metadata_factory(chat_id="chat-err", message_id="msg-err")
 
     orm.SessionLogger.logs[session_logger_scope] = deque(["debug line"])
 
-    await runner.stream(
+    await runner.run_streaming_turn(
         responses_body_factory(),
-        valves,
-        spy_event_emitter,
-        metadata,
-        tools={},
+        valves=valves,
+        metadata=metadata,
+        event_emitter=spy_event_emitter,
+        tool_registry={},
     )
 
     types = spy_event_emitter.types()

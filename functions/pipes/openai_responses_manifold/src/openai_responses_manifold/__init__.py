@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from . import core as _core
 from .core import *  # noqa: F401, F403
-from .features import build_tools, route_gpt5_auto
-from .infra import OpenAIResponsesClient, fetch_openai_response_items, persist_openai_response_items
-from .main import EventEmitter, Pipe, ResponsesEngine
+from .engine import EventEmitter, ResponsesEngine
+from .infra import ItemStore, OpenAIResponsesClient
+from .main import Pipe
+from .services import build_tools, execute_tool_calls, route_auto_model
+from .utils import SessionLogger
 
 __all__ = [
     "EventEmitter",
     "Pipe",
     "ResponsesEngine",
+    "ItemStore",
     "build_tools",
-    "route_gpt5_auto",
+    "execute_tool_calls",
+    "route_auto_model",
     "OpenAIResponsesClient",
-    "fetch_openai_response_items",
-    "persist_openai_response_items",
+    "SessionLogger",
     *_core.__all__,
 ]

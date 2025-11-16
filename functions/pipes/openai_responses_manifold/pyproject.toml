@@ -10,7 +10,7 @@ authors = [
 # Dependencies listed here are mirrored into the Open WebUI manifest requirements so the host installs them automatically.
 dependencies = ["aiohttp", "fastapi","pydantic>=2"]
 
-[project.open_webui_metadata]
+[tool.open_webui_metadata]
 open_webui_id = "openai_responses"
 open_webui_author_url = "https://github.com/jrkropp"
 open_webui_git_url = "https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py"

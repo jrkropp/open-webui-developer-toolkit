@@ -62,7 +62,7 @@ class FakeResponsesClient:
 
         self._responses.append(json.loads(json.dumps(payload)))
 
-    async def stream_events(
+    async def stream(
         self,
         request_body: dict[str, Any],
         *,
@@ -75,6 +75,24 @@ class FakeResponsesClient:
         script = self._stream_scripts.popleft()
         for event in script:
             yield json.loads(json.dumps(event))
+
+    async def stream_events(
+        self,
+        request_body: dict[str, Any],
+        *,
+        api_key: str,
+        base_url: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        return self.stream(request_body, api_key=api_key, base_url=base_url)
+
+    async def create(
+        self,
+        request_body: dict[str, Any],
+        *,
+        api_key: str,
+        base_url: str,
+    ) -> dict[str, Any]:
+        return await self.request(request_body, api_key=api_key, base_url=base_url)
 
     async def request(
         self,
@@ -103,4 +121,3 @@ class SpyEventEmitter:
 
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
-

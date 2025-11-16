@@ -1,10 +1,9 @@
 """Infrastructure helpers for persistence and HTTP access."""
 
-from .client import OpenAIResponsesClient
-from .persistence import fetch_openai_response_items, persist_openai_response_items
+from .openai_client import OpenAIResponsesClient
+from .openwebui_store import ItemStore
 
 __all__ = [
+    "ItemStore",
     "OpenAIResponsesClient",
-    "fetch_openai_response_items",
-    "persist_openai_response_items",
 ]

@@ -18,6 +18,7 @@ openai_responses_manifold/
 ├─ main.py                      # OpenWebUI Pipe (manifold) – entrypoint/adapter
 ├─ settings.py                  # Valves: pipe & per-user settings (OpenWebUI-facing)
 ├─ engine.py                    # ResponsesEngine – orchestrates one “turn”
+├─ model_catalog.py             # Canonical model/capability table (edit this when adding models)
 ├─ core/                        # Pure domain logic (no I/O)
 │  ├─ __init__.py
 │  ├─ api_models.py             # Pydantic: CompletionsBody, ResponsesBody
@@ -66,6 +67,7 @@ openai_responses_manifold/
 
    * Canonical model IDs (e.g., `gpt-5`, `gpt-4.1`, `o3`) and **aliases** (e.g., `gpt-5-thinking-high`).
    * Capabilities drive behavior (function calling, reasoning, web search, image tool).
+   * The top-level `model_catalog.py` is the single source of truth for supported models — edit it whenever you add or change coverage.
 
 4. **Markers + Persistence**
 

@@ -1,14 +1,15 @@
 """Core primitives used across the OpenAI Responses manifold."""
 
-from .capabilities import (
-    MODEL_ALIASES,
-    MODEL_FEATURES,
-    alias_defaults,
-    base_model,
-    features,
-    normalize,
-    supports,
+from .api_models import CompletionsBody, ResponsesBody
+from .capabilities import MODEL_ALIASES, MODEL_FEATURES, alias_defaults, features, supports
+from .errors import (
+    ManifoldError,
+    OpenAIStreamError,
+    PersistenceError,
+    RoutingError,
+    ToolExecutionError,
 )
+from .ids import base_model, normalize
 from .markers import (
     ULID_LENGTH,
     contains_marker,
@@ -19,9 +20,6 @@ from .markers import (
     split_text_by_markers,
     wrap_marker,
 )
-from .models import CompletionsBody, ResponsesBody
-from .session_logger import SessionLogger
-from .utils import merge_usage_stats, wrap_code_block, wrap_event_emitter
 
 __all__ = [
     "MODEL_ALIASES",
@@ -30,19 +28,20 @@ __all__ = [
     "alias_defaults",
     "base_model",
     "CompletionsBody",
+    "ManifoldError",
+    "OpenAIStreamError",
+    "PersistenceError",
+    "RoutingError",
+    "ToolExecutionError",
     "features",
     "normalize",
     "ResponsesBody",
-    "SessionLogger",
     "contains_marker",
     "create_marker",
     "extract_markers",
     "generate_item_id",
-    "merge_usage_stats",
     "parse_marker",
     "supports",
     "split_text_by_markers",
-    "wrap_code_block",
-    "wrap_event_emitter",
     "wrap_marker",
 ]

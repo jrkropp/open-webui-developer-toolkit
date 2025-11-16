@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import openai_responses_manifold as orm
 from openai_responses_manifold import ResponsesBody
 
@@ -61,8 +63,28 @@ def test_build_tools_dedupes_function_specs() -> None:
         },
     }
     valves = orm.Pipe.Valves(ENABLE_STRICT_TOOL_CALLING=True)
-    tools = orm.build_tools(_responses_body(), valves, __tools__=owui_tools)
+    tools = orm.build_tools(_responses_body(), valves, openwebui_tools=owui_tools)
 
     function_tools = [tool for tool in tools if tool["type"] == "function"]
     assert len(function_tools) == 1
     assert function_tools[0]["name"] == "duplicate"
+
+
+@pytest.mark.asyncio()
+async def test_execute_tool_calls_supports_sync_and_async() -> None:
+    calls = [
+        {"type": "function_call", "name": "echo", "call_id": "1", "arguments": json.dumps({"text": "hi"})},
+        {"type": "function_call", "name": "add", "call_id": "2", "arguments": json.dumps({"a": 1, "b": 2})},
+    ]
+
+    async def add(a: int, b: int) -> int:
+        return a + b
+
+    registry = {
+        "echo": {"callable": lambda text: f"echo:{text}"},
+        "add": {"callable": add},
+    }
+
+    outputs = await orm.execute_tool_calls(calls, registry)
+    assert outputs[0]["output"] == "echo:hi"
+    assert outputs[1]["output"] == "3"

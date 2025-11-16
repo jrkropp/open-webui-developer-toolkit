@@ -1,41 +1,29 @@
-"""Open WebUI pipe implementation that delegates to a Responses engine."""
+"""Open WebUI pipe implementation that delegates to the Responses engine."""
 
 from __future__ import annotations
 
-import asyncio
-import datetime
 import inspect
-import json
 import logging
-import random
-from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from time import perf_counter
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import Request
-from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
 
-from .core import (
-    CompletionsBody,
-    ResponsesBody,
-    SessionLogger,
-    merge_usage_stats,
-    supports,
-    wrap_code_block,
-    wrap_event_emitter,
-)
+from .core.api_models import CompletionsBody, ResponsesBody
+from .core.capabilities import supports
 from .engine import EventEmitter, ResponsesEngine
-from .features import build_tools, route_gpt5_auto
-from .settings import PipeUserValves, PipeValves
+from .infra import ItemStore, OpenAIResponsesClient
+from .services import HistoryBuilder, build_tools, route_auto_model
+from .settings import PipeValves, UserValves
+from .utils import SessionLogger
 
 
 class Pipe:
     class Valves(PipeValves):
         """Admin-level valve configuration."""
 
-    class UserValves(PipeUserValves):
+    class UserValves(UserValves):
         """Per-user valve overrides."""
 
     def __init__(self) -> None:
@@ -43,7 +31,12 @@ class Pipe:
         self.id = "openai_responses"
         self.valves = self.Valves()
         self.logger = SessionLogger.get_logger(__name__)
-        self.engine = ResponsesEngine(logger=self.logger)
+        self.store = ItemStore()
+        self.engine = ResponsesEngine(
+            client=OpenAIResponsesClient(),
+            item_store=self.store,
+            logger=self.logger,
+        )
 
     async def pipes(self) -> list[dict[str, str]]:
         model_ids = [
@@ -62,7 +55,7 @@ class Pipe:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: dict[str, Any] | None = None,
         __task_body__: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[str, None] | str | None:
+    ) -> Awaitable[str] | str | None:
         valves = self._merge_valves(
             self.valves, self.UserValves.model_validate(__user__.get("valves", {}))
         )
@@ -74,42 +67,13 @@ class Pipe:
         SessionLogger.log_level.set(getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO))
 
         if __event_call__:
-            await __event_call__(
-                {
-                    "type": "execute",
-                    "data": {
-                        "code": """
-                (() => {
-                if (document.getElementById("owui-status-unclamp")) return "ok";
-                const style = document.createElement("style");
-                style.id = "owui-status-unclamp";
-                style.textContent = `
-                    .status-description .line-clamp-1,
-                    .status-description .text-base.line-clamp-1,
-                    .status-description .text-gray-500.text-base.line-clamp-1 {
-                    display: block !important;
-                    overflow: visible !important;
-                    -webkit-line-clamp: unset !important;
-                    -webkit-box-orient: initial !important;
-                    white-space: pre-wrap !important;
-                    word-break: break-word;
-                    }
-
-                    .status-description .text-base::first-line,
-                    .status-description .text-gray-500.text-base::first-line {
-                    font-weight: 500 !important;
-                    }
-                `;
-
-                document.head.appendChild(style);
-                return "ok";
-                })();
-                """,
-                    },
-                }
-            )
+            await __event_call__(self._status_unclamp_script())
 
         completions_body = CompletionsBody.model_validate(body)
+        history_input = self._build_history_input(
+            completions_body.messages,
+            __metadata__,
+        )
         extra_params: dict[str, Any] = {
             "truncation": valves.TRUNCATION,
             "user": user_identifier,
@@ -122,7 +86,7 @@ class Pipe:
 
         responses_body = ResponsesBody.from_completions(
             completions_body=completions_body,
-            openwebui_model_id=openwebui_model_id or None,
+            history_input=history_input,
             **extra_params,
         )
 
@@ -137,7 +101,7 @@ class Pipe:
         tools = build_tools(
             responses_body,
             valves,
-            __tools__=tool_registry,
+            openwebui_tools=tool_registry,
             features=features,
             extra_tools=getattr(completions_body, "extra_tools", None),
         )
@@ -158,7 +122,7 @@ class Pipe:
                     Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
 
         if openwebui_model_id.endswith(".gpt-5-auto-dev"):
-            responses_body = await route_gpt5_auto(
+            responses_body = await route_auto_model(
                 self.engine.client,
                 router_model="gpt-4.1-mini",
                 responses_body=responses_body,
@@ -198,64 +162,79 @@ class Pipe:
             isinstance(tool, dict) and tool.get("type") == "web_search"
             for tool in (responses_body.tools or [])
         ):
-            if supports("web_search_tool", responses_body.model):
-                responses_body.include = list(responses_body.include or [])
-                if "web_search_call.action.sources" not in responses_body.include:
-                    responses_body.include.append("web_search_call.action.sources")
+            responses_body.parallel_tool_calls = False
+        else:
+            responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
 
-        input_items = responses_body.input if isinstance(responses_body.input, list) else None
-        if input_items:
-            last_item = input_items[-1]
-            content_blocks = last_item.get("content") if last_item.get("role") == "user" else None
-            first_block = (
-                content_blocks[0] if isinstance(content_blocks, list) and content_blocks else {}
-            )
-            last_user_text = (first_block.get("text") or "").strip().lower()
-
-            directive_to_verbosity = {"add details": "high", "more concise": "low"}
-            verbosity_value = directive_to_verbosity.get(last_user_text)
-
-            if verbosity_value and supports("verbosity", responses_body.model):
-                current_text_params = dict(getattr(responses_body, "text", {}) or {})
-                current_text_params["verbosity"] = verbosity_value
-                responses_body.text = current_text_params
-                input_items.pop()
-                await self.engine.emit_notification(
-                    __event_emitter__,
-                    f"Regenerating with verbosity set to {verbosity_value}.",
-                    level="info",
-                )
-                self.logger.debug(
-                    "Set text.verbosity=%s based on regenerate directive '%s'",
-                    verbosity_value,
-                    last_user_text,
-                )
-
-        self.logger.debug(
-            "Transformed ResponsesBody: %s",
-            json.dumps(responses_body.model_dump(exclude_none=True), indent=2, ensure_ascii=False),
+        return await self.engine.run_streaming_turn(
+            responses_body,
+            valves=valves,
+            metadata=__metadata__,
+            event_emitter=__event_emitter__,
+            tool_registry=tool_registry or {},
         )
 
-        if responses_body.stream:
-            return await self.engine.stream(
-                responses_body, valves, __event_emitter__, __metadata__, tool_registry or {}
+    def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
+        merged = pipe_valves.model_copy(deep=True)
+        if user_valves.LOG_LEVEL != "INHERIT":
+            merged.LOG_LEVEL = user_valves.LOG_LEVEL
+        return merged
+
+    def _build_history_input(
+        self,
+        messages: list[dict[str, Any]],
+        metadata: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        chat_id = metadata.get("chat_id")
+        openwebui_model_id = metadata.get("model", {}).get("id")
+
+        def _resolver(item_ids: list[str], resolver_chat: str | None, model_id: str | None) -> dict[str, dict[str, Any]]:
+            target_chat = resolver_chat or chat_id or ""
+            target_model = model_id or openwebui_model_id
+            return self.store.load_items(
+                target_chat,
+                item_ids,
+                model_id=target_model,
             )
 
-        await self.engine.emit_error(
-            __event_emitter__,
-            "Non-streaming is currently not supported with the OpenAI Responses Manifold.  Please enable streaming and try again",
-            show_error_message=True,
+        builder = HistoryBuilder(resolve_items=_resolver)
+        return builder.build_input_from_messages(
+            messages,
+            chat_id=chat_id,
+            openwebui_model_id=openwebui_model_id,
         )
-        return ""
 
-    def _merge_valves(
-        self, global_valves: Pipe.Valves, user_valves: Pipe.UserValves
-    ) -> Pipe.Valves:
-        if not user_valves:
-            return global_valves
-        update = {
-            key: value
-            for key, value in user_valves.model_dump().items()
-            if value is not None and str(value).lower() != "inherit"
+    @staticmethod
+    def _status_unclamp_script() -> dict[str, Any]:
+        return {
+            "type": "execute",
+            "data": {
+                "code": """
+                (() => {
+                if (document.getElementById("owui-status-unclamp")) return "ok";
+                const style = document.createElement("style");
+                style.id = "owui-status-unclamp";
+                style.textContent = `
+                    .status-description .line-clamp-1,
+                    .status-description .text-base.line-clamp-1,
+                    .status-description .text-gray-500.text-base.line-clamp-1 {
+                    display: block !important;
+                    overflow: visible !important;
+                    -webkit-line-clamp: unset !important;
+                    -webkit-box-orient: initial !important;
+                    white-space: pre-wrap !important;
+                    word-break: break-word;
+                    }
+
+                    .status-description .text-base::first-line,
+                    .status-description .text-gray-500.text-base::first-line {
+                    font-weight: 500 !important;
+                    }
+                `;
+
+                document.head.appendChild(style);
+                return "ok";
+                })();
+                """,
+            },
         }
-        return global_valves.model_copy(update=update)

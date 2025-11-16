@@ -13,73 +13,73 @@
 
 **Phase 0 — Assessment**
 
-* [x] 0.1 Read current single-file module and confirm all sections present (capabilities, pipe, models, markers, persistence, client, tools, router, session logger, utils).
-* [x] 0.2 Build a **Current→Target mapping** (fill table below with exact function names & line refs).
-* [x] 0.3 Identify any **hidden coupling** (e.g., DB I/O inside transform functions).
-* [x] 0.4 Inventory **OpenWebUI integration points** (events emitted, `Chats` writes, model list, tools registry usage).
-* [x] 0.5 Confirm **marker namespace** and **store key** to maintain backward compatibility (default: `openai_responses:v2` and `openai_responses_pipe`).
+* [ ] 0.1 Read current single-file module and confirm all sections present (capabilities, pipe, models, markers, persistence, client, tools, router, session logger, utils).
+* [ ] 0.2 Build a **Current→Target mapping** (fill table below with exact function names & line refs).
+* [ ] 0.3 Identify any **hidden coupling** (e.g., DB I/O inside transform functions).
+* [ ] 0.4 Inventory **OpenWebUI integration points** (events emitted, `Chats` writes, model list, tools registry usage).
+* [ ] 0.5 Confirm **marker namespace** and **store key** to maintain backward compatibility (default: `openai_responses:v2` and `openai_responses_pipe`).
 
 **Phase 1 — Project Skeleton**
 
-* [x] 1.1 Create folders/files per **Project structure** below.
-* [x] 1.2 Add `__init__.py` everywhere.
-* [x] 1.3 Add placeholder docstrings that reference the **Developer Guide v2** sections.
+* [ ] 1.1 Create folders/files per **Project structure** below.
+* [ ] 1.2 Add `__init__.py` everywhere.
+* [ ] 1.3 Add placeholder docstrings that reference the **Developer Guide v2** sections.
 
 **Phase 2 — Core (pure logic, no I/O)**
 
-* [x] 2.1 `core/api_models.py`: move `CompletionsBody`, `ResponsesBody` (+ alias defaults validator).
-* [x] 2.2 `core/ids.py`: implement `normalize()`, `base_model()` (prefix/dot/date-safe).
-* [x] 2.3 `core/capabilities.py`: move `MODEL_FEATURES`, `MODEL_ALIASES`, `supports()`.
-* [x] 2.4 `core/messages.py`: user/dev/assistant block helpers (text/image/file → Responses items).
-* [x] 2.5 `core/markers.py`: move marker syntax helpers (no DB).
-* [x] 2.6 `core/errors.py`: define typed exceptions.
+* [ ] 2.1 `core/api_models.py`: move `CompletionsBody`, `ResponsesBody` (+ alias defaults validator).
+* [ ] 2.2 `core/ids.py`: implement `normalize()`, `base_model()` (prefix/dot/date-safe).
+* [ ] 2.3 `core/capabilities.py`: move `MODEL_FEATURES`, `MODEL_ALIASES`, `supports()`.
+* [ ] 2.4 `core/messages.py`: user/dev/assistant block helpers (text/image/file → Responses items).
+* [ ] 2.5 `core/markers.py`: move marker syntax helpers (no DB).
+* [ ] 2.6 `core/errors.py`: define typed exceptions.
 
 **Phase 3 — Infra (I/O implementations)**
 
-* [x] 3.1 `infra/openai_client.py`: implement `OpenAIResponsesClient.create()` + `.stream()` (aiohttp).
-* [x] 3.2 `infra/openwebui_store.py`: implement `ItemStore.save_items()` / `load_items()` using `open_webui.models.chats.Chats` (stable key).
+* [ ] 3.1 `infra/openai_client.py`: implement `OpenAIResponsesClient.create()` + `.stream()` (aiohttp).
+* [ ] 3.2 `infra/openwebui_store.py`: implement `ItemStore.save_items()` / `load_items()` using `open_webui.models.chats.Chats` (stable key).
 
 **Phase 4 — Services (domain services with infra)**
 
-* [x] 4.1 `services/history.py`:
+* [ ] 4.1 `services/history.py`:
 
-  * [x] `HistoryPersistence.persist_items_for_message()` (items→ULIDs→markers).
-  * [x] `HistoryBuilder.build_input_from_messages()` (markers→items).
-* [x] 4.2 `services/tools.py`:
+  * [ ] `HistoryPersistence.persist_items_for_message()` (items→ULIDs→markers).
+  * [ ] `HistoryBuilder.build_input_from_messages()` (markers→items).
+* [ ] 4.2 `services/tools.py`:
 
-  * [x] `build_tools(...)` (OpenWebUI registry → OpenAI tools; web_search/MCP; strict JSON Schema).
-  * [x] `execute_tool_calls(...)` (sync/async; safe error mapping).
-* [x] 4.3 `services/routing.py`: `route_auto_model(...)` (helper model to set final model + effort).
+  * [ ] `build_tools(...)` (OpenWebUI registry → OpenAI tools; web_search/MCP; strict JSON Schema).
+  * [ ] `execute_tool_calls(...)` (sync/async; safe error mapping).
+* [ ] 4.3 `services/routing.py`: `route_auto_model(...)` (helper model to set final model + effort).
 
 **Phase 5 — Engine (single-turn orchestration)**
 
-* [x] 5.1 `engine.py`: `ResponsesEngine.run_streaming_turn(...)` (SSE, tool loops, persistence, events).
-* [x] 5.2 Event helpers usage (`utils/events.py`) for status/usage/chat:message/citation/completion.
-* [x] 5.3 Integrate `SessionLogger` (`utils/logging.py`) & emit end-of-run “Logs” citation.
+* [ ] 5.1 `engine.py`: `ResponsesEngine.run_streaming_turn(...)` (SSE, tool loops, persistence, events).
+* [ ] 5.2 Event helpers usage (`utils/events.py`) for status/usage/chat:message/citation/completion.
+* [ ] 5.3 Integrate `SessionLogger` (`utils/logging.py`) & emit end-of-run “Logs” citation.
 
 **Phase 6 — Adapter (OpenWebUI Pipe)**
 
-* [x] 6.1 `main.py`: implement `Pipe` with `pipes()` and `pipe()` (thin adapter).
-* [x] 6.2 `settings.py`: move & scope **Valves** (`PipeValves`, `UserValves`), merge logic from old `Pipe`.
-* [x] 6.3 Ensure **no hard-coded Function ID** logic; rely on `core.ids.normalize()` for capabilities.
+* [ ] 6.1 `main.py`: implement `Pipe` with `pipes()` and `pipe()` (thin adapter).
+* [ ] 6.2 `settings.py`: move & scope **Valves** (`PipeValves`, `UserValves`), merge logic from old `Pipe`.
+* [ ] 6.3 Ensure **no hard-coded Function ID** logic; rely on `core.ids.normalize()` for capabilities.
 
 **Phase 7 — Tests & QA**
 
-* [x] 7.1 Unit tests (core): ids, markers, api_models.
-* [x] 7.2 Service tests: history (builder/persistence), tools (build/execute), routing.
-* [x] 7.3 Engine smoke test: mock SSE stream; assert emissions and loops.
-* [x] 7.4 Backward compatibility: existing chats still resolve markers; Function ID rename does not break.
+* [ ] 7.1 Unit tests (core): ids, markers, api_models.
+* [ ] 7.2 Service tests: history (builder/persistence), tools (build/execute), routing.
+* [ ] 7.3 Engine smoke test: mock SSE stream; assert emissions and loops.
+* [ ] 7.4 Backward compatibility: existing chats still resolve markers; Function ID rename does not break.
 
 **Phase 8 — Packaging / Build**
 
-* [x] 8.1 (Optional) Add `scripts/bundle.py` and `Makefile` `build` target to produce a single-file `openai_responses_manifold.py`.
-* [x] 8.2 Verify the monolith imports cleanly in OpenWebUI.
+* [ ] 8.1 (Optional) Add `scripts/bundle.py` and `Makefile` `build` target to produce a single-file `openai_responses_manifold.py`.
+* [ ] 8.2 Verify the monolith imports cleanly in OpenWebUI.
 
 **Phase 9 — Documentation**
 
-* [x] 9.1 Add **Developer Guide v2** to repo (`docs/DEVELOPER_GUIDE.md`).
-* [x] 9.2 Add this **Work Package** to repo (`docs/WORK_PACKAGE.md`).
-* [x] 9.3 Update README with quick-start and structure summary.
+* [ ] 9.1 Add **Developer Guide v2** to repo (`docs/DEVELOPER_GUIDE.md`).
+* [ ] 9.2 Add this **Work Package** to repo (`docs/WORK_PACKAGE.md`).
+* [ ] 9.3 Update README with quick-start and structure summary.
 
 **Phase 10 — Rollout**
 

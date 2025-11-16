@@ -52,15 +52,17 @@ This project started as an internal tool (200+ hours of optimization and testing
 
 ## Local Development
 
-Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything you edit now lives under `src/openai_responses_manifold/`, where `Pipe`, the runner, and helpers sit alongside the `core`, `features`, and `infra` modules that power the manifold. When you are ready to share your changes, run `make build` and the tooling will run tests and regenerate the monolithic `openai_responses_manifold.py` that Open WebUI expects.
+Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything you edit now lives under `src/openai_responses_manifold/`, where `Pipe`, the runner, and helpers sit alongside the `model_catalog`, `core`, `services`, and `infra` modules that power the manifold. When you are ready to share your changes, run `make build` and the tooling will run tests and regenerate the monolithic `openai_responses_manifold.py` that Open WebUI expects.
 
 ### Project layout
 
 - `src/openai_responses_manifold/main.py` – the Pipe entry point, runner hooks, and valve definitions that Open WebUI expects.
-- `src/openai_responses_manifold/core/` – shared models, markers, capabilities, utilities, and the session logger for reasoning/history tooling.
-- `src/openai_responses_manifold/features/` – feature helpers such as tool builders and the GPT-5 router that keep the manifold aligned with open-webui concepts.
+- `src/openai_responses_manifold/model_catalog.py` – canonical list of supported models/capabilities (edit this when adding or changing models).
+- `src/openai_responses_manifold/core/` – pure helpers: IDs, capabilities, Pydantic API bodies, markers, and message transforms.
+- `src/openai_responses_manifold/services/` – domain helpers for history, tool building/execution, and auto routing.
 - `src/openai_responses_manifold/infra/` – persistence and HTTP client helpers that speak to OpenAI and Open WebUI.
-- `src/openai_responses_manifold/metadata.py` – the manifest block that powers the bundled `openai_responses_manifold.py`.
+- `src/openai_responses_manifold/utils/` – `SessionLogger` plus event helpers shared by the engine and adapter.
+- `docs/DEVELOPER_GUIDE.md` – deep dive into the layered architecture (mirrors the Work Package design).
 
 **Clone and bootstrap**
 

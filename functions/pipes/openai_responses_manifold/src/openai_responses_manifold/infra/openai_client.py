@@ -1,30 +1,30 @@
-"""HTTP client for interacting with the OpenAI Responses endpoint."""
+"""aiohttp-backed client for the OpenAI Responses API."""
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
 from typing import Any
 
 import aiohttp
 
 
 class OpenAIResponsesClient:
-    """Thin wrapper around ``aiohttp`` that streams Responses API events."""
+    """Thin wrapper around ``aiohttp`` with SDK-like method names."""
 
     def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
         self._logger = logging.getLogger(__name__)
 
-    async def stream_events(
+    async def stream(
         self,
         request_body: dict[str, Any],
         *,
         api_key: str,
         base_url: str,
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """Yield SSE events as soon as they arrive."""
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield SSE events from ``POST /responses``."""
 
         session = await self._get_or_init_http_session()
         headers = {
@@ -56,14 +56,14 @@ class OpenAIResponsesClient:
                 if start_idx > 0:
                     del buf[:start_idx]
 
-    async def request(
+    async def create(
         self,
         request_body: dict[str, Any],
         *,
         api_key: str,
         base_url: str,
     ) -> dict[str, Any]:
-        """Send a non-streaming Responses API request."""
+        """Send a non-streaming request to ``POST /responses``."""
 
         session = await self._get_or_init_http_session()
         headers = {
@@ -104,3 +104,6 @@ class OpenAIResponsesClient:
             json_serialize=json.dumps,
         )
         return self._session
+
+
+__all__ = ["OpenAIResponsesClient"]

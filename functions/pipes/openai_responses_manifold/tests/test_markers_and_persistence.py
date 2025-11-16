@@ -1,8 +1,11 @@
-"""Basic tests for marker helpers and persistence utilities."""
+"""Basic tests for marker helpers and history services."""
 
 from __future__ import annotations
 
 import openai_responses_manifold as orm
+from openai_responses_manifold.infra.openwebui_store import ItemStore
+from openai_responses_manifold.services.history import HistoryBuilder, HistoryPersistence
+
 from .fakes import InMemoryChats
 
 
@@ -26,34 +29,37 @@ def test_marker_roundtrip() -> None:
     assert segments[1]["type"] == "marker"
 
 
-def test_persist_and_fetch(chat_store: InMemoryChats) -> None:
-    """Persisted response items can be retrieved by ULID and filtered by model."""
-    chat_store.ensure("chat-123")
+def test_history_persistence_and_builder(chat_store: InMemoryChats) -> None:
+    """Persisted response items can be restored via HistoryBuilder."""
 
-    payloads = [
+    chat_store.ensure("chat-123")
+    store = ItemStore()
+    persistence = HistoryPersistence(store)
+    items = [
         {"type": "reasoning", "content": [{"type": "output_text", "text": "thinking"}]},
     ]
-    marker_blob = orm.persist_openai_response_items(
+    marker_blob = persistence.persist_items_for_message(
         "chat-123",
         "msg-1",
-        payloads,
-        openwebui_model_id="openai_responses.gpt-4o",
+        items,
+        model_id="openai_responses.gpt-4o",
     )
 
     assert orm.contains_marker(marker_blob)
-    ulid = orm.extract_markers(marker_blob, parsed=True)[0]["ulid"]
 
-    fetched = orm.fetch_openai_response_items(
-        "chat-123",
-        [ulid],
+    builder = HistoryBuilder(
+        resolve_items=lambda item_ids, chat_id, model_id: store.load_items(
+            chat_id or "chat-123", item_ids, model_id=model_id
+        )
+    )
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": f"I did this{marker_blob}"},
+    ]
+    rebuilt = builder.build_input_from_messages(
+        messages,
+        chat_id="chat-123",
         openwebui_model_id="openai_responses.gpt-4o",
     )
-    assert ulid in fetched
-    assert fetched[ulid]["content"][0]["text"] == "thinking"
 
-    filtered = orm.fetch_openai_response_items(
-        "chat-123",
-        [ulid],
-        openwebui_model_id="different.model",
-    )
-    assert filtered == {}
+    assert any(item.get("type") == "reasoning" for item in rebuilt)
