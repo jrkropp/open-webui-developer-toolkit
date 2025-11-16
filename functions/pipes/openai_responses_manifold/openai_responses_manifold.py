@@ -868,7 +868,7 @@ class ResponsesEngine:
             }
         )
 
-# === pipe.py ===
+# === main.py ===
 """Open WebUI pipe implementation that delegates to a Responses engine."""
 
 import asyncio
