@@ -121,9 +121,18 @@ openai_responses_manifold/
 
 ```python
 class Pipe:
-    type = "manifold"
-    id = "openai_responses"           # Display name; GUI Function ID may differ
-    valves = PipeValves()             # from settings.py
+    class Valves(PipeValves):
+        """Admin-level valve configuration."""
+
+    class UserValves(PipeUserValves):
+        """Per-user valve overrides."""
+
+    def __init__(self) -> None:
+        self.type = "manifold"
+        self.id = "openai_responses"
+        self.valves = self.Valves()
+        self.logger = SessionLogger.get_logger(__name__)
+        self.engine = ResponsesEngine(logger=self.logger)
 
     async def pipes(self) -> list[dict[str, str]]:
         # Return [{"id": "gpt-4.1", "name": "OpenAI: gpt-4.1"}, ...]
