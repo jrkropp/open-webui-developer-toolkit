@@ -42,7 +42,7 @@ select = [
 
 [tool.mypy]
 python_version = "3.11"
-packages = ["openai_responses_manifold"]
+files = ["src"]
 mypy_path = ["src"]
 ignore_missing_imports = true
 pretty = true

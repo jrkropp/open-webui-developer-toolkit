@@ -13,20 +13,20 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parent
 PIPE_ROOT = SCRIPTS_DIR.parent
 SRC_DIR = PIPE_ROOT / "src"
-PACKAGE_DIR = SRC_DIR / "openai_responses_manifold"
+PACKAGE_DIR = SRC_DIR
 OUTPUT_FILE = PIPE_ROOT / "openai_responses_manifold.py"
 
 MODULE_ORDER = [
-    "openai_responses_manifold/core/capabilities.py",
-    "openai_responses_manifold/app/pipe.py",
-    "openai_responses_manifold/core/markers.py",
-    "openai_responses_manifold/core/session_logger.py",
-    "openai_responses_manifold/core/utils.py",
-    "openai_responses_manifold/core/models.py",
-    "openai_responses_manifold/infra/persistence.py",
-    "openai_responses_manifold/infra/client.py",
-    "openai_responses_manifold/features/tools.py",
-    "openai_responses_manifold/features/router.py",
+    "core/capabilities.py",
+    "pipe.py",
+    "core/markers.py",
+    "core/session_logger.py",
+    "core/utils.py",
+    "core/models.py",
+    "infra/persistence.py",
+    "infra/client.py",
+    "features/tools.py",
+    "features/router.py",
 ]
 
 RELATIVE_IMPORT_RE = re.compile(r"^\s*from\s+\.+\w*")
@@ -46,11 +46,11 @@ def run_pytest() -> int:
 
 
 def extract_manifest_block() -> str:
-    manifest_path = SRC_DIR / "manifest.py"
-    manifest_src = manifest_path.read_text(encoding="utf-8")
-    match = re.search(r'MANIFEST\s*=\s*(?P<doc>"""[\s\S]*?""")', manifest_src)
+    metadata_path = SRC_DIR / "metadata.py"
+    metadata_src = metadata_path.read_text(encoding="utf-8")
+    match = re.search(r'MANIFEST\s*=\s*(?P<doc>"""[\s\S]*?""")', metadata_src)
     if not match:
-        raise RuntimeError("Unable to locate MANIFEST block in src/manifest.py")
+        raise RuntimeError("Unable to locate MANIFEST block in src/metadata.py")
     return match.group("doc").strip()
 
 

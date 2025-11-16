@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from ..core import ResponsesBody, supports
+from core import ResponsesBody, supports
 
 logger = logging.getLogger(__name__)
 

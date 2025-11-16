@@ -17,7 +17,7 @@ Use the version in the alpha-preview or main branches instead.
 
 from __future__ import annotations
 
-# === openai_responses_manifold/core/capabilities.py ===
+# === core/capabilities.py ===
 """Registry for OpenAI model capabilities and pseudo-model aliases.
 
 To add support for a a new OpenAI model:
@@ -176,7 +176,7 @@ __all__ = [
     "supports",
 ]
 
-# === openai_responses_manifold/app/pipe.py ===
+# === pipe.py ===
 """Open WebUI pipe implementation backed by a modular runner."""
 
 
@@ -198,6 +198,17 @@ from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
 from pydantic import BaseModel, Field
 
+from core import (
+    CompletionsBody,
+    ResponsesBody,
+    SessionLogger,
+    merge_usage_stats,
+    supports,
+    wrap_code_block,
+    wrap_event_emitter,
+)
+from features import build_tools, route_gpt5_auto
+from infra import OpenAIResponsesClient, persist_openai_response_items
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -1070,7 +1081,7 @@ class Pipe:
         }
         return global_valves.model_copy(update=update)
 
-# === openai_responses_manifold/core/markers.py ===
+# === core/markers.py ===
 """Helpers for encoding/decoding hidden response markers."""
 
 
@@ -1173,7 +1184,7 @@ def split_text_by_markers(text: str) -> list[dict[str, str]]:
         segments.append({"type": "text", "text": text[last:]})
     return segments
 
-# === openai_responses_manifold/core/session_logger.py ===
+# === core/session_logger.py ===
 """Request-scoped logger used throughout the manifold."""
 
 
@@ -1222,7 +1233,7 @@ class SessionLogger:
 
         return logger
 
-# === openai_responses_manifold/core/utils.py ===
+# === core/utils.py ===
 """General-purpose helpers shared across modules."""
 
 
@@ -1275,7 +1286,7 @@ def wrap_code_block(text: str, language: str = "python") -> str:
 
     return f"```{language}\n{text}\n```"
 
-# === openai_responses_manifold/core/models.py ===
+# === core/models.py ===
 """Pydantic request/response models and transformations."""
 
 
@@ -1286,6 +1297,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
 
+from infra.persistence import fetch_openai_response_items
 
 logger = logging.getLogger(__name__)
 
@@ -1665,7 +1677,7 @@ class ResponsesBody(BaseModel):
             **extra_params,
         )
 
-# === openai_responses_manifold/infra/persistence.py ===
+# === infra/persistence.py ===
 """Persistence helpers for storing auxiliary Responses items in Open WebUI."""
 
 
@@ -1675,6 +1687,7 @@ from typing import Any
 
 from open_webui.models.chats import Chats
 
+from core.markers import create_marker, generate_item_id, wrap_marker
 
 
 def persist_openai_response_items(
@@ -1743,7 +1756,7 @@ def fetch_openai_response_items(
         lookup[item_id] = item.get("payload", {})
     return lookup
 
-# === openai_responses_manifold/infra/client.py ===
+# === infra/client.py ===
 """HTTP client for interacting with the OpenAI Responses endpoint."""
 
 
@@ -1851,7 +1864,7 @@ class OpenAIResponsesClient:
         )
         return self._session
 
-# === openai_responses_manifold/features/tools.py ===
+# === features/tools.py ===
 """Helpers for constructing OpenAI tool payloads."""
 
 
@@ -1860,6 +1873,7 @@ import json
 import logging
 from typing import Any
 
+from core import ResponsesBody, supports
 
 logger = logging.getLogger(__name__)
 
@@ -1937,7 +1951,7 @@ def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
 
     return list(seen.values())
 
-# === openai_responses_manifold/features/router.py ===
+# === features/router.py ===
 """Model routing helpers (e.g., GPT-5 auto selection)."""
 
 
@@ -1947,6 +1961,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from core import ResponsesBody, supports
+from infra.client import OpenAIResponsesClient
 
 logger = logging.getLogger(__name__)
 

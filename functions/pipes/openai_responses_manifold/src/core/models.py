@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
 
-from ..infra.persistence import fetch_openai_response_items
+from infra.persistence import fetch_openai_response_items
 from .capabilities import alias_defaults, base_model
 from .markers import (
     contains_marker,

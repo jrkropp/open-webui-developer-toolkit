@@ -52,7 +52,7 @@ This project started as an internal tool (200+ hours of optimization and testing
 
 ## Local Development
 
-Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable, everything you actually edit lives under `src/openai_responses_manifold/`. When you are ready to share your changes, run `make build` and the tooling will run tests and regenerate the monolithic `openai_responses_manifold.py` that Open WebUI expects.
+Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable, everything you actually edit lives directly under `src/`. When you are ready to share your changes, run `make build` and the tooling will run tests and regenerate the monolithic `openai_responses_manifold.py` that Open WebUI expects.
 
 **Clone and bootstrap**
 

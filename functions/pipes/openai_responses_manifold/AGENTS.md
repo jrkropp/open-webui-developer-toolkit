@@ -15,8 +15,11 @@ functions/pipes/openai_responses_manifold/
 ├─ scripts/
 │  └─ build.py              # pytest + bundler entrypoint
 ├─ src/
-│  ├─ openai_responses_manifold/  # edit code here (capabilities, pipe, runner, etc.)
-│  └─ manifest.py                 # declares requirements for Open WebUI
+│  ├─ core/                 # edit code here (capabilities, models, utilities)
+│  ├─ features/
+│  ├─ infra/
+│  ├─ pipe.py
+│  └─ metadata.py           # declares requirements for Open WebUI
 ├─ tests/                   # pytest suite
 └─ openai_responses_manifold.py   # generated artifact (never hand-edit)
 ```
@@ -42,8 +45,8 @@ functions/pipes/openai_responses_manifold/
 7. Review `git status` to confirm both the `src/` edits and the regenerated artifact are staged.
 
 ## Notes
-- If you add a dependency, declare it in `src/manifest.py` under `requirements`.
-- `tests/test_dependencies_sync.py` fails if `pyproject.toml` and `src/manifest.py` disagree on dependencies—update both together.
+- If you add a dependency, declare it in `src/metadata.py` under `requirements`.
+- `tests/test_dependencies_sync.py` fails if `pyproject.toml` and `src/metadata.py` disagree on dependencies—update both together.
 - Update this guide whenever the workflow or commands change.
 - Pre-commit hooks live at the repo root (`.pre-commit-config.yaml`) but are scoped to this directory, so feel free to enable them.
-- Source modules now live under `src/openai_responses_manifold/`; `src/__init__.py` only exists to keep older import paths working.
+- Source modules now live directly under `src/`; always edit code there and rebuild the bundle via `make build`.

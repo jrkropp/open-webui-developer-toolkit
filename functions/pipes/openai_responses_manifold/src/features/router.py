@@ -7,8 +7,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..core import ResponsesBody, supports
-from ..infra.client import OpenAIResponsesClient
+from core import ResponsesBody, supports
+from infra.client import OpenAIResponsesClient
 
 logger = logging.getLogger(__name__)
 
