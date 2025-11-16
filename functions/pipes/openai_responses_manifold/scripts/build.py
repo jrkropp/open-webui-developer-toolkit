@@ -78,11 +78,12 @@ def _first_author_name(project: dict[str, Any]) -> str:
 def _render_manifest_docstring() -> str:
     data = _load_pyproject()
     project = data.get("project") or {}
+    open_webui_metadata = project.get("open_webui_metadata") or {}
     custom_keys = {
-        "open_webui_id": project.get("open_webui_id"),
-        "open_webui_author_url": project.get("open_webui_author_url"),
-        "open_webui_git_url": project.get("open_webui_git_url"),
-        "open_webui_required_version": project.get("open_webui_required_version"),
+        "open_webui_id": open_webui_metadata.get("open_webui_id"),
+        "open_webui_author_url": open_webui_metadata.get("open_webui_author_url"),
+        "open_webui_git_url": open_webui_metadata.get("open_webui_git_url"),
+        "open_webui_required_version": open_webui_metadata.get("open_webui_required_version"),
     }
     missing = [key for key, value in custom_keys.items() if not value]
     if not _first_author_name(project):
@@ -112,7 +113,7 @@ def _render_manifest_docstring() -> str:
 
     doc_lines = [f"{key}: {value}" for key, value in fields if value]
 
-    notes = (project.get("open_webui_notes") or "").strip()
+    notes = (open_webui_metadata.get("open_webui_notes") or "").strip()
     if notes:
         doc_lines.extend(["", notes])
 
