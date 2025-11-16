@@ -13,7 +13,6 @@ import re
 from copy import deepcopy
 from typing import Any
 
-MODEL_PREFIX = "openai_responses."
 DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 EMPTY_FEATURES: frozenset[str] = frozenset()
 
@@ -110,11 +109,27 @@ MODEL_ALIASES: dict[str, dict[str, Any]] = {
     "o4-mini-high": {"base_model": "o4-mini", "params": {"reasoning": {"effort": "high"}}},
 }
 
+def _is_known_model(model_id: str) -> bool:
+    return model_id in MODEL_FEATURES or model_id in MODEL_ALIASES
+
 
 def _normalize_model_id(model_id: str) -> str:
-    model = (model_id or "").strip()
-    model = model.removeprefix(MODEL_PREFIX)
-    return DATE_SUFFIX_RE.sub("", model.lower())
+    """Normalize Open WebUI model identifiers and aliases."""
+
+    raw = (model_id or "").strip().lower()
+    no_date = DATE_SUFFIX_RE.sub("", raw)
+
+    if _is_known_model(no_date):
+        return no_date
+
+    dot_index = no_date.find(".")
+    if dot_index != -1:
+        tail = no_date[dot_index + 1 :]
+        tail_no_date = DATE_SUFFIX_RE.sub("", tail)
+        if _is_known_model(tail_no_date):
+            return tail_no_date
+
+    return no_date
 
 
 def normalize(model_id: str) -> str:

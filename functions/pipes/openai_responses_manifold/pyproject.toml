@@ -1,13 +1,23 @@
 [project]
 name = "openai-responses-manifold"
-version = "0.1.0"
-description = "OpenAI Responses manifold for Open WebUI"
+version = "0.9.7"
+description = "OpenAI Responses API Manifold"
 requires-python = ">=3.11"
-dependencies = [
-  "aiohttp",
-  "fastapi",
-  "pydantic>=2",
+license = { text = "MIT" }
+authors = [
+  { name = "Justin Kropp" },
 ]
+# Dependencies listed here are mirrored into the Open WebUI manifest requirements so the host installs them automatically.
+dependencies = ["aiohttp", "fastapi","pydantic>=2"]
+open_webui_id = "openai_responses"
+open_webui_author_url = "https://github.com/jrkropp"
+open_webui_git_url = "https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py"
+open_webui_required_version = "0.6.28"
+open_webui_notes = """
+NOTES - PLEASE READ:
+This is an experimental restructure build that modularizes the pipe under src/ and re-bundles it into a single file.
+Use the version in the alpha-preview or main branches instead.
+"""
 
 [project.optional-dependencies]
 dev = [

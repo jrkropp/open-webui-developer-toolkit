@@ -52,7 +52,15 @@ This project started as an internal tool (200+ hours of optimization and testing
 
 ## Local Development
 
-Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable, everything you actually edit lives directly under `src/`. When you are ready to share your changes, run `make build` and the tooling will run tests and regenerate the monolithic `openai_responses_manifold.py` that Open WebUI expects.
+Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything you edit now lives under `src/openai_responses_manifold/`, where `Pipe`, the runner, and helpers sit alongside the `core`, `features`, and `infra` modules that power the manifold. When you are ready to share your changes, run `make build` and the tooling will run tests and regenerate the monolithic `openai_responses_manifold.py` that Open WebUI expects.
+
+### Project layout
+
+- `src/openai_responses_manifold/pipe.py` – the pipe entry point, runner hooks, and Valve definitions that Open WebUI expects.
+- `src/openai_responses_manifold/core/` – shared models, markers, capabilities, utilities, and the session logger for reasoning/history tooling.
+- `src/openai_responses_manifold/features/` – feature helpers such as tool builders and the GPT-5 router that keep the manifold aligned with open-webui concepts.
+- `src/openai_responses_manifold/infra/` – persistence and HTTP client helpers that speak to OpenAI and Open WebUI.
+- `src/openai_responses_manifold/metadata.py` – the manifest block that powers the bundled `openai_responses_manifold.py`.
 
 **Clone and bootstrap**
 
@@ -72,12 +80,12 @@ make test       # run pytest
 make lint       # run Ruff checks
 make lint-fix   # Ruff checks with autofix
 make format     # apply Ruff formatting fixes
-make typecheck  # run mypy against src/
+make typecheck  # run mypy against openai_responses_manifold
 make build      # pytest + regenerate openai_responses_manifold.py for Open WebUI
 make clean      # remove build artefacts and caches
 ```
 
-Use `make install` when you only need runtime dependencies (e.g., smoke-testing inside Open WebUI). Otherwise stay in editable mode, make changes in `src/`, and run `make build` whenever you need a fresh single-file bundle to copy/paste or distribute. If you ever need sdists/wheels for PyPI-style distribution, invoke `python -m build` directly.
+Use `make install` when you only need runtime dependencies (e.g., smoke-testing inside Open WebUI). Otherwise stay in editable mode, make changes in `src/openai_responses_manifold/`, and run `make build` whenever you need a fresh single-file bundle to copy/paste or distribute. If you ever need sdists/wheels for PyPI-style distribution, invoke `python -m build` directly.
 
 ### Testing approach
 

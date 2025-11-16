@@ -19,7 +19,7 @@ from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
 from pydantic import BaseModel, Field
 
-from core import (
+from .core import (
     CompletionsBody,
     ResponsesBody,
     SessionLogger,
@@ -28,8 +28,8 @@ from core import (
     wrap_code_block,
     wrap_event_emitter,
 )
-from features import build_tools, route_gpt5_auto
-from infra import OpenAIResponsesClient, persist_openai_response_items
+from .features import build_tools, route_gpt5_auto
+from .infra import OpenAIResponsesClient, persist_openai_response_items
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -784,7 +784,7 @@ class Pipe:
             extra_tools=getattr(completions_body, "extra_tools", None),
         )
 
-        if tools and supports("function_calling", openwebui_model_id):
+        if tools and supports("function_calling", responses_body.model):
             model = Models.get_model_by_id(openwebui_model_id)
             if model:
                 params = dict(model.params or {})

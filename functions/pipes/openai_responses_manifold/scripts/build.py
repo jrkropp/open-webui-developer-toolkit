@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Bundle the src/ package back into a single openai_responses_manifold.py file."""
+"""Bundle the src/openai_responses_manifold package back into a single openai_responses_manifold.py file."""
 
 from __future__ import annotations
 
@@ -9,12 +9,16 @@ import subprocess
 import sys
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
+import tomllib
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 PIPE_ROOT = SCRIPTS_DIR.parent
 SRC_DIR = PIPE_ROOT / "src"
-PACKAGE_DIR = SRC_DIR
+PACKAGE_NAME = "openai_responses_manifold"
+PACKAGE_DIR = SRC_DIR / PACKAGE_NAME
 OUTPUT_FILE = PIPE_ROOT / "openai_responses_manifold.py"
+PYPROJECT_FILE = PIPE_ROOT / "pyproject.toml"
 
 MODULE_ORDER = [
     "core/capabilities.py",
@@ -45,23 +49,113 @@ def run_pytest() -> int:
     return proc.returncode
 
 
+def _load_pyproject() -> dict[str, Any]:
+    with PYPROJECT_FILE.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def _license_text(project: dict[str, Any]) -> str:
+    license_value = project.get("license")
+    if isinstance(license_value, dict):
+        return license_value.get("text") or license_value.get("file") or ""
+    if isinstance(license_value, str):
+        return license_value
+    return ""
+
+
+def _first_author_name(project: dict[str, Any]) -> str:
+    authors = project.get("authors") or []
+    for entry in authors:
+        if isinstance(entry, dict) and entry.get("name"):
+            return entry["name"]
+        if isinstance(entry, str) and entry.strip():
+            return entry.strip()
+    return ""
+
+
+def _render_manifest_docstring() -> str:
+    data = _load_pyproject()
+    project = data.get("project") or {}
+    custom_keys = {
+        "open_webui_id": project.get("open_webui_id"),
+        "open_webui_author_url": project.get("open_webui_author_url"),
+        "open_webui_git_url": project.get("open_webui_git_url"),
+        "open_webui_required_version": project.get("open_webui_required_version"),
+    }
+    missing = [key for key, value in custom_keys.items() if not value]
+    if not _first_author_name(project):
+        missing.append("authors[0].name")
+    if missing:
+        raise RuntimeError(
+            f"Missing manifest metadata in pyproject.toml: {', '.join(sorted(missing))}"
+        )
+
+    requirements_list = project.get("dependencies") or []
+    requirements = ", ".join(requirements_list)
+
+    author_name = _first_author_name(project)
+
+    fields: list[tuple[str, str]] = [
+        ("title", project.get("description") or project.get("name") or ""),
+        ("id", custom_keys["open_webui_id"]),
+        ("author", author_name),
+        ("author_url", custom_keys["open_webui_author_url"]),
+        ("git_url", custom_keys["open_webui_git_url"]),
+        ("description", project.get("description") or ""),
+        ("required_open_webui_version", custom_keys["open_webui_required_version"]),
+        ("requirements", requirements),
+        ("version", project.get("version", "")),
+        ("license", _license_text(project)),
+    ]
+
+    doc_lines = [f"{key}: {value}" for key, value in fields if value]
+
+    notes = (project.get("open_webui_notes") or "").strip()
+    if notes:
+        doc_lines.extend(["", notes])
+
+    return "\n".join(doc_lines)
+
+
 def extract_manifest_block() -> str:
-    metadata_path = SRC_DIR / "metadata.py"
-    metadata_src = metadata_path.read_text(encoding="utf-8")
-    match = re.search(r'MANIFEST\s*=\s*(?P<doc>"""[\s\S]*?""")', metadata_src)
-    if not match:
-        raise RuntimeError("Unable to locate MANIFEST block in src/metadata.py")
-    return match.group("doc").strip()
+    manifest = _render_manifest_docstring()
+    if not manifest.strip():
+        raise RuntimeError("Generated manifest docstring is empty")
+    return manifest.strip()
 
 
 def clean_module_source(module_path: Path) -> str:
     source = module_path.read_text(encoding="utf-8").replace("\r\n", "\n")
-    source = FUTURE_IMPORT_RE.sub("", source)
+    source = _strip_future_imports(source)
     source, alias_lines = _strip_relative_imports(source)
-    source = source.strip()
+    source = _collapse_blank_lines(source).strip()
     if alias_lines:
         source = _inject_alias_lines(source, alias_lines)
+        source = _collapse_blank_lines(source).strip()
     return source
+
+
+def _strip_future_imports(source: str) -> str:
+    """Remove ``from __future__`` imports plus the blank line that followed them."""
+
+    lines = source.splitlines()
+    cleaned: list[str] = []
+    drop_next_blank = False
+
+    for line in lines:
+        if FUTURE_IMPORT_RE.match(line):
+            drop_next_blank = True
+            continue
+
+        if drop_next_blank:
+            drop_next_blank = False
+            if line.strip():
+                cleaned.append(line)
+            continue
+
+        cleaned.append(line)
+
+    return "\n".join(cleaned)
 
 
 def _strip_relative_imports(source: str) -> tuple[str, list[str]]:
@@ -95,6 +189,29 @@ def _strip_relative_imports(source: str) -> tuple[str, list[str]]:
         cleaned.append(line)
 
     return "\n".join(cleaned), alias_lines
+
+
+def _collapse_blank_lines(source: str, *, max_consecutive: int = 2) -> str:
+    """Ensure we never emit more than ``max_consecutive`` empty lines in a row."""
+
+    if max_consecutive < 1:
+        return source
+
+    lines = source.splitlines()
+    collapsed: list[str] = []
+    blank_count = 0
+
+    for line in lines:
+        if line.strip():
+            blank_count = 0
+            collapsed.append(line)
+            continue
+
+        blank_count += 1
+        if blank_count <= max_consecutive:
+            collapsed.append("")
+
+    return "\n".join(collapsed)
 
 
 def _alias_lines_for_import(statement: str) -> list[str]:
@@ -145,11 +262,12 @@ def _inject_alias_lines(source: str, alias_lines: list[str]) -> str:
 
 def run_build() -> int:
     log("Bundling openai_responses_manifold.py…")
-    manifest_block = extract_manifest_block()
+    manifest_text = extract_manifest_block()
+    manifest_block = f'"""\n{manifest_text}\n"""'
     sections: list[str] = [manifest_block, "", "from __future__ import annotations", ""]
 
     for module in MODULE_ORDER:
-        module_path = SRC_DIR / module
+        module_path = PACKAGE_DIR / module
         if not module_path.exists():
             raise RuntimeError(f"Module not found: {module}")
         cleaned = clean_module_source(module_path)
@@ -163,7 +281,7 @@ def run_build() -> int:
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Bundle src/ into openai_responses_manifold.py")
+    parser = argparse.ArgumentParser(description="Bundle src/openai_responses_manifold/ into openai_responses_manifold.py")
     parser.add_argument(
         "--skip-tests", action="store_true", help="Skip running pytest before building."
     )

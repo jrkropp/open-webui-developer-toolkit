@@ -7,7 +7,7 @@ from typing import Any
 
 from open_webui.models.chats import Chats
 
-from core.markers import create_marker, generate_item_id, wrap_marker
+from ..core.markers import create_marker, generate_item_id, wrap_marker
 
 
 def persist_openai_response_items(

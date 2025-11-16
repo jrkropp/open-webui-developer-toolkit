@@ -27,7 +27,7 @@ format:
 	$(PYTHON) -m ruff format src tests
 
 typecheck:
-	$(PYTHON) -m mypy --config-file pyproject.toml --package src
+	$(PYTHON) -m mypy --config-file pyproject.toml --package openai_responses_manifold
 
 build:
 	$(PYTHON) scripts/build.py

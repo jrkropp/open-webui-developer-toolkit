@@ -4,13 +4,13 @@ id: openai_responses
 author: Justin Kropp
 author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
-description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
+description: OpenAI Responses API Manifold
 required_open_webui_version: 0.6.28
 requirements: aiohttp, fastapi, pydantic>=2
 version: 0.9.7
 license: MIT
 
-DISCLAIMER - PLEASE READ:
+NOTES - PLEASE READ:
 This is an experimental restructure build that modularizes the pipe under src/ and re-bundles it into a single file.
 Use the version in the alpha-preview or main branches instead.
 """
@@ -27,13 +27,10 @@ To add support for a a new OpenAI model:
 * (Optional) Add an entry to ``MODEL_ALIASES`` for pseudo-model shortcuts
 """
 
-
-
 import re
 from copy import deepcopy
 from typing import Any
 
-MODEL_PREFIX = "openai_responses."
 DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 EMPTY_FEATURES: frozenset[str] = frozenset()
 
@@ -130,11 +127,27 @@ MODEL_ALIASES: dict[str, dict[str, Any]] = {
     "o4-mini-high": {"base_model": "o4-mini", "params": {"reasoning": {"effort": "high"}}},
 }
 
+def _is_known_model(model_id: str) -> bool:
+    return model_id in MODEL_FEATURES or model_id in MODEL_ALIASES
+
 
 def _normalize_model_id(model_id: str) -> str:
-    model = (model_id or "").strip()
-    model = model.removeprefix(MODEL_PREFIX)
-    return DATE_SUFFIX_RE.sub("", model.lower())
+    """Normalize Open WebUI model identifiers and aliases."""
+
+    raw = (model_id or "").strip().lower()
+    no_date = DATE_SUFFIX_RE.sub("", raw)
+
+    if _is_known_model(no_date):
+        return no_date
+
+    dot_index = no_date.find(".")
+    if dot_index != -1:
+        tail = no_date[dot_index + 1 :]
+        tail_no_date = DATE_SUFFIX_RE.sub("", tail)
+        if _is_known_model(tail_no_date):
+            return tail_no_date
+
+    return no_date
 
 
 def normalize(model_id: str) -> str:
@@ -179,8 +192,6 @@ __all__ = [
 # === pipe.py ===
 """Open WebUI pipe implementation backed by a modular runner."""
 
-
-
 import asyncio
 import datetime
 import inspect
@@ -198,17 +209,6 @@ from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
 from pydantic import BaseModel, Field
 
-from core import (
-    CompletionsBody,
-    ResponsesBody,
-    SessionLogger,
-    merge_usage_stats,
-    supports,
-    wrap_code_block,
-    wrap_event_emitter,
-)
-from features import build_tools, route_gpt5_auto
-from infra import OpenAIResponsesClient, persist_openai_response_items
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -963,7 +963,7 @@ class Pipe:
             extra_tools=getattr(completions_body, "extra_tools", None),
         )
 
-        if tools and supports("function_calling", openwebui_model_id):
+        if tools and supports("function_calling", responses_body.model):
             model = Models.get_model_by_id(openwebui_model_id)
             if model:
                 params = dict(model.params or {})
@@ -1084,8 +1084,6 @@ class Pipe:
 # === core/markers.py ===
 """Helpers for encoding/decoding hidden response markers."""
 
-
-
 import re
 import secrets
 from typing import Any
@@ -1187,8 +1185,6 @@ def split_text_by_markers(text: str) -> list[dict[str, str]]:
 # === core/session_logger.py ===
 """Request-scoped logger used throughout the manifold."""
 
-
-
 import logging
 import sys
 from collections import defaultdict, deque
@@ -1235,8 +1231,6 @@ class SessionLogger:
 
 # === core/utils.py ===
 """General-purpose helpers shared across modules."""
-
-
 
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -1289,15 +1283,12 @@ def wrap_code_block(text: str, language: str = "python") -> str:
 # === core/models.py ===
 """Pydantic request/response models and transformations."""
 
-
-
 import json
 import logging
 from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
 
-from infra.persistence import fetch_openai_response_items
 
 logger = logging.getLogger(__name__)
 
@@ -1680,14 +1671,10 @@ class ResponsesBody(BaseModel):
 # === infra/persistence.py ===
 """Persistence helpers for storing auxiliary Responses items in Open WebUI."""
 
-
-
 import datetime
 from typing import Any
 
 from open_webui.models.chats import Chats
-
-from core.markers import create_marker, generate_item_id, wrap_marker
 
 
 def persist_openai_response_items(
@@ -1758,8 +1745,6 @@ def fetch_openai_response_items(
 
 # === infra/client.py ===
 """HTTP client for interacting with the OpenAI Responses endpoint."""
-
-
 
 import json
 import logging
@@ -1867,13 +1852,10 @@ class OpenAIResponsesClient:
 # === features/tools.py ===
 """Helpers for constructing OpenAI tool payloads."""
 
-
-
 import json
 import logging
 from typing import Any
 
-from core import ResponsesBody, supports
 
 logger = logging.getLogger(__name__)
 
@@ -1954,15 +1936,11 @@ def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
 # === features/router.py ===
 """Model routing helpers (e.g., GPT-5 auto selection)."""
 
-
-
 import json
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from core import ResponsesBody, supports
-from infra.client import OpenAIResponsesClient
 
 logger = logging.getLogger(__name__)
 
