@@ -15,7 +15,7 @@ async def test_pipes_listing_and_pipe_smoke(monkeypatch: pytest.MonkeyPatch) -> 
     pipe = orm.Pipe()
 
     async def fake_streaming_loop(
-        self: orm.ResponseRunner,
+        self: orm.ResponsesEngine,
         body: orm.ResponsesBody,
         valves: orm.Pipe.Valves,
         event_emitter,
@@ -25,7 +25,7 @@ async def test_pipes_listing_and_pipe_smoke(monkeypatch: pytest.MonkeyPatch) -> 
         await event_emitter({"type": "chat:message", "data": {"content": "stub"}})
         return "final-output"
 
-    monkeypatch.setattr(orm.ResponseRunner, "stream", fake_streaming_loop, raising=False)
+    monkeypatch.setattr(orm.ResponsesEngine, "stream", fake_streaming_loop, raising=False)
     monkeypatch.setattr(orm, "build_tools", lambda *args, **kwargs: [], raising=False)
 
     events: list[dict[str, Any]] = []

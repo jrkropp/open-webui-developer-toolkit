@@ -11,6 +11,7 @@ from .capabilities import (
 )
 from .markers import (
     ULID_LENGTH,
+    contains_marker,
     create_marker,
     extract_markers,
     generate_item_id,
@@ -33,6 +34,7 @@ __all__ = [
     "normalize",
     "ResponsesBody",
     "SessionLogger",
+    "contains_marker",
     "create_marker",
     "extract_markers",
     "generate_item_id",

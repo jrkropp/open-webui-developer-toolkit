@@ -92,7 +92,7 @@ Use `make install` when you only need runtime dependencies (e.g., smoke-testing 
 The pytest suite now mixes fast unit tests with scenario-style orchestrator tests:
 
 - `tests/fakes.py` provides reusable doubles (fake Responses client, spy event emitter, in-memory Chats store) so tests can drive the streaming loop without real network/database calls.
-- Scenario coverage (`tests/test_runner_scenarios.py`) exercises ResponseRunner end-to-end: streaming completions, tool loops, and error/log flushing behavior.
+- Scenario coverage (`tests/test_runner_scenarios.py`) exercises `ResponsesEngine` end-to-end: streaming completions, tool loops, and error/log flushing behavior.
 - Module-focused tests (markers, request shaping, tool building, etc.) catch regressions in helpers used throughout the bundle.
 
 Run everything via `make test`. Scenario tests rely on asyncio; pytest is already configured with `asyncio` plugin, so no extra flags are needed.

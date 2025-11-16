@@ -1,4 +1,4 @@
-"""Scenario tests for the Responses runner orchestration."""
+"""Scenario tests for the Responses engine orchestration."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ async def test_streaming_flow_emits_single_completion(
             {"type": "response.completed"},
         ]
     )
-    runner = orm.ResponseRunner(
+    runner = orm.ResponsesEngine(
         client=fake_responses_client, logger=orm.SessionLogger.get_logger(__name__)
     )
 
@@ -85,7 +85,7 @@ async def test_function_call_loop_executes_local_tools(
             {"type": "response.completed"},
         ]
     )
-    runner = orm.ResponseRunner(
+    runner = orm.ResponsesEngine(
         client=fake_responses_client, logger=orm.SessionLogger.get_logger("runner")
     )
     chat_store.ensure("chat-9", {"id": "chat-9"})
@@ -126,7 +126,7 @@ async def test_errors_emit_log_citation(
     fake_responses_client.enqueue_stream(
         [{"type": "response.error", "error": {"message": "boom"}}]
     )
-    runner = orm.ResponseRunner(
+    runner = orm.ResponsesEngine(
         client=fake_responses_client, logger=orm.SessionLogger.get_logger("runner")
     )
     chat_store.ensure("chat-err", {"id": "chat-err"})

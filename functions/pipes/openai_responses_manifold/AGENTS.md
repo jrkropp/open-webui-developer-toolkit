@@ -2,51 +2,134 @@
 
 Keep this note open whenever you work in `functions/pipes/openai_responses_manifold/`.
 
-## Purpose
-- Provides the OpenAI Responses API integration for Open WebUI.
-- The checked-in `openai_responses_manifold.py` is generated; only edit modules under `src/`.
+## What this manifold is
 
-## Folder Map
+- An **Open WebUI function/pipe** that speaks the **OpenAI Responses API** (streaming, tools, reasoning, web search, GPT‑5 routing, etc.).
+- Open WebUI imports a **single file**: `openai_responses_manifold.py`.
+- That file is **generated**; you should only edit code under `src/openai_responses_manifold/` and then rebuild.
+
+At runtime, there are three main layers:
+
+- **Core** (`src/openai_responses_manifold/core/`)
+  - Capabilities table and model aliases (`capabilities.py`).
+  - Pydantic models (`CompletionsBody`, `ResponsesBody`) and conversion helpers.
+  - Marker utilities and the `SessionLogger`.
+- **Engine** (`src/openai_responses_manifold/engine.py`)
+  - `ResponsesEngine` – the “Responses API engine” that:
+    - Streams events from OpenAI.
+    - Orchestrates tool/function calls and retries.
+    - Emits Open WebUI events (`chat:message`, `chat:completion`, `citation`, `notification`, status).
+    - Persists extra items via the infra layer.
+- **Pipe adapter** (`src/openai_responses_manifold/pipe.py`)
+  - `class Pipe` with nested `Valves` / `UserValves` – exactly what Open WebUI expects.
+  - Shapes Open WebUI’s `body` / `__user__` / `__metadata__` / `__tools__` into a `ResponsesBody`.
+  - Calls helpers from `features/`, then delegates the actual work to `ResponsesEngine`.
+
+Other important pieces:
+
+- `src/openai_responses_manifold/features/` – tool building and GPT‑5 router (`build_tools`, `route_gpt5_auto`).
+- `src/openai_responses_manifold/infra/` – `OpenAIResponsesClient` and persistence helpers.
+- `tests/` – pytest suite that imports modules directly from `src/` (via `tests/conftest.py` stubs) so helpers run against the editable package.
+- `scripts/build.py` – the bundler that flattens the package into the single file that Open WebUI imports.
+
+## Folder map (current layout)
+
 ```
 functions/pipes/openai_responses_manifold/
-├─ AGENTS.md                # This guide
-├─ pyproject.toml           # packaging + pytest/ruff config for this pipe
-├─ Makefile                 # dev shortcuts (install/test/lint/format/build/dist/clean)
+├─ AGENTS.md
+├─ pyproject.toml          # packaging + pytest/ruff + Open WebUI manifest metadata
+├─ Makefile                # dev shortcuts (install/test/lint/format/build/clean)
 ├─ scripts/
-│  └─ build.py              # pytest + bundler entrypoint
+│  └─ build.py             # pytest + bundler entrypoint
 ├─ src/
-│  ├─ core/                 # edit code here (capabilities, models, utilities)
-│  ├─ features/
-│  ├─ infra/
-│  ├─ pipe.py
-│  └─ metadata.py           # declares requirements for Open WebUI
-├─ tests/                   # pytest suite
+│  └─ openai_responses_manifold/
+│     ├─ __init__.py       # re-exports Pipe, ResponsesEngine, core helpers
+│     ├─ core/             # capabilities, models, markers, session logger, utils
+│     ├─ engine.py         # ResponsesEngine + EventEmitter
+│     ├─ features/         # tool building, GPT-5 router, etc.
+│     ├─ infra/            # OpenAIResponsesClient + persistence helpers
+│     ├─ settings.py       # shared Pipe valve definitions/defaults
+│     └─ pipe.py           # Pipe + nested Valves/UserValves (Open WebUI adapter)
+├─ tests/                  # pytest suite (imports package modules via conftest)
 └─ openai_responses_manifold.py   # generated artifact (never hand-edit)
 ```
 
-## Key Commands
+## How the bundler works
+
+- `scripts/build.py` is the **single source of truth** for bundling:
+  - Runs `pytest` by default before bundling.
+  - Reads `src/openai_responses_manifold/` in a fixed `MODULE_ORDER`:
+
+  - For each module in that order:
+    - Removes `from __future__ import ...`.
+    - Strips **relative imports** (`from .something import ...`) and relies on earlier sections in the bundle defining the referenced names.
+    - Optionally injects small alias lines for `from .module import name as alias` patterns.
+  - Prepends a manifest docstring at the top, which is derived from `pyproject.toml` (see `_render_manifest_docstring`).
+
+Key implications for agents:
+
+- If you add a new module under `src/openai_responses_manifold/`, you **must**:
+  - Add it to `MODULE_ORDER` in `scripts/build.py` at the correct place in the dependency order.
+  - Use **relative imports** inside the package; the bundler will include the module and strip those imports, but the definitions will already be present in the bundle.
+- Never edit `openai_responses_manifold.py` by hand; it will be overwritten by `make build`.
+
+## Pipe & valves contract
+
+- Open WebUI requires this shape:
+
+  ```python
+  class Pipe:
+      class Valves(BaseModel): ...
+      class UserValves(BaseModel): ...
+      async def pipes(...): ...
+      async def pipe(...): ...
+  ```
+
+- In this manifold:
+  - `Pipe.Valves` and `Pipe.UserValves` live in `pipe.py` and **must remain nested** inside `Pipe`.
+  - Admin defaults come from `self.valves = self.Valves()`.
+  - Per‑user overrides come from `__user__["valves"]`, validated into `Pipe.UserValves`.
+  - The merge logic lives in `Pipe._merge_valves(...)`, which produces the effective `valves` object used by `ResponsesEngine` and helpers.
+- Do **not** move `Valves` / `UserValves` out of `Pipe`; you can, however, refactor shared behavior into other helpers and keep the nested classes as thin wrappers if needed.
+
+## How tests see the engine and pipe
+
+- `tests/conftest.py`:
+  - Installs lightweight stubs for `open_webui` imports (Chats, Models, misc helpers).
+  - Prepends `src/` to `sys.path` and imports `openai_responses_manifold` from the package so tests exercise the editable modules.
+- Tests then:
+  - Use `orm.Pipe` as the Open WebUI adapter.
+  - Use `orm.ResponsesEngine` directly for scenario tests (`tests/test_runner_scenarios.py`).
+  - Import core helpers from the package (`CompletionsBody`, `ResponsesBody`, markers, etc.).
+
+When modifying engine behavior:
+
+- Prefer changing `src/openai_responses_manifold/engine.py`, then run:
+
+  ```bash
+  cd functions/pipes/openai_responses_manifold
+  make test
+  make build
+  ```
+
+- The bundler will pick up `engine.py` (via `MODULE_ORDER`) and regenerate the monolith after tests pass so Open WebUI sees the same behavior.
+
+## Key commands (recap)
+
 - `make install` — editable install with runtime deps only.
 - `make install-dev` — editable install including the `dev` extra (pytest, ruff, etc.).
-- `make test` — run the pytest suite.
+- `make test` — run the pytest suite (against the package modules via `conftest.py`).
 - `make lint` — run Ruff checks over `src/` and `tests/`.
-- `make lint-fix` — run Ruff checks with autofix over `src/` and `tests/`.
+- `make lint-fix` — Ruff with autofix over `src/` and `tests/`.
 - `make format` — apply Ruff formatting fixes.
-- `make build` — run pytest, then regenerate the monolithic `openai_responses_manifold.py`.
-- `python scripts/build.py --tests-only` — run pytest without rebuilding the artifact.
-- `python scripts/build.py --skip-tests` — rebuild without running pytest.
+- `make build` — run pytest, then regenerate `openai_responses_manifold.py`.
+- `python scripts/build.py --tests-only` — run pytest without rebuilding.
+- `python scripts/build.py --skip-tests` — rebuild bundle without running tests (only use if tests already passed).
 
-## Workflow
-1. Create/activate a local venv (`python -m venv .venv && source .venv/bin/activate` on Unix, `.\.venv\Scripts\activate` on Windows).
-2. Install the pipe plus dev tooling: `python -m pip install -e .[dev]` from the pipe root.
-3. Install dev tooling and enable hooks (`python -m pip install pre-commit`, `pre-commit install`).
-4. Make changes inside `src/` (never edit the generated file directly).
-5. Run `make test` until the suite passes.
-6. Regenerate the bundled artifact with `make build` (run `python scripts/build.py --skip-tests` only if pytest already passed).
-7. Review `git status` to confirm both the `src/` edits and the regenerated artifact are staged.
+## Notes for agents
 
-## Notes
-- If you add a dependency, declare it in `src/metadata.py` under `requirements`.
-- `tests/test_dependencies_sync.py` fails if `pyproject.toml` and `src/metadata.py` disagree on dependencies—update both together.
-- Update this guide whenever the workflow or commands change.
-- Pre-commit hooks live at the repo root (`.pre-commit-config.yaml`) but are scoped to this directory, so feel free to enable them.
-- Source modules now live directly under `src/`; always edit code there and rebuild the bundle via `make build`.
+- Always treat `openai_responses_manifold.py` as generated; edit the package under `src/openai_responses_manifold/` instead.
+- When adding new features:
+  - Prefer to put shared logic in `core/`, `engine.py`, `features/`, or `infra/`, and keep `Pipe` as a thin adapter.
+  - Update `scripts/build.py` if you introduce new top‑level modules in the package.
+- Keep this guide in sync with structural changes so future agents don’t have to rediscover how the manifold and bundler work. 

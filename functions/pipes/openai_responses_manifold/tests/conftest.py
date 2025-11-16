@@ -1,8 +1,7 @@
-"""Ensure tests import the current single-file manifold implementation."""
+"""Ensure tests import the package modules under src/."""
 
 from __future__ import annotations
 
-import importlib.util
 import logging
 import sys
 from collections import deque
@@ -13,6 +12,9 @@ from typing import Any, Callable
 import pytest
 
 from .fakes import FakeResponsesClient, InMemoryChats, SpyEventEmitter
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = PACKAGE_ROOT / "src"
 
 
 def _install_open_webui_stubs() -> None:
@@ -127,21 +129,26 @@ def _install_open_webui_stubs() -> None:
     aiohttp_mod.ClientTimeout = _ClientTimeout
 
 
-def _load_monolith_module() -> None:
-    module_path = Path(__file__).resolve().parents[1] / "openai_responses_manifold.py"
-    spec = importlib.util.spec_from_file_location("openai_responses_manifold", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load module from {module_path}")
+def _ensure_src_on_path() -> None:
+    src = str(SRC_DIR)
+    if src not in sys.path:
+        sys.path.insert(0, src)
 
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    sys.modules["openai_responses_manifold"] = module
+
+def _reload_package_module() -> None:
+    """Force imports to resolve to src/openai_responses_manifold/."""
+
+    sys.modules.pop("openai_responses_manifold", None)
 
 
 _install_open_webui_stubs()
-_load_monolith_module()
+_ensure_src_on_path()
+_reload_package_module()
 
 import openai_responses_manifold as orm  # noqa: E402  # pylint: disable=wrong-import-position
+import openai_responses_manifold.engine as orm_engine  # noqa: E402
+import openai_responses_manifold.infra.persistence as orm_persistence  # noqa: E402
+import openai_responses_manifold.pipe as orm_pipe  # noqa: E402
 
 
 @pytest.fixture()
@@ -164,7 +171,8 @@ def chat_store(monkeypatch: pytest.MonkeyPatch) -> InMemoryChats:
     """Use the in-memory Chats store for tests."""
 
     InMemoryChats.reset()
-    monkeypatch.setattr(orm, "Chats", InMemoryChats)
+    for module in (orm_pipe, orm_engine, orm_persistence):
+        monkeypatch.setattr(module, "Chats", InMemoryChats)
     return InMemoryChats
 
 

@@ -22,6 +22,8 @@ PYPROJECT_FILE = PIPE_ROOT / "pyproject.toml"
 
 MODULE_ORDER = [
     "core/capabilities.py",
+    "settings.py",
+    "engine.py",
     "pipe.py",
     "core/markers.py",
     "core/session_logger.py",

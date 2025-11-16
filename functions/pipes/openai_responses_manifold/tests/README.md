@@ -2,7 +2,7 @@
 
 The suite is split into two complementary layers:
 
-1. **Scenario tests (`test_runner_scenarios.py`)** – drive `ResponseRunner` with a fake Responses client and spy event emitter. These async tests assert the full Open WebUI event flow (streaming completions, tool execution loops, error/log handling).
+1. **Scenario tests (`test_runner_scenarios.py`)** – drive `ResponsesEngine` with a fake Responses client and spy event emitter. These async tests assert the full Open WebUI event flow (streaming completions, tool execution loops, error/log handling).
 2. **Module/unit tests** – validate deterministic helpers like marker persistence, Completions→Responses conversion, and tool builders.
 
 Key helpers live in `tests/fakes.py`:
