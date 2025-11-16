@@ -6,7 +6,7 @@ from . import core as _core
 from .core import *  # noqa: F401, F403
 from .features import build_tools, route_gpt5_auto
 from .infra import OpenAIResponsesClient, fetch_openai_response_items, persist_openai_response_items
-from .pipe import EventEmitter, Pipe, ResponsesEngine
+from .main import EventEmitter, Pipe, ResponsesEngine
 
 __all__ = [
     "EventEmitter",

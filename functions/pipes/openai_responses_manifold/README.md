@@ -56,7 +56,7 @@ Open WebUI can only import a **single Python file** per pipe. To keep the codeba
 
 ### Project layout
 
-- `src/openai_responses_manifold/pipe.py` – the pipe entry point, runner hooks, and Valve definitions that Open WebUI expects.
+- `src/openai_responses_manifold/main.py` – the Pipe entry point, runner hooks, and valve definitions that Open WebUI expects.
 - `src/openai_responses_manifold/core/` – shared models, markers, capabilities, utilities, and the session logger for reasoning/history tooling.
 - `src/openai_responses_manifold/features/` – feature helpers such as tool builders and the GPT-5 router that keep the manifold aligned with open-webui concepts.
 - `src/openai_responses_manifold/infra/` – persistence and HTTP client helpers that speak to OpenAI and Open WebUI.

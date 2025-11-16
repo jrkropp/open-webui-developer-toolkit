@@ -20,7 +20,7 @@ At runtime, there are three main layers:
     - Orchestrates tool/function calls and retries.
     - Emits Open WebUI events (`chat:message`, `chat:completion`, `citation`, `notification`, status).
     - Persists extra items via the infra layer.
-- **Pipe adapter** (`src/openai_responses_manifold/pipe.py`)
+- **Pipe adapter** (`src/openai_responses_manifold/main.py`)
   - `class Pipe` with nested `Valves` / `UserValves` – exactly what Open WebUI expects.
   - Shapes Open WebUI’s `body` / `__user__` / `__metadata__` / `__tools__` into a `ResponsesBody`.
   - Calls helpers from `features/`, then delegates the actual work to `ResponsesEngine`.
@@ -49,7 +49,7 @@ functions/pipes/openai_responses_manifold/
 │     ├─ features/         # tool building, GPT-5 router, etc.
 │     ├─ infra/            # OpenAIResponsesClient + persistence helpers
 │     ├─ settings.py       # shared Pipe valve definitions/defaults
-│     └─ pipe.py           # Pipe + nested Valves/UserValves (Open WebUI adapter)
+│     └─ main.py           # Pipe + nested Valves/UserValves (Open WebUI adapter)
 ├─ tests/                  # pytest suite (imports package modules via conftest)
 └─ openai_responses_manifold.py   # generated artifact (never hand-edit)
 ```
@@ -86,7 +86,7 @@ Key implications for agents:
   ```
 
 - In this manifold:
-  - `Pipe.Valves` and `Pipe.UserValves` live in `pipe.py` and **must remain nested** inside `Pipe`.
+  - `Pipe.Valves` and `Pipe.UserValves` live in `main.py` and **must remain nested** inside `Pipe`.
   - Admin defaults come from `self.valves = self.Valves()`.
   - Per‑user overrides come from `__user__["valves"]`, validated into `Pipe.UserValves`.
   - The merge logic lives in `Pipe._merge_valves(...)`, which produces the effective `valves` object used by `ResponsesEngine` and helpers.

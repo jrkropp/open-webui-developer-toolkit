@@ -24,7 +24,7 @@ MODULE_ORDER = [
     "core/capabilities.py",
     "settings.py",
     "engine.py",
-    "pipe.py",
+    "main.py",
     "core/markers.py",
     "core/session_logger.py",
     "core/utils.py",

@@ -148,7 +148,7 @@ _reload_package_module()
 import openai_responses_manifold as orm  # noqa: E402  # pylint: disable=wrong-import-position
 import openai_responses_manifold.engine as orm_engine  # noqa: E402
 import openai_responses_manifold.infra.persistence as orm_persistence  # noqa: E402
-import openai_responses_manifold.pipe as orm_pipe  # noqa: E402
+import openai_responses_manifold.main as orm_main  # noqa: E402
 
 
 @pytest.fixture()
@@ -171,7 +171,7 @@ def chat_store(monkeypatch: pytest.MonkeyPatch) -> InMemoryChats:
     """Use the in-memory Chats store for tests."""
 
     InMemoryChats.reset()
-    for module in (orm_pipe, orm_engine, orm_persistence):
+    for module in (orm_main, orm_engine, orm_persistence):
         monkeypatch.setattr(module, "Chats", InMemoryChats)
     return InMemoryChats
 
