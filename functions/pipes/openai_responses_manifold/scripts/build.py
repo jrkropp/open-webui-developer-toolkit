@@ -581,6 +581,9 @@ def run_build() -> int:
         "",
         file_tree_comment,
         "",
+        "# fmt: off",
+        "# Open WebUI runs Black on upload; disabling fmt keeps this bundle readable in that UI.",
+        "",
         "from __future__ import annotations",
         "",
     ]
@@ -593,6 +596,8 @@ def run_build() -> int:
         sections.append(f"# === {rel_path} ===")
         sections.append(cleaned)
         sections.append("")
+
+    sections.append("# fmt: on")
 
     OUTPUT_FILE.write_text("\n".join(sections).rstrip() + "\n", encoding="utf-8")
     log(f"Wrote {OUTPUT_FILE.relative_to(PIPE_ROOT)}")

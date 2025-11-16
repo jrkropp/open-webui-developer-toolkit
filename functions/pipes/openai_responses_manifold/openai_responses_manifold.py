@@ -39,6 +39,9 @@ Use the version in the alpha-preview or main branches instead.
 # - utils/logging.py          Session-scoped logger that buffers lines for the Logs citation.
 # - utils/events.py           Utility functions for emitting OpenWebUI events.
 
+# fmt: off
+# Open WebUI runs Black on upload; disabling fmt keeps this bundle readable in that UI.
+
 from __future__ import annotations
 
 # === model_catalog.py ===
@@ -2361,3 +2364,5 @@ __all__ = [
     "wrap_code_block",
     "wrap_event_emitter",
 ]
+
+# fmt: on
