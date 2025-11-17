@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.7
+version: 0.9.8
 license: MIT
 """
 
@@ -44,6 +44,9 @@ from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
 from open_webui.utils.misc import get_last_user_message
 
+# fmt: off
+# Open WebUI runs Black on upload; disabling fmt keeps this bundle readable in that UI.
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Constants & Global Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,6 +61,8 @@ class ModelFamily:
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
         "gpt-5-auto":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+
+        "gpt-5.1":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
 
         "gpt-5":                {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5-mini":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
@@ -78,12 +83,17 @@ class ModelFamily:
         "o3-deep-research":     {"features": {"function_calling","reasoning","reasoning_summary","deep_research"}},
         "o4-mini-deep-research":{"features": {"function_calling","reasoning","reasoning_summary","deep_research"}},
 
-        "gpt-5-chat-latest":    {"features": {"function_calling","web_search_tool"}}, # Chat-optimized non-reasoning model does not support tool calling, or any other advanced features.
+        "gpt-5.1-chat-latest":  {"features": {"function_calling","web_search_tool"}},
+        "gpt-5-chat-latest":    {"features": {"function_calling","web_search_tool"}},
         "chatgpt-4o-latest":    {"features": {}}, # Chat-optimized non-reasoning model does not support tool calling, or any other advanced features.
     }
 
     # Aliases/pseudos
     _ALIASES: Dict[str, Dict[str, Any]] = {
+        "gpt-5.1-thinking":               {"base_model": "gpt-5"},
+        "gpt-5.1-thinking-minimal":       {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5.1-thinking-high":          {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "high"}}},
+
         "gpt-5-thinking":               {"base_model": "gpt-5"},
         "gpt-5-thinking-minimal":       {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "minimal"}}},
         "gpt-5-thinking-high":          {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "high"}}},
@@ -517,7 +527,7 @@ class Pipe:
 
         # Models
         MODEL_ID: str = Field(
-            default="gpt-5-auto, gpt-5-chat-latest, gpt-5-thinking, gpt-5-thinking-high, gpt-5-thinking-minimal, gpt-4.1-nano, chatgpt-4o-latest, o3, gpt-4o",
+            default="gpt-5.1-chat-latest, gpt-5.1-thinking, gpt-5.1-thinking-high, gpt-5.1-thinking-minimal",
             description=(
                 "Comma separated OpenAI model IDs. Each ID becomes a model entry in WebUI. "
                 "Supports all official OpenAI model IDs and pseudo IDs (see README.md for full list)."
@@ -2276,3 +2286,5 @@ def _dedupe_tools(tools: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]
         if key[0]:
             canonical[key] = t
     return list(canonical.values())
+
+    # fmt: on

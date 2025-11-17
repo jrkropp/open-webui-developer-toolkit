@@ -2,7 +2,7 @@
 
 Enables advanced OpenAI features (function calling, web search, visible reasoning summaries, and more) directly in [Open WebUI](https://github.com/open-webui/open-webui).
 
-**Now supports OpenAI’s GPT-5 family in the API — [Learn more](#gpt-5-model-support).**
+**Now supports OpenAI’s GPT-5.1 family in the API — [Learn more](#gpt-5.1-model-support).**
 
 This project started as an internal tool (200+ hours of optimization and testing) and is now open-sourced as a way to give back to the Open WebUI community.
 
@@ -17,7 +17,7 @@ This project started as an internal tool (200+ hours of optimization and testing
 * [Features](#features)
 * [Advanced Features](#advanced-features)
 * [Tested Models](#tested-models)
-* [GPT‑5 Model Support](#gpt5-model-support)
+* [GPT‑5.1 Model Support](#gpt-51-model-support)
 * [How It Works (Design Notes)](#how-it-works-design-notes)
 * [Troubleshooting / FAQ](#troubleshooting--faq)
 
@@ -140,10 +140,12 @@ Below are the official model IDs that have been tested and confirmed.
 
 | Family            | Model ID              | Type / Modality                  | Status | Notes |
 |-------------------|-----------------------|----------------------------------|:------:|-------|
+| **GPT-5.1**       | `gpt-5.1`             | Reasoning                        | ✅ | Latest GPT-5.1 reasoning model with full tool + search support. |
+|                   | `gpt-5.1-chat-latest` | Chat-tuned (non-reasoning)       | ✅ | Chat-optimized GPT-5.1 build; great defaults, tool-calling capable. |
 | **GPT-5**         | `gpt-5`               | Reasoning                        | ✅ | Standard GPT-5 reasoning model. |
 |                   | `gpt-5-mini`          | Reasoning                        | ✅ | Smaller, faster, lower cost than `gpt-5`. |
 |                   | `gpt-5-nano`          | Reasoning                        | ✅ | Ultra-lightweight reasoning; lowest cost. |
-|                   | `gpt-5-chat-latest`   | Chat-tuned (non-reasoning)       | ✅ | Best for polished conversation. No tool calling. ([OpenAI Platform][1]) |
+|                   | `gpt-5-chat-latest`   | Chat-tuned (non-reasoning)       | ✅ | Polished conversation; can be paired with tool calling. ([OpenAI Platform][1]) |
 | **GPT-4.1**       | `gpt-4.1`             | Non-reasoning                    | ✅ | High-speed GPT-4 series model. |
 | **GPT-4o**        | `gpt-4o`              | Text + image → text              | ✅ | Multimodal reasoning model. |
 |                   | `chatgpt-4o-latest`   | Alias to ChatGPT’s GPT-4o build  | ✅ | Matches ChatGPT’s current 4o snapshot. ([OpenAI Platform][2]) |
@@ -165,6 +167,9 @@ Useful for **routing, shorthand, or quick quality/cost tuning**. *(Subject to ch
 | Alias                                                              | Resolves To   | Preset(s)                    | Suggested Use                                                    |
 | ------------------------------------------------------------------ | ------------- | ---------------------------- | ---------------------------------------------------------------- |
 | `gpt-5-auto`                                                       | Dynamic GPT-5 | —                            | Auto-routes between GPT-5 chat/mini/nano.                        |
+| `gpt-5.1-thinking`                                                 | `gpt-5`       | Medium reasoning             | 5.1-branded alias; default reasoning.                            |
+| `gpt-5.1-thinking-minimal`                                         | `gpt-5`       | `reasoning_effort="minimal"` | 5.1-branded; cheaper/faster reasoning.                           |
+| `gpt-5.1-thinking-high`                                            | `gpt-5`       | `reasoning_effort="high"`    | 5.1-branded; highest quality/effort.                             |
 | `gpt-5-thinking`                                                   | `gpt-5`       | Medium reasoning             | General high-quality tasks. (\[OpenAI]\[8])                      |
 | `gpt-5-thinking-minimal`                                           | `gpt-5`       | `reasoning_effort="minimal"` | Faster/cheaper reasoning. (\[OpenAI]\[8])                        |
 | `gpt-5-thinking-high`                                              | `gpt-5`       | `reasoning_effort="high"`    | Hard problems; maximum quality. (\[OpenAI]\[8])                  |
@@ -194,18 +199,20 @@ Useful for **routing, shorthand, or quick quality/cost tuning**. *(Subject to ch
 [12]: https://openai.com/index/introducing-o3-and-o4-mini/?utm_source=chatgpt.com "Introducing OpenAI o3 and o4-mini"  
 
 
-## GPT-5 Model Support
+## GPT-5.1 Model Support
 
-The Responses Manifold supports the full **GPT-5 family** of models currently exposed in the API:
+The Responses Manifold supports the full **GPT-5.1** (and legacy **GPT-5**) families currently exposed in the API:
 
+- `gpt-5.1` *(reasoning model; full tool + search support)*
+- `gpt-5.1-chat-latest` *(chat-tuned; supports tool calling + web search toggles)*
 - `gpt-5` *(reasoning model)*
 - `gpt-5-mini` *(reasoning model)*
 - `gpt-5-nano` *(reasoning model)*
-- `gpt-5-chat-latest` *(non-reasoning, fine-tuned for chat, does NOT support function calling / tools)*
+- `gpt-5-chat-latest` *(chat-tuned; tool-calling capable via valves)*
 
-In the public **ChatGPT app**, choosing *GPT-5* doesn’t mean you’re using one fixed model. Behind the scenes, OpenAI runs a **router layer** that inspects your request and decides whether to send it to a reasoning, minimal-reasoning, or non-reasoning GPT-5 variant.
+In the public **ChatGPT app**, choosing *GPT-5* or *GPT-5.1* doesn’t mean you’re using one fixed model. Behind the scenes, OpenAI runs a **router layer** that inspects your request and decides whether to send it to a reasoning, minimal-reasoning, or non-reasoning variant.
 
-This router is **not available in the API**. When using the API, you must select the model explicitly (`gpt-5`, `gpt-5-mini`, `gpt-5-nano`, or `gpt-5-chat-latest`).
+This router is **not available in the API**. When using the API, you must select the model explicitly (`gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1-chat-latest`, or `gpt-5-chat-latest`).
 
 To bridge this gap, the manifold includes an experimental **`gpt-5-auto`** model.  
 - It isn’t a real OpenAI model ID.  
@@ -216,13 +223,13 @@ To bridge this gap, the manifold includes an experimental **`gpt-5-auto`** model
 
 ### What you need to know
 1. **Reasoning vs. non-reasoning**  
-   - `gpt-5`, `gpt-5-mini`, and `gpt-5-nano` are **reasoning models** by default.  
+   - `gpt-5.1`, `gpt-5`, `gpt-5-mini`, and `gpt-5-nano` are **reasoning models** by default.  
    - Setting `reasoning_effort="minimal"` makes them cheaper/faster but they still perform reasoning.  
-   - For a true **non-reasoning chat model**, use `gpt-5-chat-latest`.
+   - For a true **non-reasoning chat model**, use `gpt-5.1-chat-latest` or `gpt-5-chat-latest`.
 
 2. **Tool calling**  
    - Reasoning models support **native tool calling** (function calls, web search, etc.).  
-   - `gpt-5-chat-latest` does **not** support tool calling — it’s tuned only for polished chat.  
+   - Chat-tuned models can call tools when the valve is enabled, but are optimized for polished conversation.  
    - A future `gpt-5-main` model may bring **non-reasoning + tool support**.
 
 3. **Latency and performance**  
