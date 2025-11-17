@@ -10,6 +10,7 @@ EMPTY_FEATURES: frozenset[str] = frozenset()
 # Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
 MODEL_FEATURES: dict[str, frozenset[str]] = {
     "gpt-5-auto": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
+    "gpt-5.1": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
     "gpt-5": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
     "gpt-5-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
     "gpt-5-nano": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
@@ -24,6 +25,7 @@ MODEL_FEATURES: dict[str, frozenset[str]] = {
     "o4-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool"}),
     "o3-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
     "o4-mini-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
+    "gpt-5.1-chat-latest": frozenset({"function_calling", "web_search_tool"}),
     "gpt-5-chat-latest": frozenset({"function_calling", "web_search_tool"}),
     "chatgpt-4o-latest": EMPTY_FEATURES,
 }
@@ -32,6 +34,9 @@ MODEL_FEATURES: dict[str, frozenset[str]] = {
 # Each alias is a preset that points to a base model and optional default params,
 # e.g. gpt-5-thinking-high -> gpt-5 with reasoning effort fixed to high.
 MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
+    "gpt-5.1-thinking": {"base_model": "gpt-5.1"},
+    "gpt-5.1-thinking-minimal": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "minimal"}}},
+    "gpt-5.1-thinking-high": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "high"}}},
     "gpt-5-thinking": {"base_model": "gpt-5"},
     "gpt-5-thinking-minimal": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "minimal"}}},
     "gpt-5-thinking-high": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "high"}}},

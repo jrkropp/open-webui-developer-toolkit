@@ -35,7 +35,9 @@ class SessionLogger:
     @classmethod
     def get_logger(cls, name: str = __name__) -> logging.Logger:
         configure_logging()
-        return logging.getLogger(name)
+        base = "openai_responses_manifold"
+        qualified = name if name.startswith(base) else f"{base}.{name}"
+        return logging.getLogger(qualified)
 
 
 __all__ = [

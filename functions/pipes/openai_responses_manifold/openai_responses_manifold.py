@@ -56,6 +56,7 @@ EMPTY_FEATURES: frozenset[str] = frozenset()
 # Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
 MODEL_FEATURES: dict[str, frozenset[str]] = {
     "gpt-5-auto": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
+    "gpt-5.1": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
     "gpt-5": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
     "gpt-5-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
     "gpt-5-nano": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
@@ -70,6 +71,7 @@ MODEL_FEATURES: dict[str, frozenset[str]] = {
     "o4-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool"}),
     "o3-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
     "o4-mini-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
+    "gpt-5.1-chat-latest": frozenset({"function_calling", "web_search_tool"}),
     "gpt-5-chat-latest": frozenset({"function_calling", "web_search_tool"}),
     "chatgpt-4o-latest": EMPTY_FEATURES,
 }
@@ -78,6 +80,9 @@ MODEL_FEATURES: dict[str, frozenset[str]] = {
 # Each alias is a preset that points to a base model and optional default params,
 # e.g. gpt-5-thinking-high -> gpt-5 with reasoning effort fixed to high.
 MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
+    "gpt-5.1-thinking": {"base_model": "gpt-5.1"},
+    "gpt-5.1-thinking-minimal": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "minimal"}}},
+    "gpt-5.1-thinking-high": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "high"}}},
     "gpt-5-thinking": {"base_model": "gpt-5"},
     "gpt-5-thinking-minimal": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "minimal"}}},
     "gpt-5-thinking-high": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "high"}}},
@@ -446,9 +451,29 @@ class Pipe:
         user_identifier = __user__[valves.PROMPT_CACHE_KEY]
         features = __metadata__.get("features", {}).get("openai_responses", {})
 
+        # Temporary hard logging to validate session context wiring in production
+        print(
+            "[OWUI_MANIFOLD_DEBUG] metadata session_id=%s chat_id=%s message_id=%s user_id=%s log_level=%s"
+            % (
+                __metadata__.get("session_id"),
+                __metadata__.get("chat_id"),
+                __metadata__.get("message_id"),
+                __metadata__.get("user_id"),
+                valves.LOG_LEVEL,
+            )
+        )
+
         tokens = set_session(
             __metadata__.get("session_id"),
             getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
+        )
+        self.logger.debug(
+            "Session context resolved: session_id=%s chat_id=%s message_id=%s user_id=%s log_level=%s",
+            __metadata__.get("session_id"),
+            __metadata__.get("chat_id"),
+            __metadata__.get("message_id"),
+            __metadata__.get("user_id"),
+            valves.LOG_LEVEL,
         )
 
         if __event_call__:
@@ -750,6 +775,7 @@ class ResponsesEngine:
                         )
                         break
                     elif event_type == "response.completed":
+                        final_response = event.get("response") or final_response or event
                         await self._cancel_tasks(thinking_tasks)
                         break
                     elif event_type == "response.output_text.delta.truncated":
@@ -770,7 +796,7 @@ class ResponsesEngine:
                             event.setdefault("event_metadata", {})
                             event["event_metadata"]["partial_arguments"] = partial_args
                     elif event_type == "response.output_items.done":
-                        final_response = event.get("response")
+                        final_response = event.get("response") or final_response or event
                         await self._cancel_tasks(thinking_tasks)
                     elif event_type == "response.message.delta":
                         await self._handle_message_delta(event, emitted_citations, ordinal_by_url)
@@ -806,7 +832,7 @@ class ResponsesEngine:
             await self._handle_stream_error(event_emitter, str(exc))
 
         finally:
-            await self._flush_logs(event_emitter, valves)
+            await self._flush_logs(event_emitter, valves, emitted_citations)
             await emit_completion(
                 event_emitter,
                 content=assistant_message,
@@ -941,11 +967,35 @@ class ResponsesEngine:
         self.logger.error("Streaming error: %s", message)
         await emit_error(event_emitter, message, done=False)
 
-    async def _flush_logs(self, event_emitter: EventEmitter | None, valves: Any) -> None:
+    async def _flush_logs(
+        self,
+        event_emitter: EventEmitter | None,
+        valves: Any,
+        emitted_citations: list[dict[str, Any]] | None = None,
+    ) -> None:
         session_id = current_session_id.get()
+        if not session_id:
+            print("[OWUI_MANIFOLD_DEBUG] No session_id set; skipping log citation emission")
+            return
         logs = get_session_logs(session_id)
         if logs:
-            await emit_citation(event_emitter, "\n".join(logs), "Logs")
+            log_text = "\n".join(logs)
+            await emit_citation(event_emitter, log_text, "Logs")
+            if emitted_citations is not None:
+                snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
+                emitted_citations.append(
+                    {
+                        "provider": "openai:logs",
+                        "id": str(len(emitted_citations) + 1),
+                        "title": "Logs",
+                        "snippet": snippet,
+                        "metadata": {
+                            "source": "Logs",
+                            "total_lines": len(logs),
+                            "truncated": len(snippet) < len(log_text),
+                        },
+                    }
+                )
             clear_session_logs(session_id)
 
     async def _handle_output_items_delta(
@@ -2392,7 +2442,9 @@ class SessionLogger:
     @classmethod
     def get_logger(cls, name: str = __name__) -> logging.Logger:
         configure_logging()
-        return logging.getLogger(name)
+        base = "openai_responses_manifold"
+        qualified = name if name.startswith(base) else f"{base}.{name}"
+        return logging.getLogger(qualified)
 
 
 __all__ = [

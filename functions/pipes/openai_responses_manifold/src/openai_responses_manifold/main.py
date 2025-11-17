@@ -68,6 +68,14 @@ class Pipe:
             __metadata__.get("session_id"),
             getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
         )
+        self.logger.debug(
+            "Session context resolved: session_id=%s chat_id=%s message_id=%s user_id=%s log_level=%s",
+            __metadata__.get("session_id"),
+            __metadata__.get("chat_id"),
+            __metadata__.get("message_id"),
+            __metadata__.get("user_id"),
+            valves.LOG_LEVEL,
+        )
 
         if __event_call__:
             await __event_call__(self._status_unclamp_script())

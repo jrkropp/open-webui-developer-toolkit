@@ -121,6 +121,7 @@ class ResponsesEngine:
                         )
                         break
                     elif event_type == "response.completed":
+                        final_response = event.get("response") or final_response or event
                         await self._cancel_tasks(thinking_tasks)
                         break
                     elif event_type == "response.output_text.delta.truncated":
@@ -141,7 +142,7 @@ class ResponsesEngine:
                             event.setdefault("event_metadata", {})
                             event["event_metadata"]["partial_arguments"] = partial_args
                     elif event_type == "response.output_items.done":
-                        final_response = event.get("response")
+                        final_response = event.get("response") or final_response or event
                         await self._cancel_tasks(thinking_tasks)
                     elif event_type == "response.message.delta":
                         await self._handle_message_delta(event, emitted_citations, ordinal_by_url)
@@ -177,7 +178,7 @@ class ResponsesEngine:
             await self._handle_stream_error(event_emitter, str(exc))
 
         finally:
-            await self._flush_logs(event_emitter, valves)
+            await self._flush_logs(event_emitter, valves, emitted_citations)
             await emit_completion(
                 event_emitter,
                 content=assistant_message,
@@ -312,11 +313,34 @@ class ResponsesEngine:
         self.logger.error("Streaming error: %s", message)
         await emit_error(event_emitter, message, done=False)
 
-    async def _flush_logs(self, event_emitter: EventEmitter | None, valves: Any) -> None:
+    async def _flush_logs(
+        self,
+        event_emitter: EventEmitter | None,
+        valves: Any,
+        emitted_citations: list[dict[str, Any]] | None = None,
+    ) -> None:
         session_id = current_session_id.get()
+        if not session_id:
+            return
         logs = get_session_logs(session_id)
         if logs:
-            await emit_citation(event_emitter, "\n".join(logs), "Logs")
+            log_text = "\n".join(logs)
+            await emit_citation(event_emitter, log_text, "Logs")
+            if emitted_citations is not None:
+                snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
+                emitted_citations.append(
+                    {
+                        "provider": "openai:logs",
+                        "id": str(len(emitted_citations) + 1),
+                        "title": "Logs",
+                        "snippet": snippet,
+                        "metadata": {
+                            "source": "Logs",
+                            "total_lines": len(logs),
+                            "truncated": len(snippet) < len(log_text),
+                        },
+                    }
+                )
             clear_session_logs(session_id)
 
     async def _handle_output_items_delta(
