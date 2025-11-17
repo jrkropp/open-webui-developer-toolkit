@@ -23,6 +23,7 @@ Use the version in the alpha-preview or main branches instead.
 # Logical module layout (source → sections below):
 # - model_catalog.py          Single source of truth for OpenAI model capabilities.
 # - settings.py               Shared pipe settings and defaults.
+# - logging_config.py         Centralized logging configuration for the Responses manifold.
 # - main.py                   Open WebUI pipe implementation that delegates to the Responses engine.
 # - engine.py                 Streaming and tool orchestration engine for the Responses manifold.
 # - core/api_models.py        Pydantic request bodies for the Completions and Responses APIs.
@@ -36,7 +37,7 @@ Use the version in the alpha-preview or main branches instead.
 # - services/routing.py       Helper model routing for auto variants.
 # - infra/openwebui_store.py  Persistence helpers for storing Responses items in OpenWebUI.
 # - infra/openai_client.py    aiohttp-backed client for the OpenAI Responses API.
-# - utils/logging.py          Session-scoped logger that buffers lines for the Logs citation.
+# - utils/logging.py          Session-scoped logger facade backed by ``logging_config``.
 # - utils/events.py           Utility functions for emitting OpenWebUI events.
 
 # fmt: off
@@ -212,6 +213,173 @@ class UserValves(BaseModel):
         description="Select logging level. 'INHERIT' uses the pipe default.",
     )
 
+# === logging_config.py ===
+"""Centralized logging configuration for the Responses manifold.
+
+This module configures a package-scoped logger hierarchy that:
+- Attaches console + in-memory handlers once per process.
+- Uses ContextVars to scope session identifiers and effective log levels.
+- Exposes helpers to manage session context and access buffered logs.
+"""
+
+import logging
+import sys
+from collections import defaultdict, deque
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from typing import DefaultDict, Deque, Iterator, Tuple
+
+# Context-aware state
+current_session_id: ContextVar[str | None] = ContextVar(
+    "openai_responses_session_id", default=None
+)
+current_log_level: ContextVar[int] = ContextVar(
+    "openai_responses_log_level", default=logging.INFO
+)
+
+
+# Per-session buffered logs
+SESSION_LOGS: DefaultDict[str, Deque[str]] = defaultdict(lambda: deque(maxlen=2000))
+
+
+class _SessionFilter(logging.Filter):
+    """Attach session context and enforce the current log level."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        record.session_id = current_session_id.get()
+        return record.levelno >= current_log_level.get()
+
+
+class _SessionConsoleHandler(logging.StreamHandler):
+    """Dedicated console handler marker for session-aware filtering."""
+
+
+class _SessionMemoryHandler(logging.Handler):
+    """Buffer log lines per session for later citation emission."""
+
+    def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - tiny wrapper
+        session = getattr(record, "session_id", None)
+        if not session:
+            return
+        SESSION_LOGS[session].append(self.format(record))
+
+
+_configured = False
+_session_filter = _SessionFilter()
+
+
+def configure_logging() -> None:
+    """Attach handlers/filters to the package logger once."""
+
+    global _configured
+    if _configured:
+        return
+
+    logger = logging.getLogger("openai_responses_manifold")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    if not any(isinstance(flt, _SessionFilter) for flt in logger.filters):
+        logger.addFilter(_session_filter)
+
+    console_handler = next(
+        (h for h in logger.handlers if isinstance(h, _SessionConsoleHandler)), None
+    )
+    if console_handler is None:
+        console_handler = _SessionConsoleHandler(sys.stdout)
+        console_handler.setLevel(logging.DEBUG)
+        console_handler.setFormatter(
+            logging.Formatter("[%(levelname)s] [%(session_id)s] %(message)s")
+        )
+        logger.addHandler(console_handler)
+    if not any(isinstance(flt, _SessionFilter) for flt in console_handler.filters):
+        console_handler.addFilter(_session_filter)
+
+    memory_handler = next(
+        (h for h in logger.handlers if isinstance(h, _SessionMemoryHandler)), None
+    )
+    if memory_handler is None:
+        memory_handler = _SessionMemoryHandler()
+        memory_handler.setLevel(logging.DEBUG)
+        memory_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+        )
+        logger.addHandler(memory_handler)
+    if not any(isinstance(flt, _SessionFilter) for flt in memory_handler.filters):
+        memory_handler.addFilter(_session_filter)
+
+    _configured = True
+
+
+def set_session(session_id: str | None, level: int) -> Tuple[Token[str | None], Token[int]]:
+    """Set session/log-level ContextVars and return reset tokens."""
+
+    configure_logging()
+    token_id = current_session_id.set(session_id)
+    token_level = current_log_level.set(level)
+    return token_id, token_level
+
+
+def reset_session(tokens: Tuple[Token[str | None], Token[int]]) -> None:
+    """Reset ContextVars using tokens from ``set_session``."""
+
+    token_id, token_level = tokens
+    current_session_id.reset(token_id)
+    current_log_level.reset(token_level)
+
+
+def get_session_logs(session_id: str | None) -> list[str]:
+    """Return buffered log lines for the given session id."""
+
+    if not session_id:
+        return []
+    return list(SESSION_LOGS.get(session_id, ()))
+
+
+def clear_session_logs(session_id: str | None) -> None:
+    """Clear buffered logs for the given session id, if any."""
+
+    if not session_id:
+        return
+    SESSION_LOGS.pop(session_id, None)
+
+
+def consume_session_logs(session_id: str | None) -> list[str]:
+    """Return and clear buffered logs for ``session_id``."""
+
+    lines = get_session_logs(session_id)
+    clear_session_logs(session_id)
+    return lines
+
+
+@contextmanager
+def session_logging(session_id: str | None, level: int) -> Iterator[None]:
+    """Context manager to scope logging to a session."""
+
+    tokens = set_session(session_id, level)
+    try:
+        yield
+    finally:
+        reset_session(tokens)
+
+
+# Configure at import so child loggers propagate to the package logger.
+configure_logging()
+
+
+__all__ = [
+    "SESSION_LOGS",
+    "clear_session_logs",
+    "configure_logging",
+    "consume_session_logs",
+    "current_log_level",
+    "current_session_id",
+    "get_session_logs",
+    "reset_session",
+    "session_logging",
+    "set_session",
+]
+
 # === main.py ===
 """Open WebUI pipe implementation that delegates to the Responses engine."""
 
@@ -228,6 +396,7 @@ from open_webui.models.models import ModelForm, Models
 # from .core.capabilities import supports
 # from .engine import EventEmitter, ResponsesEngine
 # from .infra import ItemStore, OpenAIResponsesClient
+# from .logging_config import reset_session, set_session
 # from .services import HistoryBuilder, build_tools, route_auto_model
 # from .settings import PipeValves, UserValves
 # from .utils import SessionLogger
@@ -277,8 +446,10 @@ class Pipe:
         user_identifier = __user__[valves.PROMPT_CACHE_KEY]
         features = __metadata__.get("features", {}).get("openai_responses", {})
 
-        SessionLogger.session_id.set(__metadata__.get("session_id"))
-        SessionLogger.log_level.set(getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO))
+        tokens = set_session(
+            __metadata__.get("session_id"),
+            getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
+        )
 
         if __event_call__:
             await __event_call__(self._status_unclamp_script())
@@ -380,13 +551,16 @@ class Pipe:
         else:
             responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
 
-        return await self.engine.run_streaming_turn(
-            responses_body,
-            valves=valves,
-            metadata=__metadata__,
-            event_emitter=__event_emitter__,
-            tool_registry=tool_registry or {},
-        )
+        try:
+            return await self.engine.run_streaming_turn(
+                responses_body,
+                valves=valves,
+                metadata=__metadata__,
+                event_emitter=__event_emitter__,
+                tool_registry=tool_registry or {},
+            )
+        finally:
+            reset_session(tokens)
 
     def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
         merged = pipe_valves.model_copy(deep=True)
@@ -460,7 +634,6 @@ import asyncio
 import json
 import logging
 import random
-from collections import deque
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 from typing import Any, Literal
@@ -471,6 +644,7 @@ from open_webui.models.chats import Chats
 # from .core.api_models import ResponsesBody
 # from .core.capabilities import supports
 # from .infra import ItemStore, OpenAIResponsesClient
+# from .logging_config import clear_session_logs, current_session_id, get_session_logs
 # from .services.history import HistoryPersistence
 # from .services.tools import execute_tool_calls
 # from .utils import (
@@ -521,6 +695,7 @@ class ResponsesEngine:
         openwebui_model = metadata.get("model", {}).get("id", "")
 
         thinking_tasks = self._schedule_reasoning_statuses(body, event_emitter)
+        final_response: dict[str, Any] | None = None
 
         model_router_result = body.model_router_result
         if model_router_result:
@@ -536,7 +711,7 @@ class ResponsesEngine:
         try:
             max_loops = getattr(valves, "MAX_FUNCTION_CALL_LOOPS", 10)
             for _ in range(max_loops):
-                final_response: dict[str, Any] | None = None
+                final_response = None
                 async for event in self.client.stream(
                     body.model_dump(exclude_none=True),
                     api_key=valves.API_KEY,
@@ -557,9 +732,9 @@ class ResponsesEngine:
                             await emit_chat_message(event_emitter, assistant_message)
                     elif event_type == "response.output_text.done":
                         final_response = event
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                     elif event_type == "response.error":
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                         error_occurred = True
                         await self._handle_stream_error(
                             event_emitter,
@@ -567,7 +742,7 @@ class ResponsesEngine:
                         )
                         break
                     elif event_type == "response.completed_with_error":
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                         error_occurred = True
                         await self._handle_stream_error(
                             event_emitter,
@@ -575,7 +750,7 @@ class ResponsesEngine:
                         )
                         break
                     elif event_type == "response.completed":
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                         break
                     elif event_type == "response.output_text.delta.truncated":
                         continue
@@ -596,9 +771,16 @@ class ResponsesEngine:
                             event["event_metadata"]["partial_arguments"] = partial_args
                     elif event_type == "response.output_items.done":
                         final_response = event.get("response")
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                     elif event_type == "response.message.delta":
                         await self._handle_message_delta(event, emitted_citations, ordinal_by_url)
+
+                if final_response and not total_usage:
+                    usage_from_response = self._extract_usage_from_final_response(
+                        final_response
+                    )
+                    if usage_from_response:
+                        total_usage = merge_usage_stats(total_usage, usage_from_response)
 
                 if error_occurred or not final_response:
                     break
@@ -619,7 +801,7 @@ class ResponsesEngine:
             self.logger.info("Total streaming duration: %.2f seconds", respond_time)
 
         except Exception as exc:  # pragma: no cover
-            self._cancel_tasks(thinking_tasks)
+            await self._cancel_tasks(thinking_tasks)
             error_occurred = True
             await self._handle_stream_error(event_emitter, str(exc))
 
@@ -631,7 +813,6 @@ class ResponsesEngine:
                 usage=total_usage or None,
                 done=True,
             )
-            SessionLogger.logs.pop(SessionLogger.session_id.get(), None)
             chat_id = metadata.get("chat_id")
             message_id = metadata.get("message_id")
             if chat_id and message_id and emitted_citations:
@@ -728,10 +909,29 @@ class ResponsesEngine:
             tasks.append(asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg)))
         return tasks
 
-    def _cancel_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
-        while tasks:
-            task = tasks.pop()
+    async def _cancel_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
+        if not tasks:
+            return
+        to_cancel = list(tasks)
+        tasks.clear()
+        for task in to_cancel:
             task.cancel()
+        await asyncio.gather(*to_cancel, return_exceptions=True)
+
+    def _extract_usage_from_final_response(
+        self, final_response: dict[str, Any]
+    ) -> dict[str, Any]:
+        if "usage" in final_response:
+            usage = final_response.get("usage")
+            return usage if isinstance(usage, dict) else {}
+
+        response_payload = final_response.get("response")
+        if isinstance(response_payload, dict):
+            usage = response_payload.get("usage")
+            if isinstance(usage, dict):
+                return usage
+
+        return {}
 
     async def _handle_stream_error(
         self,
@@ -742,12 +942,11 @@ class ResponsesEngine:
         await emit_error(event_emitter, message, done=False)
 
     async def _flush_logs(self, event_emitter: EventEmitter | None, valves: Any) -> None:
-        if getattr(valves, "LOG_LEVEL", "INHERIT") == "INHERIT":
-            return
-        session_id = SessionLogger.session_id.get()
-        logs = SessionLogger.logs.get(session_id, deque())
+        session_id = current_session_id.get()
+        logs = get_session_logs(session_id)
         if logs:
             await emit_citation(event_emitter, "\n".join(logs), "Logs")
+            clear_session_logs(session_id)
 
     async def _handle_output_items_delta(
         self,
@@ -771,7 +970,18 @@ class ResponsesEngine:
             content = ""
             if item_type == "function_call":
                 title = f"Running the {item_name} tool…"
-                arguments = json.loads(item.get("arguments") or "{}")
+                try:
+                    arguments = json.loads(item.get("arguments") or "{}")
+                except json.JSONDecodeError as exc:
+                    self.logger.warning(
+                        "Received malformed tool arguments for %s: %s", item_name, exc
+                    )
+                    await emit_status(
+                        event_emitter,
+                        "Skipping malformed tool arguments.",
+                        action="warning",
+                    )
+                    continue
                 args_formatted = ", ".join(f"{k}={json.dumps(v)}" for k, v in arguments.items())
                 content = wrap_code_block(f"{item_name}({args_formatted})", "python")
             elif item_type == "web_search_call":
@@ -2146,54 +2356,57 @@ class OpenAIResponsesClient:
 __all__ = ["OpenAIResponsesClient"]
 
 # === utils/logging.py ===
-"""Session-scoped logger that buffers lines for the Logs citation."""
+"""Session-scoped logger facade backed by ``logging_config``."""
 
 import logging
-import sys
-from collections import defaultdict, deque
-from contextvars import ContextVar
-from typing import ClassVar
+
+# [build.py] internal imports removed in monolith:
+# from ..logging_config import (
+#     SESSION_LOGS,
+#     clear_session_logs,
+#     configure_logging,
+#     consume_session_logs,
+#     current_log_level,
+#     current_session_id,
+#     get_session_logs,
+#     reset_session,
+#     session_logging,
+#     set_session,
+# )
 
 
 class SessionLogger:
-    """Per-request logger storing log lines in memory and stdout."""
+    """Compatibility shim exposing session-aware logging helpers."""
 
-    session_id: ContextVar[str | None] = ContextVar("session_id", default=None)
-    log_level: ContextVar[int] = ContextVar("log_level", default=logging.INFO)
-    logs: ClassVar[defaultdict[str | None, deque[str]]] = defaultdict(lambda: deque(maxlen=2000))
+    session_id = current_session_id
+    log_level = current_log_level
+    logs = SESSION_LOGS
+
+    get_session_logs = staticmethod(get_session_logs)
+    clear_session_logs = staticmethod(clear_session_logs)
+    consume_session_logs = staticmethod(consume_session_logs)
+    set_session = staticmethod(set_session)
+    reset_session = staticmethod(reset_session)
+    session_logging = staticmethod(session_logging)
 
     @classmethod
     def get_logger(cls, name: str = __name__) -> logging.Logger:
-        logger = logging.getLogger(name)
-        logger.handlers.clear()
-        logger.filters.clear()
-        logger.setLevel(logging.DEBUG)
-        logger.propagate = False
-
-        def _filter(record: logging.LogRecord) -> bool:
-            record.session_id = cls.session_id.get()
-            return record.levelno >= cls.log_level.get()
-
-        logger.addFilter(_filter)
-
-        console = logging.StreamHandler(sys.stdout)
-        console.setFormatter(logging.Formatter("[%(levelname)s] [%(session_id)s] %(message)s"))
-        logger.addHandler(console)
-
-        class _MemoryHandler(logging.Handler):
-            def emit(self, record: logging.LogRecord) -> None:
-                session = getattr(record, "session_id", None)
-                if session:
-                    SessionLogger.logs[session].append(self.format(record))
-
-        mem_handler = _MemoryHandler()
-        mem_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        logger.addHandler(mem_handler)
-
-        return logger
+        configure_logging()
+        return logging.getLogger(name)
 
 
-__all__ = ["SessionLogger"]
+__all__ = [
+    "SessionLogger",
+    "clear_session_logs",
+    "configure_logging",
+    "consume_session_logs",
+    "current_log_level",
+    "current_session_id",
+    "get_session_logs",
+    "reset_session",
+    "session_logging",
+    "set_session",
+]
 
 # === utils/events.py ===
 """Utility functions for emitting OpenWebUI events."""

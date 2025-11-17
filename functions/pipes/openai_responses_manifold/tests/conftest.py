@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections import deque
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, Callable
@@ -156,14 +155,12 @@ def session_logger_scope() -> str:
     """Provide a unique SessionLogger context per test."""
 
     session_id = f"test-session-{orm.generate_item_id()}"
-    token_id = orm.SessionLogger.session_id.set(session_id)
-    token_level = orm.SessionLogger.log_level.set(logging.DEBUG)
+    tokens = orm.SessionLogger.set_session(session_id, logging.DEBUG)
     try:
         yield session_id
     finally:
-        orm.SessionLogger.logs.pop(session_id, None)
-        orm.SessionLogger.session_id.reset(token_id)
-        orm.SessionLogger.log_level.reset(token_level)
+        orm.SessionLogger.clear_session_logs(session_id)
+        orm.SessionLogger.reset_session(tokens)
 
 
 @pytest.fixture()
@@ -228,4 +225,4 @@ def responses_body_factory() -> Callable[..., orm.ResponsesBody]:
 def clear_session_logs(session_logger_scope: str) -> None:
     """Ensure SessionLogger logs deque exists for tests that mutate it."""
 
-    orm.SessionLogger.logs.setdefault(session_logger_scope, deque())
+    orm.SessionLogger.clear_session_logs(session_logger_scope)

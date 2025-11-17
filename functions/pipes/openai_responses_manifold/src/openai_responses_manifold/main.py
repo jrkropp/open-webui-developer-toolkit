@@ -14,6 +14,7 @@ from .core.api_models import CompletionsBody, ResponsesBody
 from .core.capabilities import supports
 from .engine import EventEmitter, ResponsesEngine
 from .infra import ItemStore, OpenAIResponsesClient
+from .logging_config import reset_session, set_session
 from .services import HistoryBuilder, build_tools, route_auto_model
 from .settings import PipeValves, UserValves
 from .utils import SessionLogger
@@ -63,8 +64,10 @@ class Pipe:
         user_identifier = __user__[valves.PROMPT_CACHE_KEY]
         features = __metadata__.get("features", {}).get("openai_responses", {})
 
-        SessionLogger.session_id.set(__metadata__.get("session_id"))
-        SessionLogger.log_level.set(getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO))
+        tokens = set_session(
+            __metadata__.get("session_id"),
+            getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
+        )
 
         if __event_call__:
             await __event_call__(self._status_unclamp_script())
@@ -166,13 +169,16 @@ class Pipe:
         else:
             responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
 
-        return await self.engine.run_streaming_turn(
-            responses_body,
-            valves=valves,
-            metadata=__metadata__,
-            event_emitter=__event_emitter__,
-            tool_registry=tool_registry or {},
-        )
+        try:
+            return await self.engine.run_streaming_turn(
+                responses_body,
+                valves=valves,
+                metadata=__metadata__,
+                event_emitter=__event_emitter__,
+                tool_registry=tool_registry or {},
+            )
+        finally:
+            reset_session(tokens)
 
     def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
         merged = pipe_valves.model_copy(deep=True)

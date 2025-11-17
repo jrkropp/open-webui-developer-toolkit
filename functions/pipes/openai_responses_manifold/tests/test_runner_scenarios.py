@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections import deque
+import asyncio
+import logging
 
 import pytest
 
@@ -87,10 +88,11 @@ async def test_function_call_loop_executes_local_tools(
             {"type": "response.completed"},
         ]
     )
+    logger = orm.SessionLogger.get_logger("openai_responses_manifold.runner")
     runner = orm.ResponsesEngine(
         client=fake_responses_client,
         item_store=orm.ItemStore(),
-        logger=orm.SessionLogger.get_logger("runner"),
+        logger=logger,
     )
     chat_store.ensure("chat-9", {"id": "chat-9"})
     metadata = metadata_factory(chat_id="chat-9", message_id="msg-9")
@@ -130,29 +132,134 @@ async def test_errors_emit_log_citation(
     fake_responses_client.enqueue_stream(
         [{"type": "response.error", "error": {"message": "boom"}}]
     )
+    logger = orm.SessionLogger.get_logger("openai_responses_manifold.runner")
     runner = orm.ResponsesEngine(
         client=fake_responses_client,
         item_store=orm.ItemStore(),
-        logger=orm.SessionLogger.get_logger("runner"),
+        logger=logger,
     )
     chat_store.ensure("chat-err", {"id": "chat-err"})
     metadata = metadata_factory(chat_id="chat-err", message_id="msg-err")
 
-    orm.SessionLogger.logs[session_logger_scope] = deque(["debug line"])
+    tokens = orm.SessionLogger.set_session(session_logger_scope, logging.DEBUG)
+    try:
+        logger.debug("debug line")
 
-    await runner.run_streaming_turn(
-        responses_body_factory(),
-        valves=valves,
-        metadata=metadata,
-        event_emitter=spy_event_emitter,
-        tool_registry={},
-    )
+        await runner.run_streaming_turn(
+            responses_body_factory(),
+            valves=valves,
+            metadata=metadata,
+            event_emitter=spy_event_emitter,
+            tool_registry={},
+        )
+    finally:
+        orm.SessionLogger.reset_session(tokens)
 
     types = spy_event_emitter.types()
     assert "citation" in types, "Log citation should be emitted when logs exist"
+    assert orm.SessionLogger.get_session_logs(session_logger_scope) == []
 
     completion_events = [
         event for event in spy_event_emitter.events if event["type"] == "chat:completion"
     ]
     assert len(completion_events) == 2  # error notification + terminal done event
     assert completion_events[0]["data"]["error"]["message"] == "boom"
+
+
+@pytest.mark.asyncio()
+async def test_usage_backfills_from_final_response(
+    fake_responses_client: FakeResponsesClient,
+    spy_event_emitter: SpyEventEmitter,
+    metadata_factory,
+    responses_body_factory,
+    valves: orm.Pipe.Valves,
+) -> None:
+    usage_payload = {"prompt_tokens": 1, "completion_tokens": 2}
+    fake_responses_client.enqueue_stream(
+        [
+            {"type": "response.output_text.delta", "delta": "Hi"},
+            {"type": "response.output_text.done", "output": [], "usage": usage_payload},
+            {"type": "response.completed"},
+        ]
+    )
+    runner = orm.ResponsesEngine(
+        client=fake_responses_client,
+        item_store=orm.ItemStore(),
+        logger=orm.SessionLogger.get_logger("runner"),
+    )
+
+    await runner.run_streaming_turn(
+        responses_body_factory(),
+        valves=valves,
+        metadata=metadata_factory(),
+        event_emitter=spy_event_emitter,
+        tool_registry={},
+    )
+
+    completion_events = [
+        event for event in spy_event_emitter.events if event["type"] == "chat:completion"
+    ]
+    assert any(
+        event.get("data", {}).get("usage") == usage_payload for event in completion_events
+    )
+
+
+@pytest.mark.asyncio()
+async def test_function_call_arguments_delta_handles_bad_json(
+    fake_responses_client: FakeResponsesClient,
+    spy_event_emitter: SpyEventEmitter,
+    metadata_factory,
+    responses_body_factory,
+    valves: orm.Pipe.Valves,
+) -> None:
+    fake_responses_client.enqueue_stream(
+        [
+            {
+                "type": "response.output_items.delta",
+                "output_items": {
+                    "items": [
+                        {
+                            "type": "function_call",
+                            "name": "broken_tool",
+                            "arguments": "{not-json}",
+                        }
+                    ]
+                },
+            },
+            {"type": "response.output_text.delta", "delta": "Done"},
+            {"type": "response.output_text.done", "output": []},
+            {"type": "response.completed"},
+        ]
+    )
+    runner = orm.ResponsesEngine(
+        client=fake_responses_client,
+        item_store=orm.ItemStore(),
+        logger=orm.SessionLogger.get_logger("runner"),
+    )
+
+    result = await runner.run_streaming_turn(
+        responses_body_factory(),
+        valves=valves,
+        metadata=metadata_factory(),
+        event_emitter=spy_event_emitter,
+        tool_registry={},
+    )
+
+    assert result == "Done"
+    status_events = [event for event in spy_event_emitter.events if event["type"] == "status"]
+    assert any(
+        event.get("data", {}).get("description") == "Skipping malformed tool arguments."
+        for event in status_events
+    )
+
+
+@pytest.mark.asyncio()
+async def test_cancelled_tasks_are_awaited() -> None:
+    runner = orm.ResponsesEngine(logger=orm.SessionLogger.get_logger("runner"))
+    tasks = [asyncio.create_task(asyncio.sleep(0.01)) for _ in range(2)]
+    original_tasks = list(tasks)
+
+    await runner._cancel_tasks(tasks)
+
+    assert not tasks
+    assert all(task.cancelled() or task.done() for task in original_tasks)
