@@ -50,7 +50,6 @@ PYPROJECT_FILE = PIPE_ROOT / "pyproject.toml"
 MODULE_ORDER: list[str] = [
     "model_catalog.py",
     "settings.py",
-    "logging_config.py",
     "main.py",
     "engine.py",
     "core/api_models.py",

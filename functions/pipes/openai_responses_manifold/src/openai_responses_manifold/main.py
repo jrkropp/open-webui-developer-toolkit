@@ -14,10 +14,9 @@ from .core.api_models import CompletionsBody, ResponsesBody
 from .core.capabilities import supports
 from .engine import EventEmitter, ResponsesEngine
 from .infra import ItemStore, OpenAIResponsesClient
-from .logging_config import reset_session, set_session
 from .services import HistoryBuilder, build_tools, route_auto_model
 from .settings import PipeValves, UserValves
-from .utils import SessionLogger
+from .utils import SessionLogger, reset_session, set_session
 
 
 class Pipe:
@@ -67,6 +66,9 @@ class Pipe:
         tokens = set_session(
             __metadata__.get("session_id"),
             getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
+            chat_id=__metadata__.get("chat_id"),
+            message_id=__metadata__.get("message_id"),
+            user_id=__metadata__.get("user_id"),
         )
         self.logger.debug(
             "Session context resolved: session_id=%s chat_id=%s message_id=%s user_id=%s log_level=%s",

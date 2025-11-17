@@ -23,7 +23,6 @@ Use the version in the alpha-preview or main branches instead.
 # Logical module layout (source → sections below):
 # - model_catalog.py          Single source of truth for OpenAI model capabilities.
 # - settings.py               Shared pipe settings and defaults.
-# - logging_config.py         Centralized logging configuration for the Responses manifold.
 # - main.py                   Open WebUI pipe implementation that delegates to the Responses engine.
 # - engine.py                 Streaming and tool orchestration engine for the Responses manifold.
 # - core/api_models.py        Pydantic request bodies for the Completions and Responses APIs.
@@ -37,7 +36,7 @@ Use the version in the alpha-preview or main branches instead.
 # - services/routing.py       Helper model routing for auto variants.
 # - infra/openwebui_store.py  Persistence helpers for storing Responses items in OpenWebUI.
 # - infra/openai_client.py    aiohttp-backed client for the OpenAI Responses API.
-# - utils/logging.py          Session-scoped logger facade backed by ``logging_config``.
+# - utils/logging.py          Session-scoped logging helpers with a single namespace and context injection.
 # - utils/events.py           Utility functions for emitting OpenWebUI events.
 
 # fmt: off
@@ -218,173 +217,6 @@ class UserValves(BaseModel):
         description="Select logging level. 'INHERIT' uses the pipe default.",
     )
 
-# === logging_config.py ===
-"""Centralized logging configuration for the Responses manifold.
-
-This module configures a package-scoped logger hierarchy that:
-- Attaches console + in-memory handlers once per process.
-- Uses ContextVars to scope session identifiers and effective log levels.
-- Exposes helpers to manage session context and access buffered logs.
-"""
-
-import logging
-import sys
-from collections import defaultdict, deque
-from contextlib import contextmanager
-from contextvars import ContextVar, Token
-from typing import DefaultDict, Deque, Iterator, Tuple
-
-# Context-aware state
-current_session_id: ContextVar[str | None] = ContextVar(
-    "openai_responses_session_id", default=None
-)
-current_log_level: ContextVar[int] = ContextVar(
-    "openai_responses_log_level", default=logging.INFO
-)
-
-
-# Per-session buffered logs
-SESSION_LOGS: DefaultDict[str, Deque[str]] = defaultdict(lambda: deque(maxlen=2000))
-
-
-class _SessionFilter(logging.Filter):
-    """Attach session context and enforce the current log level."""
-
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
-        record.session_id = current_session_id.get()
-        return record.levelno >= current_log_level.get()
-
-
-class _SessionConsoleHandler(logging.StreamHandler):
-    """Dedicated console handler marker for session-aware filtering."""
-
-
-class _SessionMemoryHandler(logging.Handler):
-    """Buffer log lines per session for later citation emission."""
-
-    def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - tiny wrapper
-        session = getattr(record, "session_id", None)
-        if not session:
-            return
-        SESSION_LOGS[session].append(self.format(record))
-
-
-_configured = False
-_session_filter = _SessionFilter()
-
-
-def configure_logging() -> None:
-    """Attach handlers/filters to the package logger once."""
-
-    global _configured
-    if _configured:
-        return
-
-    logger = logging.getLogger("openai_responses_manifold")
-    logger.setLevel(logging.DEBUG)
-    logger.propagate = False
-
-    if not any(isinstance(flt, _SessionFilter) for flt in logger.filters):
-        logger.addFilter(_session_filter)
-
-    console_handler = next(
-        (h for h in logger.handlers if isinstance(h, _SessionConsoleHandler)), None
-    )
-    if console_handler is None:
-        console_handler = _SessionConsoleHandler(sys.stdout)
-        console_handler.setLevel(logging.DEBUG)
-        console_handler.setFormatter(
-            logging.Formatter("[%(levelname)s] [%(session_id)s] %(message)s")
-        )
-        logger.addHandler(console_handler)
-    if not any(isinstance(flt, _SessionFilter) for flt in console_handler.filters):
-        console_handler.addFilter(_session_filter)
-
-    memory_handler = next(
-        (h for h in logger.handlers if isinstance(h, _SessionMemoryHandler)), None
-    )
-    if memory_handler is None:
-        memory_handler = _SessionMemoryHandler()
-        memory_handler.setLevel(logging.DEBUG)
-        memory_handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-        )
-        logger.addHandler(memory_handler)
-    if not any(isinstance(flt, _SessionFilter) for flt in memory_handler.filters):
-        memory_handler.addFilter(_session_filter)
-
-    _configured = True
-
-
-def set_session(session_id: str | None, level: int) -> Tuple[Token[str | None], Token[int]]:
-    """Set session/log-level ContextVars and return reset tokens."""
-
-    configure_logging()
-    token_id = current_session_id.set(session_id)
-    token_level = current_log_level.set(level)
-    return token_id, token_level
-
-
-def reset_session(tokens: Tuple[Token[str | None], Token[int]]) -> None:
-    """Reset ContextVars using tokens from ``set_session``."""
-
-    token_id, token_level = tokens
-    current_session_id.reset(token_id)
-    current_log_level.reset(token_level)
-
-
-def get_session_logs(session_id: str | None) -> list[str]:
-    """Return buffered log lines for the given session id."""
-
-    if not session_id:
-        return []
-    return list(SESSION_LOGS.get(session_id, ()))
-
-
-def clear_session_logs(session_id: str | None) -> None:
-    """Clear buffered logs for the given session id, if any."""
-
-    if not session_id:
-        return
-    SESSION_LOGS.pop(session_id, None)
-
-
-def consume_session_logs(session_id: str | None) -> list[str]:
-    """Return and clear buffered logs for ``session_id``."""
-
-    lines = get_session_logs(session_id)
-    clear_session_logs(session_id)
-    return lines
-
-
-@contextmanager
-def session_logging(session_id: str | None, level: int) -> Iterator[None]:
-    """Context manager to scope logging to a session."""
-
-    tokens = set_session(session_id, level)
-    try:
-        yield
-    finally:
-        reset_session(tokens)
-
-
-# Configure at import so child loggers propagate to the package logger.
-configure_logging()
-
-
-__all__ = [
-    "SESSION_LOGS",
-    "clear_session_logs",
-    "configure_logging",
-    "consume_session_logs",
-    "current_log_level",
-    "current_session_id",
-    "get_session_logs",
-    "reset_session",
-    "session_logging",
-    "set_session",
-]
-
 # === main.py ===
 """Open WebUI pipe implementation that delegates to the Responses engine."""
 
@@ -401,10 +233,9 @@ from open_webui.models.models import ModelForm, Models
 # from .core.capabilities import supports
 # from .engine import EventEmitter, ResponsesEngine
 # from .infra import ItemStore, OpenAIResponsesClient
-# from .logging_config import reset_session, set_session
 # from .services import HistoryBuilder, build_tools, route_auto_model
 # from .settings import PipeValves, UserValves
-# from .utils import SessionLogger
+# from .utils import SessionLogger, reset_session, set_session
 
 
 class Pipe:
@@ -451,21 +282,12 @@ class Pipe:
         user_identifier = __user__[valves.PROMPT_CACHE_KEY]
         features = __metadata__.get("features", {}).get("openai_responses", {})
 
-        # Temporary hard logging to validate session context wiring in production
-        print(
-            "[OWUI_MANIFOLD_DEBUG] metadata session_id=%s chat_id=%s message_id=%s user_id=%s log_level=%s"
-            % (
-                __metadata__.get("session_id"),
-                __metadata__.get("chat_id"),
-                __metadata__.get("message_id"),
-                __metadata__.get("user_id"),
-                valves.LOG_LEVEL,
-            )
-        )
-
         tokens = set_session(
             __metadata__.get("session_id"),
             getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
+            chat_id=__metadata__.get("chat_id"),
+            message_id=__metadata__.get("message_id"),
+            user_id=__metadata__.get("user_id"),
         )
         self.logger.debug(
             "Session context resolved: session_id=%s chat_id=%s message_id=%s user_id=%s log_level=%s",
@@ -669,17 +491,20 @@ from open_webui.models.chats import Chats
 # from .core.api_models import ResponsesBody
 # from .core.capabilities import supports
 # from .infra import ItemStore, OpenAIResponsesClient
-# from .logging_config import clear_session_logs, current_session_id, get_session_logs
 # from .services.history import HistoryPersistence
 # from .services.tools import execute_tool_calls
 # from .utils import (
 #     SessionLogger,
+#     clear_session_logs,
+#     current_session_id,
 #     emit_chat_message,
 #     emit_citation,
 #     emit_completion,
 #     emit_error,
 #     emit_status,
+#     get_session_logs,
 #     merge_usage_stats,
+#     truncate_for_log,
 #     wrap_code_block,
 #     wrap_event_emitter,
 # )
@@ -746,9 +571,11 @@ class ResponsesEngine:
                     if self.logger.isEnabledFor(logging.DEBUG):
                         self.logger.debug("Received event: %s", event_type)
                         if not str(event_type).endswith(".delta"):
-                            self.logger.debug(
-                                "Event data: %s", json.dumps(event, indent=2, ensure_ascii=False)
+                            payload, truncated = truncate_for_log(
+                                json.dumps(event, ensure_ascii=False), limit=3000
                             )
+                            suffix = " (truncated)" if truncated else ""
+                            self.logger.debug("Event data%s: %s", suffix, payload)
 
                     if event_type == "response.output_text.delta":
                         delta = event.get("delta", "")
@@ -975,11 +802,14 @@ class ResponsesEngine:
     ) -> None:
         session_id = current_session_id.get()
         if not session_id:
-            print("[OWUI_MANIFOLD_DEBUG] No session_id set; skipping log citation emission")
             return
         logs = get_session_logs(session_id)
         if logs:
             log_text = "\n".join(logs)
+            is_truncated = len(log_text) > 4000
+            self.logger.debug(
+                "Emitting log citation lines=%d truncated=%s", len(logs), is_truncated
+            )
             await emit_citation(event_emitter, log_text, "Logs")
             if emitted_citations is not None:
                 snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
@@ -2406,29 +2236,176 @@ class OpenAIResponsesClient:
 __all__ = ["OpenAIResponsesClient"]
 
 # === utils/logging.py ===
-"""Session-scoped logger facade backed by ``logging_config``."""
+"""Session-scoped logging helpers with a single namespace and context injection."""
 
 import logging
+import sys
+from collections import defaultdict, deque
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from typing import Any, DefaultDict, Deque, Iterator, Tuple
 
-# [build.py] internal imports removed in monolith:
-# from ..logging_config import (
-#     SESSION_LOGS,
-#     clear_session_logs,
-#     configure_logging,
-#     consume_session_logs,
-#     current_log_level,
-#     current_session_id,
-#     get_session_logs,
-#     reset_session,
-#     session_logging,
-#     set_session,
-# )
+# ---------------------------------------------------------------------------
+# Context and buffering
+# ---------------------------------------------------------------------------
+
+current_session_id: ContextVar[str | None] = ContextVar(
+    "openai_responses_session_id", default=None
+)
+current_chat_id: ContextVar[str | None] = ContextVar(
+    "openai_responses_chat_id", default=None
+)
+current_message_id: ContextVar[str | None] = ContextVar(
+    "openai_responses_message_id", default=None
+)
+current_user_id: ContextVar[str | None] = ContextVar(
+    "openai_responses_user_id", default=None
+)
+current_log_level: ContextVar[int] = ContextVar(
+    "openai_responses_log_level", default=logging.INFO
+)
+
+SESSION_LOGS: DefaultDict[str, Deque[str]] = defaultdict(lambda: deque(maxlen=2000))
+
+
+class _ContextFilter(logging.Filter):
+    """Attach session/chat/message/user context and enforce the current log level."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        record.session_id = current_session_id.get()
+        record.chat_id = current_chat_id.get()
+        record.message_id = current_message_id.get()
+        record.user_id = current_user_id.get()
+        return record.levelno >= current_log_level.get()
+
+
+class _MemoryHandler(logging.Handler):
+    """Buffer log lines per session for later citation emission."""
+
+    def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover
+        session = getattr(record, "session_id", None)
+        if not session:
+            return
+        SESSION_LOGS[session].append(self.format(record))
+
+
+_configured = False
+_context_filter = _ContextFilter()
+_LOG_FORMAT = (
+    "%(asctime)s [%(levelname)s] %(message)s "
+    "session_id=%(session_id)s chat_id=%(chat_id)s message_id=%(message_id)s user_id=%(user_id)s"
+)
+
+
+def configure_logging() -> None:
+    """Attach console + memory handlers once under the canonical namespace."""
+
+    global _configured
+    if _configured:
+        return
+
+    logger = logging.getLogger("openai_responses_manifold")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    formatter = logging.Formatter(_LOG_FORMAT)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.DEBUG)
+    console_handler.setFormatter(formatter)
+    console_handler.addFilter(_context_filter)
+
+    memory_handler = _MemoryHandler()
+    memory_handler.setLevel(logging.DEBUG)
+    memory_handler.setFormatter(formatter)
+    memory_handler.addFilter(_context_filter)
+
+    logger.addHandler(console_handler)
+    logger.addHandler(memory_handler)
+    logger.addFilter(_context_filter)
+
+    _configured = True
+
+
+def set_session(
+    session_id: str | None,
+    level: int,
+    *,
+    chat_id: str | None = None,
+    message_id: str | None = None,
+    user_id: str | None = None,
+) -> Tuple[Token[str | None], Token[str | None], Token[str | None], Token[str | None], Token[int]]:
+    """Set session/log-level ContextVars and return reset tokens."""
+
+    configure_logging()
+    token_session = current_session_id.set(session_id)
+    token_chat = current_chat_id.set(chat_id)
+    token_message = current_message_id.set(message_id)
+    token_user = current_user_id.set(user_id)
+    token_level = current_log_level.set(level)
+    return token_session, token_chat, token_message, token_user, token_level
+
+
+def reset_session(
+    tokens: Tuple[Token[str | None], Token[str | None], Token[str | None], Token[str | None], Token[int]]
+) -> None:
+    """Reset ContextVars using tokens from ``set_session``."""
+
+    token_session, token_chat, token_message, token_user, token_level = tokens
+    current_session_id.reset(token_session)
+    current_chat_id.reset(token_chat)
+    current_message_id.reset(token_message)
+    current_user_id.reset(token_user)
+    current_log_level.reset(token_level)
+
+
+def get_session_logs(session_id: str | None) -> list[str]:
+    if not session_id:
+        return []
+    return list(SESSION_LOGS.get(session_id, ()))
+
+
+def clear_session_logs(session_id: str | None) -> None:
+    if not session_id:
+        return
+    SESSION_LOGS.pop(session_id, None)
+
+
+def consume_session_logs(session_id: str | None) -> list[str]:
+    lines = get_session_logs(session_id)
+    clear_session_logs(session_id)
+    return lines
+
+
+@contextmanager
+def session_logging(
+    session_id: str | None,
+    level: int,
+    *,
+    chat_id: str | None = None,
+    message_id: str | None = None,
+    user_id: str | None = None,
+) -> Iterator[None]:
+    tokens = set_session(
+        session_id,
+        level,
+        chat_id=chat_id,
+        message_id=message_id,
+        user_id=user_id,
+    )
+    try:
+        yield
+    finally:
+        reset_session(tokens)
 
 
 class SessionLogger:
-    """Compatibility shim exposing session-aware logging helpers."""
+    """Thin facade around the session-aware logging helpers."""
 
     session_id = current_session_id
+    chat_id = current_chat_id
+    message_id = current_message_id
+    user_id = current_user_id
     log_level = current_log_level
     logs = SESSION_LOGS
 
@@ -2447,17 +2424,36 @@ class SessionLogger:
         return logging.getLogger(qualified)
 
 
+def truncate_for_log(value: Any, limit: int = 2000) -> tuple[str, bool]:
+    """Return a safe, possibly truncated string for logging."""
+
+    if value is None:
+        return "", False
+    text = value if isinstance(value, str) else str(value)
+    if len(text) <= limit:
+        return text, False
+    return text[:limit], True
+
+
+# Configure immediately so children inherit handlers/filters.
+configure_logging()
+
+
 __all__ = [
     "SessionLogger",
     "clear_session_logs",
     "configure_logging",
     "consume_session_logs",
     "current_log_level",
+    "current_chat_id",
+    "current_message_id",
     "current_session_id",
+    "current_user_id",
     "get_session_logs",
     "reset_session",
     "session_logging",
     "set_session",
+    "truncate_for_log",
 ]
 
 # === utils/events.py ===

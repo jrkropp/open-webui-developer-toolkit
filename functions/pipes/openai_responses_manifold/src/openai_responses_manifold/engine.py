@@ -15,17 +15,20 @@ from open_webui.models.chats import Chats
 from .core.api_models import ResponsesBody
 from .core.capabilities import supports
 from .infra import ItemStore, OpenAIResponsesClient
-from .logging_config import clear_session_logs, current_session_id, get_session_logs
 from .services.history import HistoryPersistence
 from .services.tools import execute_tool_calls
 from .utils import (
     SessionLogger,
+    clear_session_logs,
+    current_session_id,
     emit_chat_message,
     emit_citation,
     emit_completion,
     emit_error,
     emit_status,
+    get_session_logs,
     merge_usage_stats,
+    truncate_for_log,
     wrap_code_block,
     wrap_event_emitter,
 )
@@ -92,9 +95,11 @@ class ResponsesEngine:
                     if self.logger.isEnabledFor(logging.DEBUG):
                         self.logger.debug("Received event: %s", event_type)
                         if not str(event_type).endswith(".delta"):
-                            self.logger.debug(
-                                "Event data: %s", json.dumps(event, indent=2, ensure_ascii=False)
+                            payload, truncated = truncate_for_log(
+                                json.dumps(event, ensure_ascii=False), limit=3000
                             )
+                            suffix = " (truncated)" if truncated else ""
+                            self.logger.debug("Event data%s: %s", suffix, payload)
 
                     if event_type == "response.output_text.delta":
                         delta = event.get("delta", "")
@@ -325,6 +330,10 @@ class ResponsesEngine:
         logs = get_session_logs(session_id)
         if logs:
             log_text = "\n".join(logs)
+            is_truncated = len(log_text) > 4000
+            self.logger.debug(
+                "Emitting log citation lines=%d truncated=%s", len(logs), is_truncated
+            )
             await emit_citation(event_emitter, log_text, "Logs")
             if emitted_citations is not None:
                 snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
