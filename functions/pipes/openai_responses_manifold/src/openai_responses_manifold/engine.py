@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import random
-from collections import deque
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 from typing import Any, Literal
@@ -16,6 +15,7 @@ from open_webui.models.chats import Chats
 from .core.api_models import ResponsesBody
 from .core.capabilities import supports
 from .infra import ItemStore, OpenAIResponsesClient
+from .logging_config import clear_session_logs, current_session_id, get_session_logs
 from .services.history import HistoryPersistence
 from .services.tools import execute_tool_calls
 from .utils import (
@@ -66,6 +66,7 @@ class ResponsesEngine:
         openwebui_model = metadata.get("model", {}).get("id", "")
 
         thinking_tasks = self._schedule_reasoning_statuses(body, event_emitter)
+        final_response: dict[str, Any] | None = None
 
         model_router_result = body.model_router_result
         if model_router_result:
@@ -81,7 +82,7 @@ class ResponsesEngine:
         try:
             max_loops = getattr(valves, "MAX_FUNCTION_CALL_LOOPS", 10)
             for _ in range(max_loops):
-                final_response: dict[str, Any] | None = None
+                final_response = None
                 async for event in self.client.stream(
                     body.model_dump(exclude_none=True),
                     api_key=valves.API_KEY,
@@ -102,9 +103,9 @@ class ResponsesEngine:
                             await emit_chat_message(event_emitter, assistant_message)
                     elif event_type == "response.output_text.done":
                         final_response = event
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                     elif event_type == "response.error":
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                         error_occurred = True
                         await self._handle_stream_error(
                             event_emitter,
@@ -112,7 +113,7 @@ class ResponsesEngine:
                         )
                         break
                     elif event_type == "response.completed_with_error":
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                         error_occurred = True
                         await self._handle_stream_error(
                             event_emitter,
@@ -120,7 +121,7 @@ class ResponsesEngine:
                         )
                         break
                     elif event_type == "response.completed":
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                         break
                     elif event_type == "response.output_text.delta.truncated":
                         continue
@@ -141,9 +142,16 @@ class ResponsesEngine:
                             event["event_metadata"]["partial_arguments"] = partial_args
                     elif event_type == "response.output_items.done":
                         final_response = event.get("response")
-                        self._cancel_tasks(thinking_tasks)
+                        await self._cancel_tasks(thinking_tasks)
                     elif event_type == "response.message.delta":
                         await self._handle_message_delta(event, emitted_citations, ordinal_by_url)
+
+                if final_response and not total_usage:
+                    usage_from_response = self._extract_usage_from_final_response(
+                        final_response
+                    )
+                    if usage_from_response:
+                        total_usage = merge_usage_stats(total_usage, usage_from_response)
 
                 if error_occurred or not final_response:
                     break
@@ -164,7 +172,7 @@ class ResponsesEngine:
             self.logger.info("Total streaming duration: %.2f seconds", respond_time)
 
         except Exception as exc:  # pragma: no cover
-            self._cancel_tasks(thinking_tasks)
+            await self._cancel_tasks(thinking_tasks)
             error_occurred = True
             await self._handle_stream_error(event_emitter, str(exc))
 
@@ -176,7 +184,6 @@ class ResponsesEngine:
                 usage=total_usage or None,
                 done=True,
             )
-            SessionLogger.logs.pop(SessionLogger.session_id.get(), None)
             chat_id = metadata.get("chat_id")
             message_id = metadata.get("message_id")
             if chat_id and message_id and emitted_citations:
@@ -273,10 +280,29 @@ class ResponsesEngine:
             tasks.append(asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg)))
         return tasks
 
-    def _cancel_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
-        while tasks:
-            task = tasks.pop()
+    async def _cancel_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
+        if not tasks:
+            return
+        to_cancel = list(tasks)
+        tasks.clear()
+        for task in to_cancel:
             task.cancel()
+        await asyncio.gather(*to_cancel, return_exceptions=True)
+
+    def _extract_usage_from_final_response(
+        self, final_response: dict[str, Any]
+    ) -> dict[str, Any]:
+        if "usage" in final_response:
+            usage = final_response.get("usage")
+            return usage if isinstance(usage, dict) else {}
+
+        response_payload = final_response.get("response")
+        if isinstance(response_payload, dict):
+            usage = response_payload.get("usage")
+            if isinstance(usage, dict):
+                return usage
+
+        return {}
 
     async def _handle_stream_error(
         self,
@@ -287,12 +313,11 @@ class ResponsesEngine:
         await emit_error(event_emitter, message, done=False)
 
     async def _flush_logs(self, event_emitter: EventEmitter | None, valves: Any) -> None:
-        if getattr(valves, "LOG_LEVEL", "INHERIT") == "INHERIT":
-            return
-        session_id = SessionLogger.session_id.get()
-        logs = SessionLogger.logs.get(session_id, deque())
+        session_id = current_session_id.get()
+        logs = get_session_logs(session_id)
         if logs:
             await emit_citation(event_emitter, "\n".join(logs), "Logs")
+            clear_session_logs(session_id)
 
     async def _handle_output_items_delta(
         self,
@@ -316,7 +341,18 @@ class ResponsesEngine:
             content = ""
             if item_type == "function_call":
                 title = f"Running the {item_name} tool…"
-                arguments = json.loads(item.get("arguments") or "{}")
+                try:
+                    arguments = json.loads(item.get("arguments") or "{}")
+                except json.JSONDecodeError as exc:
+                    self.logger.warning(
+                        "Received malformed tool arguments for %s: %s", item_name, exc
+                    )
+                    await emit_status(
+                        event_emitter,
+                        "Skipping malformed tool arguments.",
+                        action="warning",
+                    )
+                    continue
                 args_formatted = ", ".join(f"{k}={json.dumps(v)}" for k, v in arguments.items())
                 content = wrap_code_block(f"{item_name}({args_formatted})", "python")
             elif item_type == "web_search_call":
