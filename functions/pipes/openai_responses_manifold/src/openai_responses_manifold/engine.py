@@ -19,8 +19,8 @@ from .services.history import HistoryPersistence
 from .services.tools import execute_tool_calls
 from .utils import (
     SessionLogger,
+    OWUI_SESSION_ID,
     clear_session_logs,
-    current_session_id,
     emit_chat_message,
     emit_citation,
     emit_completion,
@@ -324,7 +324,7 @@ class ResponsesEngine:
         valves: Any,
         emitted_citations: list[dict[str, Any]] | None = None,
     ) -> None:
-        session_id = current_session_id.get()
+        session_id = OWUI_SESSION_ID.get()
         if not session_id:
             return
         logs = get_session_logs(session_id)

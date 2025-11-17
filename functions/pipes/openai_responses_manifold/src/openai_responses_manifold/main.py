@@ -16,7 +16,7 @@ from .engine import EventEmitter, ResponsesEngine
 from .infra import ItemStore, OpenAIResponsesClient
 from .services import HistoryBuilder, build_tools, route_auto_model
 from .settings import PipeValves, UserValves
-from .utils import SessionLogger, reset_session, set_session
+from .utils import SessionLogger, logging_context, pop_logging_context, push_logging_context
 
 
 class Pipe:
@@ -63,22 +63,13 @@ class Pipe:
         user_identifier = __user__[valves.PROMPT_CACHE_KEY]
         features = __metadata__.get("features", {}).get("openai_responses", {})
 
-        tokens = set_session(
+        tokens = push_logging_context(
             __metadata__.get("session_id"),
             getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
             chat_id=__metadata__.get("chat_id"),
             message_id=__metadata__.get("message_id"),
             user_id=__metadata__.get("user_id"),
         )
-        self.logger.debug(
-            "Session context resolved: session_id=%s chat_id=%s message_id=%s user_id=%s log_level=%s",
-            __metadata__.get("session_id"),
-            __metadata__.get("chat_id"),
-            __metadata__.get("message_id"),
-            __metadata__.get("user_id"),
-            valves.LOG_LEVEL,
-        )
-
         if __event_call__:
             await __event_call__(self._status_unclamp_script())
 
@@ -188,7 +179,7 @@ class Pipe:
                 tool_registry=tool_registry or {},
             )
         finally:
-            reset_session(tokens)
+            pop_logging_context(tokens)
 
     def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
         merged = pipe_valves.model_copy(deep=True)
