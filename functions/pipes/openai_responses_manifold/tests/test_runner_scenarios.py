@@ -23,15 +23,30 @@ async def test_streaming_flow_emits_single_completion(
 ) -> None:
     fake_responses_client.enqueue_stream(
         [
-            {"type": "response.output_text.delta", "delta": "Hello world"},
-            {"type": "response.output_text.done", "output": []},
-            {"type": "response.completed"},
+            {
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "item_id": "msg1",
+                "content_index": 0,
+                "delta": "Hello world",
+            },
+            {
+                "type": "response.output_text.done",
+                "output_index": 0,
+                "item_id": "msg1",
+                "content_index": 0,
+                "text": "Hello world",
+            },
+            {
+                "type": "response.completed",
+                "response": {"output": []},
+            },
         ]
     )
     runner = orm.ResponsesEngine(
         client=fake_responses_client,
         item_store=orm.ItemStore(),
-        logger=orm.SessionLogger.get_logger(__name__),
+        logger=orm.get_logger(__name__),
     )
 
     chat_store.ensure("chat-1", {"id": "chat-1"})
@@ -67,7 +82,7 @@ async def test_function_call_loop_executes_local_tools(
     fake_responses_client.enqueue_stream(
         [
             {
-                "type": "response.output_items.done",
+                "type": "response.completed",
                 "response": {
                     "output": [
                         {
@@ -83,12 +98,27 @@ async def test_function_call_loop_executes_local_tools(
     )
     fake_responses_client.enqueue_stream(
         [
-            {"type": "response.output_text.delta", "delta": "Result"},
-            {"type": "response.output_text.done", "output": []},
-            {"type": "response.completed"},
+            {
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "item_id": "msg2",
+                "content_index": 0,
+                "delta": "Result",
+            },
+            {
+                "type": "response.output_text.done",
+                "output_index": 0,
+                "item_id": "msg2",
+                "content_index": 0,
+                "text": "Result",
+            },
+            {
+                "type": "response.completed",
+                "response": {"output": []},
+            },
         ]
     )
-    logger = orm.SessionLogger.get_logger("openai_responses_manifold.runner")
+    logger = orm.get_logger("openai_responses_manifold.runner")
     runner = orm.ResponsesEngine(
         client=fake_responses_client,
         item_store=orm.ItemStore(),
@@ -130,9 +160,9 @@ async def test_errors_emit_log_citation(
     session_logger_scope: str,
 ) -> None:
     fake_responses_client.enqueue_stream(
-        [{"type": "response.error", "error": {"message": "boom"}}]
+        [{"type": "error", "code": "ERR", "message": "boom", "param": None}]
     )
-    logger = orm.SessionLogger.get_logger("openai_responses_manifold.runner")
+    logger = orm.get_logger("openai_responses_manifold.runner")
     runner = orm.ResponsesEngine(
         client=fake_responses_client,
         item_store=orm.ItemStore(),
@@ -141,7 +171,7 @@ async def test_errors_emit_log_citation(
     chat_store.ensure("chat-err", {"id": "chat-err"})
     metadata = metadata_factory(chat_id="chat-err", message_id="msg-err")
 
-    tokens = orm.SessionLogger.set_session(session_logger_scope, logging.DEBUG)
+    tokens = orm.push_logging_context(session_logger_scope, logging.DEBUG)
     try:
         logger.debug("debug line")
 
@@ -153,11 +183,11 @@ async def test_errors_emit_log_citation(
             tool_registry={},
         )
     finally:
-        orm.SessionLogger.reset_session(tokens)
+        orm.pop_logging_context(tokens)
 
     types = spy_event_emitter.types()
     assert "citation" in types, "Log citation should be emitted when logs exist"
-    assert orm.SessionLogger.get_session_logs(session_logger_scope) == []
+    assert orm.get_session_logs(session_logger_scope) == []
 
     completion_events = [
         event for event in spy_event_emitter.events if event["type"] == "chat:completion"
@@ -177,15 +207,27 @@ async def test_usage_backfills_from_final_response(
     usage_payload = {"prompt_tokens": 1, "completion_tokens": 2}
     fake_responses_client.enqueue_stream(
         [
-            {"type": "response.output_text.delta", "delta": "Hi"},
-            {"type": "response.output_text.done", "output": [], "usage": usage_payload},
-            {"type": "response.completed"},
+            {
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "item_id": "msg3",
+                "content_index": 0,
+                "delta": "Hi",
+            },
+            {
+                "type": "response.output_text.done",
+                "output_index": 0,
+                "item_id": "msg3",
+                "content_index": 0,
+                "text": "Hi",
+            },
+            {"type": "response.completed", "response": {"usage": usage_payload, "output": []}},
         ]
     )
     runner = orm.ResponsesEngine(
         client=fake_responses_client,
         item_store=orm.ItemStore(),
-        logger=orm.SessionLogger.get_logger("runner"),
+        logger=orm.get_logger("runner"),
     )
 
     await runner.run_streaming_turn(
@@ -215,26 +257,38 @@ async def test_function_call_arguments_delta_handles_bad_json(
     fake_responses_client.enqueue_stream(
         [
             {
-                "type": "response.output_items.delta",
-                "output_items": {
-                    "items": [
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "item_id": "msg4",
+                "content_index": 0,
+                "delta": "Done",
+            },
+            {
+                "type": "response.output_text.done",
+                "output_index": 0,
+                "item_id": "msg4",
+                "content_index": 0,
+                "text": "Done",
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "output": [
                         {
                             "type": "function_call",
+                            "call_id": "call-err",
                             "name": "broken_tool",
                             "arguments": "{not-json}",
                         }
                     ]
                 },
             },
-            {"type": "response.output_text.delta", "delta": "Done"},
-            {"type": "response.output_text.done", "output": []},
-            {"type": "response.completed"},
         ]
     )
     runner = orm.ResponsesEngine(
         client=fake_responses_client,
         item_store=orm.ItemStore(),
-        logger=orm.SessionLogger.get_logger("runner"),
+        logger=orm.get_logger("runner"),
     )
 
     result = await runner.run_streaming_turn(
@@ -255,7 +309,7 @@ async def test_function_call_arguments_delta_handles_bad_json(
 
 @pytest.mark.asyncio()
 async def test_cancelled_tasks_are_awaited() -> None:
-    runner = orm.ResponsesEngine(logger=orm.SessionLogger.get_logger("runner"))
+    runner = orm.ResponsesEngine(logger=orm.get_logger("runner"))
     tasks = [asyncio.create_task(asyncio.sleep(0.01)) for _ in range(2)]
     original_tasks = list(tasks)
 

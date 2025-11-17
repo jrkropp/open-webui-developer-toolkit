@@ -1,13 +1,13 @@
 > **Note:** Keep this workpackage up to date. Check off items as you finish them and add subtasks if new work appears.
 
 ## Checklist
-- [ ] Inventory current logging (all modules)
-- [ ] Standardize levels/messages
-- [ ] Ensure context injection via `get_logger` + `logging_context`
-- [ ] Enforce payload hygiene/truncation
-- [ ] Verify citations path and breadcrumb
+- [x] Inventory current logging (all modules)
+- [x] Standardize levels/messages
+- [x] Ensure context injection via `get_logger` + `logging_context`
+- [x] Enforce payload hygiene/truncation
+- [x] Verify citations path and breadcrumb
 - [ ] Add/adjust tests
-- [ ] Update docs/README notes
+- [x] Update docs/README notes
 
 ## Plan: Logging Consistency Sweep
 

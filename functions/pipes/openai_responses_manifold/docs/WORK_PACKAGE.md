@@ -55,7 +55,7 @@
 
 * [ ] 5.1 `engine.py`: `ResponsesEngine.run_streaming_turn(...)` (SSE, tool loops, persistence, events).
 * [ ] 5.2 Event helpers usage (`utils/events.py`) for status/usage/chat:message/citation/completion.
-* [ ] 5.3 Integrate `SessionLogger` (`utils/logging.py`) & emit end-of-run “Logs” citation.
+* [ ] 5.3 Integrate `utils/logging.py` (ContextVar logging + per-session buffer) & emit end-of-run “Logs” citation.
 
 **Phase 6 — Adapter (OpenWebUI Pipe)**
 
@@ -122,7 +122,7 @@ openai_responses_manifold/
 │  └─ openwebui_store.py        # ItemStore.save_items()/load_items()
 ├─ utils/
 │  ├─ __init__.py
-│  ├─ logging.py                # SessionLogger
+│  ├─ logging.py                # Context-aware logging + per-session buffer
 │  └─ events.py                 # OpenWebUI event helpers
 └─ docs/
    ├─ DEVELOPER_GUIDE.md        # Developer Guide (v2 design)
@@ -141,7 +141,7 @@ openai_responses_manifold/
 | `core/models.py::CompletionsBody`, `ResponsesBody`                          | `core/api_models.py`                                                                           | Keep validator for alias defaults                                        |
 | `core/models.py::transform_messages_to_input`                               | `services/history.py::HistoryBuilder.build_input_from_messages` (+ `core/messages.py` helpers) | Inject resolver; remove DB/Chats coupling                                |
 | `core/markers.py`                                                           | `core/markers.py`                                                                              | Move as-is (pure)                                                        |
-| `core/session_logger.py`                                                    | `utils/logging.py`                                                                             | Rename to `SessionLogger`, keep ContextVar behavior                      |
+| `core/session_logger.py`                                                    | `utils/logging.py`                                                                             | Replace with unified logging helpers (ContextVar fields + citation buffer) |
 | `core/utils.py::wrap_event_emitter`, `merge_usage_stats`, `wrap_code_block` | `utils/events.py` (emission helpers), `engine.py` (aggregate usage)                            | Prefer focused helpers; keep `wrap_code_block` where used                |
 | `features/tools.py::build_tools`                                            | `services/tools.py::build_tools`                                                               | Keep strict JSON Schema option; dedupe                                   |
 | `features/router.py::route_gpt5_auto`                                       | `services/routing.py::route_auto_model`                                                        | Keep router prompt in-module or separate prompt file                     |

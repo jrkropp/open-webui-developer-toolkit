@@ -17,13 +17,11 @@ def _responses_body(model: str = "gpt-4o") -> ResponsesBody:
 def test_build_tools_includes_web_search_when_enabled() -> None:
     valves = orm.Pipe.Valves(
         ENABLE_WEB_SEARCH_TOOL=True,
-        WEB_SEARCH_CONTEXT_SIZE="high",
         WEB_SEARCH_USER_LOCATION='{"country":"US"}',
     )
     tools = orm.build_tools(_responses_body(), valves)
 
     web_search = next(tool for tool in tools if tool["type"] == "web_search")
-    assert web_search["search_context_size"] == "high"
     assert web_search["user_location"]["country"] == "US"
 
 

@@ -38,7 +38,7 @@ openai_responses_manifold/
 │  └─ openwebui_store.py        # ItemStore for OpenWebUI Chats (persist/fetch items)
 └─ utils/
    ├─ __init__.py
-   ├─ logging.py                # SessionLogger (per-request buffer + stdout)
+   ├─ logging.py                # Context-aware logging + per-session buffer for citations
    └─ events.py                 # Event helpers (status/usage/completion/citation)
 ```
 
@@ -133,7 +133,7 @@ class Pipe:
         self.type = "manifold"
         self.id = "openai_responses"
         self.valves = self.Valves()
-        self.logger = SessionLogger.get_logger(__name__)
+        self.logger = get_logger(__name__)
         self.engine = ResponsesEngine(logger=self.logger)
 
     async def pipes(self) -> list[dict[str, str]]:
@@ -385,10 +385,11 @@ class ItemStore:
 
 ---
 
-### `utils/logging.py` — SessionLogger
+### `utils/logging.py` — logging helpers
 
-* `ContextVar`‑scoped logger, stdout + in‑memory ring buffer.
-* Engine attaches the log buffer as a **citation** (“Logs” / “Error Logs”) on completion/error.
+* Standard Python logging configured once with ContextVars for `session_id`, `chat_id`, `message_id`, and `user_id`.
+* Console handler writes to stdout; memory handler buffers per-session lines for the final **Logs** citation.
+* Helpers: `get_logger()`, `push_logging_context()/pop_logging_context()`, `logging_context()`, and `truncate_for_log()` for safe payload snippets.
 
 ### `utils/events.py` — event helpers
 

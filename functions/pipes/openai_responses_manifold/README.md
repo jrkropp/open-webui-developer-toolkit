@@ -61,7 +61,7 @@ Open WebUI can only import a **single Python file** per pipe. To keep the codeba
 - `src/openai_responses_manifold/core/` – pure helpers: IDs, capabilities, Pydantic API bodies, markers, and message transforms.
 - `src/openai_responses_manifold/services/` – domain helpers for history, tool building/execution, and auto routing.
 - `src/openai_responses_manifold/infra/` – persistence and HTTP client helpers that speak to OpenAI and Open WebUI.
-- `src/openai_responses_manifold/utils/` – `SessionLogger` plus event helpers shared by the engine and adapter.
+- `src/openai_responses_manifold/utils/` – `logging.py` (context-aware logging + per-session buffers) plus event helpers shared by the engine and adapter.
 - `docs/DEVELOPER_GUIDE.md` – deep dive into the layered architecture (mirrors the Work Package design).
 
 **Clone and bootstrap**
@@ -176,17 +176,19 @@ This makes features like **on-demand web search toggles** possible without break
 
 ## Logging & Diagnostics
 
-Every run buffers structured log lines and attaches them to the assistant reply as a `Logs` citation. Records flow through the in-repo `SessionLogger`, so each entry automatically includes the session id plus chat/model/message metadata and remains consistent across modules (router, HTTP client, runner, tools, persistence).
+Every run buffers structured log lines and attaches them to the assistant reply as a `Logs` citation. The shared `utils/logging.py` module wires standard Python logging with ContextVars so each record automatically carries `session_id`, `chat_id`, `message_id`, and `user_id`. A console handler streams to stdout and a memory handler buffers per-session lines for citation emission.
 
 ```
-[INFO] [session=owui-abcd chat=chat_123 model=openai_responses.gpt-5 req=gpt-5-mini msg=msg_42] Router selected model=gpt-5 (effort=medium)
-[ERROR] [session=owui-abcd chat=chat_123 model=openai_responses.gpt-5 req=gpt-5-mini msg=msg_42] invoke request failed (status=500 endpoint=https://api.openai.com/v1/responses request_id=req_123 body={"error":{"message":"invalid"}})
+2025-01-01 00:00:00 [INFO] openai_responses_manifold.engine Routing to gpt-5 (effort=medium) session_id=... chat_id=... message_id=... user_id=...
+2025-01-01 00:00:00 [WARNING] openai_responses_manifold.services.tools REMOTE_MCP_SERVERS_JSON is not valid JSON. truncated=True value={"ser... session_id=... chat_id=... message_id=... user_id=...
 ```
 
-- Use `Valves.LOG_LEVEL` (pipe-level) or `UserValves.LOG_LEVEL` (per user) to control verbosity. `INHERIT` on the user valve defers to the global setting. `GLOBAL_LOG_LEVEL` continues to act as an environment override for the pipe-level valve.
-- `INFO` surfaces routing decisions, HTTP status codes, tool execution milestones, and persistence warnings; `DEBUG` adds request summaries, router payloads, and masked tool arguments; `WARNING`/`ERROR` only report failures.
-- Secrets (API keys, auth headers, tool tokens) are redacted automatically. Longer payloads are truncated so that the buffered citation stays readable.
-- When diagnosing an issue, temporarily set `LOG_LEVEL=DEBUG`, reproduce the run, grab the `Logs` citation, then drop the valve back to `INFO`/`ERROR` once finished.
+- Streaming event map: see [`docs/STREAMING_EVENTS.md`](docs/STREAMING_EVENTS.md) for every OpenAI Responses SSE type the manifold may receive and log.
+- Typed schemas + parser: `core/events.py` exposes `parse_event` and `StreamEvent` union types; pass `typed=True` to `OpenAIResponsesClient.stream` to yield validated events instead of raw dicts.
+- Use `Valves.LOG_LEVEL` (pipe-level) or `UserValves.LOG_LEVEL` (per user) to control verbosity; `INHERIT` defers to the pipe-level default.
+- `INFO` covers lifecycle milestones and routing/tool decisions. `DEBUG` adds truncated payloads (request/response snippets, router payloads). `WARNING/ERROR` surface malformed inputs or downstream failures.
+- Long payloads are truncated to keep the citation readable. Sensitive values (API keys) are never logged.
+- For debugging, set `LOG_LEVEL=DEBUG`, reproduce, copy the `Logs` citation, then return to a quieter level.
 
 ## Tested Models
 The manifold should work with any model that supports the **OpenAI Responses API**.  

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 import aiohttp
+import logging
+
+from ..core.events import StreamEvent, UnknownStreamEventType, parse_event
+from ..utils import get_logger, truncate_for_log
 
 
 class OpenAIResponsesClient:
@@ -15,7 +18,7 @@ class OpenAIResponsesClient:
 
     def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
-        self._logger = logging.getLogger(__name__)
+        self._logger = get_logger(__name__)
 
     async def stream(
         self,
@@ -23,8 +26,12 @@ class OpenAIResponsesClient:
         *,
         api_key: str,
         base_url: str,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Yield SSE events from ``POST /responses``."""
+        typed: bool = False,
+    ) -> AsyncIterator[StreamEvent | dict[str, Any]]:
+        """Yield SSE events from ``POST /responses``.
+
+        Set ``typed=True`` to parse each payload into a structured ``StreamEvent``.
+        """
 
         session = await self._get_or_init_http_session()
         headers = {
@@ -33,10 +40,34 @@ class OpenAIResponsesClient:
             "Accept": "text/event-stream",
         }
         url = base_url.rstrip("/") + "/responses"
+        if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
+            input_items = request_body.get("input") or []
+            instructions = request_body.get("instructions") or ""
+            self._logger.debug(
+                "Streaming request prepared model=%s input_items=%d instructions_len=%d",
+                request_body.get("model"),
+                len(input_items) if isinstance(input_items, list) else 0,
+                len(instructions) if isinstance(instructions, str) else 0,
+            )
+            try:
+                trimmed = dict(request_body)
+                if "instructions" in trimmed:
+                    trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
+                payload_str = json.dumps(trimmed, ensure_ascii=False)
+                preview, truncated = truncate_for_log(payload_str, limit=300)
+                self._logger.debug(
+                    "request.payload_preview enabled=true truncated=%s len=%d payload=%s",
+                    truncated,
+                    len(payload_str),
+                    preview,
+                )
+            except Exception:
+                pass
 
         buf = bytearray()
         async with session.post(url, json=request_body, headers=headers) as resp:
-            resp.raise_for_status()
+            if resp.status >= 400:
+                await self._log_and_raise(resp, kind="streaming")
 
             async for chunk in resp.content.iter_chunked(4096):
                 buf.extend(chunk)
@@ -52,7 +83,18 @@ class OpenAIResponsesClient:
                     payload = line[5:].strip()
                     if payload == b"[DONE]":
                         return
-                    yield json.loads(payload.decode("utf-8"))
+                    evt: dict[str, Any] = json.loads(payload.decode("utf-8"))
+                    if typed:
+                        try:
+                            yield parse_event(evt)
+                            continue
+                        except Exception as exc:
+                            self._logger.warning(
+                                "Unable to parse streaming event type=%s exc=%s; yielding raw payload",
+                                evt.get("type"),
+                                type(exc).__name__,
+                            )
+                    yield evt
                 if start_idx > 0:
                     del buf[:start_idx]
 
@@ -71,8 +113,32 @@ class OpenAIResponsesClient:
             "Content-Type": "application/json",
         }
         url = base_url.rstrip("/") + "/responses"
+        if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
+            input_items = request_body.get("input") or []
+            instructions = request_body.get("instructions") or ""
+            self._logger.debug(
+                "Non-streaming request prepared model=%s input_items=%d instructions_len=%d",
+                request_body.get("model"),
+                len(input_items) if isinstance(input_items, list) else 0,
+                len(instructions) if isinstance(instructions, str) else 0,
+            )
+            try:
+                trimmed = dict(request_body)
+                if "instructions" in trimmed:
+                    trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
+                payload_str = json.dumps(trimmed, ensure_ascii=False)
+                preview, truncated = truncate_for_log(payload_str, limit=300)
+                self._logger.debug(
+                    "request.payload_preview enabled=true truncated=%s len=%d payload=%s",
+                    truncated,
+                    len(payload_str),
+                    preview,
+                )
+            except Exception:
+                pass
         async with session.post(url, json=request_body, headers=headers) as resp:
-            resp.raise_for_status()
+            if resp.status >= 400:
+                await self._log_and_raise(resp, kind="non-streaming")
             return await resp.json()
 
     async def close(self) -> None:
@@ -104,6 +170,18 @@ class OpenAIResponsesClient:
             json_serialize=json.dumps,
         )
         return self._session
+
+    async def _log_and_raise(self, resp: aiohttp.ClientResponse, *, kind: str) -> None:
+        """Log upstream error details and re-raise."""
+
+        try:
+            text = await resp.text()
+        except Exception:  # pragma: no cover - defensive
+            text = "<unable to read error body>"
+
+        preview, _ = truncate_for_log(text, 800)
+        self._logger.error("%s request failed status=%s body=%s", kind, resp.status, preview)
+        resp.raise_for_status()
 
 
 __all__ = ["OpenAIResponsesClient"]

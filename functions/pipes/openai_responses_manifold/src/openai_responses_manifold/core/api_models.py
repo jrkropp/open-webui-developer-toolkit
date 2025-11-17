@@ -7,8 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
 
-from .capabilities import MODEL_ALIASES, alias_defaults
 from .ids import base_model
+from ..model_catalog import MODEL_ALIASES, alias_defaults
 from .messages import (
     assistant_text_item,
     developer_message,

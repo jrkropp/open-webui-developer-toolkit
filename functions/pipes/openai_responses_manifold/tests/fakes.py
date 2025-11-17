@@ -7,6 +7,8 @@ from collections import deque
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from openai_responses_manifold.core.events import UnknownStreamEventType, parse_event
+
 
 class InMemoryChats:
     """Simple stand-in for ``open_webui.models.chats.Chats``."""
@@ -68,13 +70,21 @@ class FakeResponsesClient:
         *,
         api_key: str,
         base_url: str,
-    ) -> AsyncIterator[dict[str, Any]]:
+        typed: bool = False,
+    ) -> AsyncIterator[Any]:
         self.stream_calls.append((json.loads(json.dumps(request_body)), api_key, base_url))
         if not self._stream_scripts:
             raise AssertionError("No queued stream events for FakeResponsesClient")
         script = self._stream_scripts.popleft()
         for event in script:
-            yield json.loads(json.dumps(event))
+            clone = json.loads(json.dumps(event))
+            if typed:
+                try:
+                    yield parse_event(clone)
+                    continue
+                except Exception:
+                    pass
+            yield clone
 
     async def stream_events(
         self,

@@ -11,12 +11,12 @@ from fastapi import Request
 from open_webui.models.models import ModelForm, Models
 
 from .core.api_models import CompletionsBody, ResponsesBody
-from .core.capabilities import supports
 from .engine import EventEmitter, ResponsesEngine
 from .infra import ItemStore, OpenAIResponsesClient
+from .model_catalog import supports
 from .services import HistoryBuilder, build_tools, route_auto_model
 from .settings import PipeValves, UserValves
-from .utils import SessionLogger, logging_context, pop_logging_context, push_logging_context
+from .utils import get_logger, logging_context, pop_logging_context, push_logging_context
 
 
 class Pipe:
@@ -30,7 +30,7 @@ class Pipe:
         self.type = "manifold"
         self.id = "openai_responses"
         self.valves = self.Valves()
-        self.logger = SessionLogger.get_logger(__name__)
+        self.logger = get_logger(__name__)
         self.store = ItemStore()
         self.engine = ResponsesEngine(
             client=OpenAIResponsesClient(),

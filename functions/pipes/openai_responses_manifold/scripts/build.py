@@ -50,21 +50,22 @@ PYPROJECT_FILE = PIPE_ROOT / "pyproject.toml"
 MODULE_ORDER: list[str] = [
     "model_catalog.py",
     "settings.py",
-    "main.py",
-    "engine.py",
+    "utils/logging.py",
+    "utils/events.py",
+    "core/events.py",
     "core/api_models.py",
     "core/ids.py",
     "core/capabilities.py",
     "core/messages.py",
     "core/markers.py",
     "core/errors.py",
+    "main.py",
+    "engine.py",
     "services/history.py",
     "services/tools.py",
     "services/routing.py",
     "infra/openwebui_store.py",
     "infra/openai_client.py",
-    "utils/logging.py",
-    "utils/events.py",
 ]
 
 # Regex for stripping `from __future__ import ...` from individual modules.

@@ -10,8 +10,6 @@ from typing import Any, Callable
 
 import pytest
 
-from .fakes import FakeResponsesClient, InMemoryChats, SpyEventEmitter
-
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PACKAGE_ROOT / "src"
 
@@ -144,6 +142,7 @@ _install_open_webui_stubs()
 _ensure_src_on_path()
 _reload_package_module()
 
+from .fakes import FakeResponsesClient, InMemoryChats, SpyEventEmitter  # noqa: E402
 import openai_responses_manifold as orm  # noqa: E402  # pylint: disable=wrong-import-position
 import openai_responses_manifold.engine as orm_engine  # noqa: E402
 import openai_responses_manifold.infra.openwebui_store as orm_store  # noqa: E402
@@ -152,15 +151,15 @@ import openai_responses_manifold.main as orm_main  # noqa: E402
 
 @pytest.fixture()
 def session_logger_scope() -> str:
-    """Provide a unique SessionLogger context per test."""
+    """Provide a unique logging context per test."""
 
     session_id = f"test-session-{orm.generate_item_id()}"
-    tokens = orm.SessionLogger.set_session(session_id, logging.DEBUG)
+    tokens = orm.push_logging_context(session_id, logging.DEBUG)
     try:
         yield session_id
     finally:
-        orm.SessionLogger.clear_session_logs(session_id)
-        orm.SessionLogger.reset_session(tokens)
+        orm.clear_session_logs(session_id)
+        orm.pop_logging_context(tokens)
 
 
 @pytest.fixture()
@@ -223,6 +222,6 @@ def responses_body_factory() -> Callable[..., orm.ResponsesBody]:
 
 @pytest.fixture()
 def clear_session_logs(session_logger_scope: str) -> None:
-    """Ensure SessionLogger logs deque exists for tests that mutate it."""
+    """Ensure log buffer exists/cleared for tests that mutate it."""
 
-    orm.SessionLogger.clear_session_logs(session_logger_scope)
+    orm.clear_session_logs(session_logger_scope)

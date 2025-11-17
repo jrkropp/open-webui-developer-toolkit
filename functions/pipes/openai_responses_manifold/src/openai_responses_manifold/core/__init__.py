@@ -20,6 +20,14 @@ from .markers import (
     split_text_by_markers,
     wrap_marker,
 )
+from .events import (
+    BaseStreamEvent,
+    ErrorEvent,
+    EventType,
+    StreamEvent,
+    UnknownStreamEventType,
+    parse_event,
+)
 
 __all__ = [
     "MODEL_ALIASES",
@@ -44,4 +52,10 @@ __all__ = [
     "supports",
     "split_text_by_markers",
     "wrap_marker",
+    "BaseStreamEvent",
+    "ErrorEvent",
+    "EventType",
+    "StreamEvent",
+    "UnknownStreamEventType",
+    "parse_event",
 ]

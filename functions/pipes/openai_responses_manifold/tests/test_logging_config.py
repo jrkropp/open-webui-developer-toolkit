@@ -14,38 +14,38 @@ def _emit_logs(logger: logging.Logger, *, include_debug: bool = True) -> None:
 
 
 def test_logs_buffer_respects_level_and_formatting() -> None:
-    logger = orm.SessionLogger.get_logger("openai_responses_manifold.tests")
+    logger = orm.get_logger("openai_responses_manifold.tests")
 
-    tokens = orm.SessionLogger.set_session("session-a", logging.INFO)
+    tokens = orm.push_logging_context("session-a", logging.INFO)
     try:
         _emit_logs(logger)
     finally:
-        orm.SessionLogger.reset_session(tokens)
+        orm.pop_logging_context(tokens)
 
-    lines = orm.SessionLogger.get_session_logs("session-a")
+    lines = orm.get_session_logs("session-a")
     assert any("info line" in line for line in lines)
     assert not any("debug line" in line for line in lines)
 
-    orm.SessionLogger.clear_session_logs("session-a")
+    orm.clear_session_logs("session-a")
 
 
 def test_sessions_are_isolated_and_resettable() -> None:
-    logger = orm.SessionLogger.get_logger("openai_responses_manifold.tests")
+    logger = orm.get_logger("openai_responses_manifold.tests")
 
-    first_tokens = orm.SessionLogger.set_session("session-one", logging.DEBUG)
+    first_tokens = orm.push_logging_context("session-one", logging.DEBUG)
     try:
         _emit_logs(logger)
     finally:
-        orm.SessionLogger.reset_session(first_tokens)
+        orm.pop_logging_context(first_tokens)
 
-    second_tokens = orm.SessionLogger.set_session("session-two", logging.DEBUG)
+    second_tokens = orm.push_logging_context("session-two", logging.DEBUG)
     try:
         logger.info("second session")
     finally:
-        orm.SessionLogger.reset_session(second_tokens)
+        orm.pop_logging_context(second_tokens)
 
-    first_logs = orm.SessionLogger.consume_session_logs("session-one")
-    second_logs = orm.SessionLogger.consume_session_logs("session-two")
+    first_logs = orm.consume_session_logs("session-one")
+    second_logs = orm.consume_session_logs("session-two")
 
     assert any("info line" in line for line in first_logs)
     assert any("second session" in line for line in second_logs)
@@ -54,12 +54,12 @@ def test_sessions_are_isolated_and_resettable() -> None:
 
 @pytest.mark.asyncio()
 async def test_session_logging_context_manager() -> None:
-    logger = orm.SessionLogger.get_logger("openai_responses_manifold.tests")
+    logger = orm.get_logger("openai_responses_manifold.tests")
 
-    with orm.SessionLogger.session_logging("session-cm", logging.WARNING):
+    with orm.logging_context("session-cm", logging.WARNING):
         logger.error("captured")
         logger.info("filtered out")
 
-    logs = orm.SessionLogger.consume_session_logs("session-cm")
+    logs = orm.consume_session_logs("session-cm")
     assert any("captured" in line for line in logs)
     assert not any("filtered out" in line for line in logs)

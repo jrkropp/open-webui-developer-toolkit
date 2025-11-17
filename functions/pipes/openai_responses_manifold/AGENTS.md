@@ -17,7 +17,7 @@ At runtime there are a few clear layers:
 - **Infra** (`src/openai_responses_manifold/infra/`)
   - Talks to OpenAI (`OpenAIResponsesClient`) and OpenWebUI (`ItemStore`).
 - **Utils** (`src/openai_responses_manifold/utils/`)
-  - `SessionLogger` plus event helpers.
+  - `logging.py` (context-aware logging + per-session buffer) plus event helpers.
 - **Engine** (`src/openai_responses_manifold/engine.py`)
   - `ResponsesEngine` orchestrates streaming, tool loops, persistence, and Open WebUI events.
 - **Adapter** (`src/openai_responses_manifold/main.py`)
@@ -45,7 +45,7 @@ functions/pipes/openai_responses_manifold/
 │     ├─ engine.py         # ResponsesEngine + EventEmitter
 │     ├─ services/         # history, tools, routing
 │     ├─ infra/            # OpenAIResponsesClient + ItemStore
-│     ├─ utils/            # SessionLogger + event helpers
+│     ├─ utils/            # logging helpers + event helpers
 │     ├─ settings.py       # shared Pipe valve definitions/defaults
 │     └─ main.py           # Pipe + nested Valves/UserValves (Open WebUI adapter)
 ├─ tests/                  # pytest suite (imports package modules via conftest)

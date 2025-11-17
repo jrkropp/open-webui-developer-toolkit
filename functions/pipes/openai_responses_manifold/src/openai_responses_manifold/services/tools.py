@@ -9,10 +9,11 @@ import logging
 from typing import Any
 
 from ..core.api_models import ResponsesBody
-from ..core.capabilities import supports
 from ..core.errors import ToolExecutionError
+from ..model_catalog import supports
+from ..utils import get_logger, truncate_for_log
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def build_tools(
@@ -30,7 +31,11 @@ def build_tools(
         return []
 
     tools: list[dict[str, Any]] = []
-    tools.extend(_transform_owui_tools(openwebui_tools, strict=getattr(valves, "ENABLE_STRICT_TOOL_CALLING", False)))
+    tools.extend(
+        _transform_owui_tools(
+            openwebui_tools, strict=getattr(valves, "ENABLE_STRICT_TOOL_CALLING", False)
+        )
+    )
 
     allow_web = (
         supports("web_search_tool", responses_body.model)
@@ -38,16 +43,19 @@ def build_tools(
         and ((responses_body.reasoning or {}).get("effort", "").lower() != "minimal")
     )
     if allow_web:
-        web_search_tool: dict[str, Any] = {
-            "type": "web_search",
-            "search_context_size": getattr(valves, "WEB_SEARCH_CONTEXT_SIZE", "medium"),
-        }
+        web_search_tool: dict[str, Any] = {"type": "web_search"}
         user_location = getattr(valves, "WEB_SEARCH_USER_LOCATION", None)
         if user_location:
             try:
                 web_search_tool["user_location"] = json.loads(user_location)
             except Exception as exc:
-                logger.warning("WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring: %s", exc)
+                preview, truncated = truncate_for_log(user_location, limit=300)
+                logger.warning(
+                    "WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring. truncated=%s value=%s error=%s",
+                    truncated,
+                    preview,
+                    exc,
+                )
         tools.append(web_search_tool)
 
     remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
@@ -66,6 +74,9 @@ async def execute_tool_calls(
 ) -> list[dict[str, Any]]:
     """Execute tool calls and return Responses-ready outputs."""
 
+    if logger.isEnabledFor(logging.INFO):
+        logger.info("tool.calls_started count=%d", len(calls))
+
     async def _invoke(call: dict[str, Any]) -> tuple[dict[str, Any], str]:
         name = call.get("name")
         arguments_json = call.get("arguments", "{}")
@@ -74,6 +85,17 @@ async def execute_tool_calls(
         except Exception as exc:  # pragma: no cover - defensive
             raise ToolExecutionError(f"Invalid JSON arguments for tool {name}: {exc}") from exc
 
+        if logger.isEnabledFor(logging.DEBUG):
+            args_preview, args_truncated = truncate_for_log(
+                json.dumps(args, ensure_ascii=False), limit=400
+            )
+            logger.debug(
+                "tool.call name=%s args_truncated=%s args=%s",
+                name,
+                args_truncated,
+                args_preview,
+            )
+
         tool_cfg = registry.get(name)
         if not tool_cfg:
             return call, f"Tool '{name}' not found"
@@ -81,6 +103,9 @@ async def execute_tool_calls(
         fn = tool_cfg.get("callable")
         if not callable(fn):
             return call, f"Tool '{name}' is not callable"
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("tool.call name=%s status=started", name)
 
         try:
             if inspect.iscoroutinefunction(fn):
@@ -91,7 +116,10 @@ async def execute_tool_calls(
             logger.warning("Tool %s raised an exception: %s", name, exc)
             return call, f"{type(exc).__name__}: {exc}"
 
-        return call, str(result)
+        output_str = str(result)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("tool.call name=%s status=completed output_len=%d", name, len(output_str))
+        return call, output_str
 
     results = await asyncio.gather(*(_invoke(call) for call in calls))
     outputs: list[dict[str, Any]] = []
@@ -191,7 +219,13 @@ def _build_mcp_tools(mcp_json: str) -> list[dict[str, Any]]:
     try:
         parsed = json.loads(mcp_json)
     except Exception as exc:  # pragma: no cover - valved bug
-        logger.warning("REMOTE_MCP_SERVERS_JSON is not valid JSON: %s", exc)
+        preview, truncated = truncate_for_log(mcp_json, limit=300)
+        logger.warning(
+            "REMOTE_MCP_SERVERS_JSON is not valid JSON. truncated=%s value=%s error=%s",
+            truncated,
+            preview,
+            exc,
+        )
         return []
 
     entries = parsed if isinstance(parsed, list) else [parsed]

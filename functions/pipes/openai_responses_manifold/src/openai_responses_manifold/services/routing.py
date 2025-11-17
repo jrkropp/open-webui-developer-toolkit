@@ -8,12 +8,14 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..core.api_models import ResponsesBody
-from ..utils import emit_status
+from ..utils import emit_status, truncate_for_log
 from ..infra.openai_client import OpenAIResponsesClient
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
-logger = logging.getLogger(__name__)
+from ..utils import get_logger
+
+logger = get_logger(__name__)
 
 
 async def route_auto_model(
@@ -105,10 +107,15 @@ def _extract_router_text(response: dict[str, Any]) -> str:
             "",
         )
     except Exception as exc:  # pragma: no cover
+        payload_preview, truncated = truncate_for_log(
+            json.dumps(response, ensure_ascii=False), limit=800
+        )
         logger.warning(
-            "Router response missing expected fields: %s; payload keys=%s",
+            "Router response missing expected fields: %s payload_keys=%s truncated=%s payload=%s",
             exc,
             list(response.keys()),
+            truncated,
+            payload_preview,
         )
         return ""
 

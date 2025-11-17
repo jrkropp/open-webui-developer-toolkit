@@ -196,44 +196,21 @@ def truncate_for_log(value: Any, limit: int = 2000) -> tuple[str, bool]:
     return text[:limit], True
 
 
-class SessionLogger:
-    """Minimal shim retaining previous helpers."""
-
-    session_id = OWUI_SESSION_ID
-    chat_id = OWUI_CHAT_ID
-    message_id = OWUI_MESSAGE_ID
-    user_id = OWUI_USER_ID
-    log_level = OWUI_LOG_LEVEL
-    logs = SESSION_LOGS
-
-    get_session_logs = staticmethod(get_session_logs)
-    clear_session_logs = staticmethod(clear_session_logs)
-    consume_session_logs = staticmethod(consume_session_logs)
-    set_session = staticmethod(push_logging_context)
-    reset_session = staticmethod(pop_logging_context)
-    session_logging = staticmethod(logging_context)
-
-    @classmethod
-    def get_logger(cls, name: str = __name__) -> logging.Logger:
-        return get_logger(name)
-
-
 # Configure eagerly so child loggers inherit handlers/filters.
 configure_logging()
 
 
 __all__ = [
-    "SessionLogger",
     "configure_logging",
     "get_logger",
     "push_logging_context",
     "pop_logging_context",
     "logging_context",
-    "SESSION",
-    "CHAT",
-    "MESSAGE",
-    "USER",
-    "LOG_LEVEL",
+    "OWUI_SESSION_ID",
+    "OWUI_CHAT_ID",
+    "OWUI_MESSAGE_ID",
+    "OWUI_USER_ID",
+    "OWUI_LOG_LEVEL",
     "SESSION_LOGS",
     "get_session_logs",
     "clear_session_logs",

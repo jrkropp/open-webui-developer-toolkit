@@ -12,7 +12,6 @@ from .events import (
     wrap_event_emitter,
 )
 from .logging import (
-    SessionLogger,
     OWUI_CHAT_ID,
     OWUI_LOG_LEVEL,
     OWUI_MESSAGE_ID,
@@ -21,6 +20,7 @@ from .logging import (
     clear_session_logs,
     configure_logging,
     consume_session_logs,
+    get_logger,
     get_session_logs,
     logging_context,
     pop_logging_context,
@@ -29,10 +29,10 @@ from .logging import (
 )
 
 __all__ = [
-    "SessionLogger",
     "push_logging_context",
     "pop_logging_context",
     "logging_context",
+    "get_logger",
     "clear_session_logs",
     "consume_session_logs",
     "get_session_logs",

@@ -138,7 +138,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [0.8.4] - 2025-06-07
 - Fixed missing done flag in `_emit_error` causing hanging requests.
-- Emitted log citations using new `SessionLogger` store.
+- Emitted log citations using the ContextVar-backed `utils/logging.py` buffer.
 - Simplified progress status messages.
 - Redesigned `transform_tools` with strict mode and WebUI tool support.
 - Clarified `transform_tools` internals and documented strict mode.

@@ -11,4 +11,4 @@ Key helpers live in `tests/fakes.py`:
 - `SpyEventEmitter`: records events for assertions.
 - `InMemoryChats`: lightweight stand-in for `open_webui.models.chats.Chats`.
 
-Pytest fixtures in `tests/conftest.py` expose these fakes, factory helpers for metadata/request bodies, and scoped `SessionLogger` context. Use them instead of re-creating doubles in individual tests.
+Pytest fixtures in `tests/conftest.py` expose these fakes, factory helpers for metadata/request bodies, and a scoped logging context helper. Use them instead of re-creating doubles in individual tests.

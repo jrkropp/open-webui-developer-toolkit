@@ -5,6 +5,9 @@ If you're adding or modifying supported models, edit this file.
 
 from __future__ import annotations
 
+from copy import deepcopy
+from typing import Any
+
 EMPTY_FEATURES: frozenset[str] = frozenset()
 
 # Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
@@ -50,4 +53,36 @@ MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
     "o4-mini-high": {"base_model": "o4-mini", "params": {"reasoning": {"effort": "high"}}},
 }
 
-__all__ = ["EMPTY_FEATURES", "MODEL_FEATURES", "MODEL_ALIASES"]
+
+def alias_defaults(model_id: str) -> dict[str, Any]:
+    """Return default parameters defined for a pseudo-model alias."""
+
+    from .core.ids import normalize
+
+    params = MODEL_ALIASES.get(normalize(model_id), {}).get("params")
+    return deepcopy(params) if params else {}
+
+
+def features(model_id: str) -> frozenset[str]:
+    """Return the capability set for the canonical base model."""
+
+    from .core.ids import base_model
+
+    canonical = base_model(model_id, MODEL_ALIASES)
+    return MODEL_FEATURES.get(canonical, EMPTY_FEATURES)
+
+
+def supports(feature: str, model_id: str) -> bool:
+    """Determine whether the supplied model exposes a feature."""
+
+    return feature in features(model_id)
+
+
+__all__ = [
+    "EMPTY_FEATURES",
+    "MODEL_FEATURES",
+    "MODEL_ALIASES",
+    "alias_defaults",
+    "features",
+    "supports",
+]
