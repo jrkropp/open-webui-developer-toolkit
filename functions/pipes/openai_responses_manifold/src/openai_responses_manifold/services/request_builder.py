@@ -6,7 +6,7 @@ from typing import Any
 
 from ..core.openai_requests import ResponseCreateParams
 from ..infra import ItemStore
-from ..services.history import HistoryService
+from ..services.history import HistoryService, extract_system_instructions
 from ..utils import get_logger
 
 logger = get_logger(__name__)
@@ -24,6 +24,39 @@ async def build_responses_body(
     Convert an OpenWebUI-style payload plus valves/metadata into a validated ResponsesBody.
     """
 
+    payload = _build_base_payload(owui_request, valves, metadata, user_identifier)
+
+    messages = owui_request.get("messages") or []
+    provided_input = owui_request.get("input")
+    instructions = owui_request.get("instructions") or extract_system_instructions(messages)
+
+    if provided_input is None and messages:
+        history_service = HistoryService.from_item_store(item_store)
+        provided_input, inferred_instructions = history_service.build_input_and_instructions(
+            messages,
+            metadata=metadata,
+        )
+        if not instructions:
+            instructions = inferred_instructions
+
+    _apply_input_and_instructions(payload, provided_input, instructions)
+    _apply_reasoning(payload, owui_request)
+
+    try:
+        responses_body = ResponseCreateParams.model_validate(payload)
+    except Exception as exc:
+        logger.error("Failed to build ResponseCreateParams: %s payload_keys=%s", exc, list(payload.keys()))
+        raise
+
+    return responses_body
+
+
+def _build_base_payload(
+    owui_request: dict[str, Any],
+    valves: Any,
+    metadata: dict[str, Any],
+    user_identifier: str | None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {"stream": True, "store": False}
 
     model_id = owui_request.get("model") or getattr(valves, "MODEL_ID", None)
@@ -43,55 +76,32 @@ async def build_responses_body(
     elif "max_tokens" in owui_request:
         payload["max_output_tokens"] = owui_request.get("max_tokens")
 
-    messages = owui_request.get("messages") or []
-    provided_input = owui_request.get("input")
-    instructions = owui_request.get("instructions") or _extract_system_instructions(messages)
-
-    if provided_input is None and messages:
-        history_service = HistoryService(item_store)
-        provided_input, inferred_instructions = history_service.build_input_and_instructions(
-            messages,
-            metadata=metadata,
-        )
-        if not instructions:
-            instructions = inferred_instructions
-
-    payload["input"] = provided_input
-    if payload["input"] is None:
-        raise ValueError("input must be provided to build a ResponsesBody")
-
-    if instructions and instructions.strip():
-        payload["instructions"] = instructions
-
-    effort = owui_request.get("reasoning_effort")
-    if effort:
-        reasoning = payload.get("reasoning") or {}
-        reasoning["effort"] = effort
-        payload["reasoning"] = reasoning
-
     if user_identifier:
         payload["user"] = user_identifier
     elif metadata.get("user_id"):
         payload["user"] = metadata["user_id"]
 
-    try:
-        responses_body = ResponseCreateParams.model_validate(payload)
-    except Exception as exc:
-        logger.error("Failed to build ResponseCreateParams: %s payload_keys=%s", exc, list(payload.keys()))
-        raise
-
-    return responses_body
+    return payload
 
 
-def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
-    """Return the most recent system message content, if present."""
+def _apply_input_and_instructions(
+    payload: dict[str, Any], provided_input: Any, instructions: str | None
+) -> None:
+    if provided_input is None:
+        raise ValueError("input must be provided to build a ResponsesBody")
 
-    for message in reversed(messages):
-        if message.get("role") == "system":
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return content
-    return None
+    payload["input"] = provided_input
+
+    if instructions and instructions.strip():
+        payload["instructions"] = instructions
+
+
+def _apply_reasoning(payload: dict[str, Any], owui_request: dict[str, Any]) -> None:
+    effort = owui_request.get("reasoning_effort")
+    if effort:
+        reasoning = payload.get("reasoning") or {}
+        reasoning["effort"] = effort
+        payload["reasoning"] = reasoning
 
 
 __all__ = ["build_responses_body"]

@@ -19,7 +19,7 @@ async def test_event_handler_tracks_text_and_completion(
     engine = orm.ResponsesEngine()
     monkeypatch.setattr(engine, "_schedule_reasoning_statuses", lambda *_, **__: [])
 
-    handler = orm_engine._StreamSession(
+    handler = orm_engine.TurnSession(
         engine,
         body,
         valves,
@@ -47,7 +47,7 @@ async def test_event_handler_executes_tools_with_registry(
     monkeypatch.setattr(engine, "_schedule_reasoning_statuses", lambda *_, **__: [])
     monkeypatch.setattr(engine.history_persistence, "persist_items_for_message", lambda *_, **__: "[hidden]")
 
-    handler = orm_engine._StreamSession(
+    handler = orm_engine.TurnSession(
         engine,
         body,
         valves,
