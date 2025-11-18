@@ -11,8 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import random
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Awaitable, Callable, Literal
 
@@ -50,6 +50,243 @@ from .utils import (
 )
 
 
+@dataclass
+class _StreamState:
+    """Streaming scratch space for a single turn."""
+
+    response_text: str = ""
+    usage_summary: dict[str, Any] | None = None
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls_executed: int = 0
+    completed_response: dict[str, Any] | None = None
+    error_message: str | None = None
+    has_error: bool = False
+    last_tool_result: str | None = None
+    has_sent_status: bool = False
+    thinking_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
+
+    def reset_for_next_response(self) -> None:
+        self.completed_response = None
+        self.usage_summary = None
+        self.has_sent_status = False
+
+
+class _StreamSession:
+    """Consumes stream events while coordinating a single turn."""
+
+    def __init__(
+        self,
+        engine: ResponsesEngine,
+        body: ResponseCreateParams,
+        valves: Any,
+        metadata: dict[str, Any],
+        event_emitter: EventEmitterFn,
+        *,
+        openwebui_tools: dict[str, dict[str, Any]] | None,
+    ) -> None:
+        self.engine = engine
+        self.body = body
+        self.valves = valves
+        self.metadata = metadata
+        self.emitter = EventEmitter(event_emitter)
+        self.openwebui_tools = openwebui_tools
+        self.state = _StreamState()
+        self.debug_enabled = engine.logger.isEnabledFor(logging.DEBUG)
+        self.state.thinking_tasks = self.engine._schedule_reasoning_statuses(body, self.emit_status)
+
+    async def emit_status(
+        self,
+        description: str,
+        *,
+        done: bool = False,
+        hidden: bool = False,
+        require_previous: bool = False,
+    ) -> None:
+        if require_previous and not self.state.has_sent_status:
+            return
+        self.state.has_sent_status = True
+        await self.emitter.status(description, done=done, hidden=hidden)
+
+    async def handle_event(self, event: Any) -> bool:
+        """Process a single stream event. Returns True when the stream should stop."""
+
+        if isinstance(event, ResponseOutputTextDeltaEvent):
+            await self._handle_text_delta(event)
+            return False
+
+        if isinstance(event, ResponseOutputItemAddedEvent):
+            await self._handle_item_added(event)
+            return False
+
+        if isinstance(event, ResponseOutputItemDoneEvent):
+            await self._handle_item_done(event)
+            return False
+
+        if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
+            await self._handle_reasoning_summary(event)
+            return False
+
+        if isinstance(event, ResponseOutputTextDoneEvent):
+            await self._handle_text_done(event)
+            return False
+
+        if isinstance(event, ResponseCompletedEvent):
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            self.state.completed_response = event.response
+            self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
+            if self.debug_enabled:
+                usage_keys = sorted((self.state.usage_summary or {}).keys())
+                self.engine.logger.debug("event=response.completed usage_keys=%s", usage_keys)
+            return True
+
+        if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            self.state.has_error = True
+            if isinstance(event, ErrorEvent):
+                self.state.error_message = event.message
+            else:
+                response_payload = event.response
+                self.state.error_message = (response_payload.get("error") or {}).get(
+                    "message", "OpenAI returned an error."
+                )
+            self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
+            await self.engine._handle_stream_error(self.emitter, self.state.error_message or "")
+            return True
+
+        if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
+            if self.debug_enabled:
+                self.engine.logger.debug(
+                    "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
+                )
+            return False
+
+        return False
+
+    async def collect_output_items(self) -> list[dict[str, Any]]:
+        if not self.state.completed_response:
+            return []
+
+        output_items = self.engine._sanitize_output_items(
+            (self.state.completed_response or {}).get("output") or [], store=self.body.store
+        )
+
+        if output_items:
+            if isinstance(self.body.input, list):
+                self.body.input.extend(output_items)
+            else:
+                self.body.input = output_items
+
+        return output_items
+
+    def find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        call_items = output_items or (self.state.completed_response or {}).get("output", [])
+        tool_calls = [item for item in call_items if item.get("type") == "function_call"]
+        if tool_calls:
+            self.state.tool_calls_executed += len(tool_calls)
+        return tool_calls
+
+    async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not tool_calls:
+            return []
+
+        if not self.openwebui_tools:
+            self.engine.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
+            await self.emit_status("Tool execution skipped: no tool registry available.")
+            return []
+
+        try:
+            function_outputs = await execute_tool_calls(tool_calls, self.openwebui_tools)
+        except ToolExecutionError as exc:
+            self.engine.logger.warning("Skipping malformed tool arguments: %s", exc)
+            await self.emit_status("Skipping malformed tool arguments.")
+            return []
+
+        return function_outputs
+
+    async def append_tool_outputs(self, function_outputs: list[dict[str, Any]]) -> bool:
+        if not function_outputs:
+            return False
+
+        self.state.last_tool_result = str(function_outputs[-1].get("output", ""))
+        if getattr(self.valves, "PERSIST_TOOL_RESULTS", True):
+            await self._persist_items(function_outputs)
+
+        for output in function_outputs:
+            output_str = output.get("output", "")
+            if output_str:
+                await self.emit_status(f"Received tool result\n{output_str}")
+
+        if isinstance(self.body.input, list):
+            self.body.input.extend(function_outputs)
+        else:
+            self.body.input = list(function_outputs)
+        return True
+
+    async def _handle_text_delta(self, event: ResponseOutputTextDeltaEvent) -> None:
+        delta_val = event.delta
+        if delta_val:
+            self.state.response_text += delta_val
+            await self.emitter.delta(delta_val)
+
+    async def _handle_item_added(self, event: ResponseOutputItemAddedEvent) -> None:
+        item = event.item or {}
+        if item.get("type") == "message" and item.get("status") == "in_progress":
+            await self.emit_status("Responding to the user…", require_previous=True)
+
+    async def _handle_item_done(self, event: ResponseOutputItemDoneEvent) -> None:
+        item = event.item or {}
+        item_type = item.get("type") or ""
+
+        should_persist = False
+        if item_type == "reasoning":
+            should_persist = getattr(self.valves, "PERSIST_REASONING_TOKENS", "disabled") == "conversation"
+        elif item_type in ("message", "web_search_call"):
+            should_persist = False
+        else:
+            should_persist = getattr(self.valves, "PERSIST_TOOL_RESULTS", True)
+
+        if should_persist:
+            await self._persist_items([item])
+
+        status_desc = self.engine._status_from_output_item(item)
+        if status_desc:
+            await self.emit_status(status_desc)
+
+    async def _handle_reasoning_summary(self, event: ResponseReasoningSummaryTextDoneEvent) -> None:
+        text_val = (event.text or "").strip()
+        if text_val:
+            title, content = self.engine._parse_reasoning_summary(text_val)
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            await self.emit_status(f"{title}\n{content}")
+
+    async def _handle_text_done(self, event: ResponseOutputTextDoneEvent) -> None:
+        text_val = event.text
+        if self.debug_enabled:
+            self.engine.logger.debug("event=response.output_text.done text_len=%d", len(text_val or ""))
+        await self.engine._cancel_tasks(self.state.thinking_tasks)
+        if text_val and not self.state.response_text:
+            self.state.response_text = text_val
+        await self.emitter.replace(self.state.response_text or text_val)
+
+    async def _persist_items(self, items: list[dict[str, Any]]) -> None:
+        chat_id = self.metadata.get("chat_id")
+        message_id = self.metadata.get("message_id")
+        model_id = (self.metadata.get("model") or {}).get("id")
+        if chat_id and message_id and model_id:
+            try:
+                hidden_markers = self.engine.history_persistence.persist_items_for_message(
+                    chat_id,
+                    message_id,
+                    items,
+                    model_id=model_id,
+                )
+            except Exception as exc:  # pragma: no cover
+                self.engine.logger.warning("Failed to persist output items: %s", exc)
+                hidden_markers = ""
+            if hidden_markers:
+                self.state.response_text += hidden_markers
+                await self.emitter.replace(self.state.response_text)
+
 class ResponsesEngine:
     """Encapsulates streaming and tool orchestration."""
 
@@ -75,41 +312,20 @@ class ResponsesEngine:
         event_emitter: EventEmitterFn,
         openwebui_tools: dict[str, dict[str, Any]] | None = None,
     ) -> str:
-        emitter = EventEmitter(event_emitter)
-        delta_log_stride = int(os.getenv("DELTA_LOG_STRIDE", "500") or "500")
-        assistant_message = ""
-        last_usage: dict[str, Any] | None = None
-        emitted_citations: list[dict[str, Any]] = []
-        debug_enabled = self.logger.isEnabledFor(logging.DEBUG)
-        delta_count = 0
-        delta_chars = 0
-        tool_call_count = 0
-        last_error: str | None = None
-        last_tool_output: str | None = None
-
-        status_emitted = False
-
-        async def emit_status(
-            description: str,
-            *,
-            done: bool = False,
-            hidden: bool = False,
-            require_previous: bool = False,
-        ) -> None:
-            nonlocal status_emitted
-            if require_previous and not status_emitted:
-                return
-            status_emitted = True
-            await emitter.status(description, done=done, hidden=hidden)
-
-        thinking_tasks = self._schedule_reasoning_statuses(body, emit_status)
-        final_response_payload: dict[str, Any] | None = None
+        session = _StreamSession(
+            self,
+            body,
+            valves,
+            metadata,
+            event_emitter,
+            openwebui_tools=openwebui_tools,
+        )
 
         model_router_result = body.model_router_result
         if model_router_result:
             body.model_router_result = None
-            explanation = model_router_result.get("explanation", "")
-            await emit_status(
+            explanation = model_router_result.get('explanation', '')
+            await session.emit_status(
                 description=(
                     f"Routing to {model_router_result.get('model')} "
                     f"(effort: {model_router_result.get('reasoning_effort')})\n"
@@ -117,203 +333,41 @@ class ResponsesEngine:
                 )
             )
 
-        self.logger.info("turn.start model=%s task=chat", body.model)
+        self.logger.info('turn.start model=%s task=chat', body.model)
         start_time = perf_counter()
-        error_occurred = False
+        function_calls_supported = supports('function_calling', body.model)
 
         try:
-            max_loops = getattr(valves, "MAX_FUNCTION_CALL_LOOPS", 10)
-            loop_idx = 0
-            while loop_idx < max_loops:
-                loop_idx += 1
-                final_response_payload = None
+            max_loops = getattr(valves, 'MAX_FUNCTION_CALL_LOOPS', 10)
+            for _ in range(max_loops):
+                session.state.reset_for_next_response()
 
-                async for event in self.client.stream(
-                    body.model_dump(exclude_none=True),
-                    api_key=valves.API_KEY,
-                    base_url=valves.BASE_URL,
-                    typed=True,
-                ):
-                    # Text deltas
-                    if isinstance(event, ResponseOutputTextDeltaEvent):
-                        delta_val = event.delta
-                        delta_count += 1
-                        delta_chars += len(delta_val or "")
-                        if debug_enabled and delta_val and (delta_count == 1 or delta_count % delta_log_stride == 0):
-                            self.logger.debug("delta_progress count=%d chars=%d", delta_count, delta_chars)
-                        if delta_val:
-                            assistant_message += delta_val
-                            await emitter.delta(delta_val)
-                        continue
+                await self._stream_response(session, body, valves)
 
-                    # Message started
-                    if isinstance(event, ResponseOutputItemAddedEvent):
-                        item = event.item or {}
-                        if item.get("type") == "message" and item.get("status") == "in_progress":
-                            await emit_status("Responding to the user…", require_previous=True)
-                        continue
-
-                    # Output item completed
-                    if isinstance(event, ResponseOutputItemDoneEvent):
-                        item = event.item or {}
-                        item_type = item.get("type") or ""
-
-                        should_persist = False
-                        if item_type == "reasoning":
-                            should_persist = getattr(valves, "PERSIST_REASONING_TOKENS", "disabled") == "conversation"
-                        elif item_type in ("message", "web_search_call"):
-                            should_persist = False
-                        else:
-                            should_persist = getattr(valves, "PERSIST_TOOL_RESULTS", True)
-
-                        if should_persist:
-                            chat_id = metadata.get("chat_id")
-                            message_id = metadata.get("message_id")
-                            model_id = (metadata.get("model") or {}).get("id")
-                            if chat_id and message_id and model_id:
-                                try:
-                                    hidden_markers = self.history_persistence.persist_items_for_message(
-                                        chat_id,
-                                        message_id,
-                                        [item],
-                                        model_id=model_id,
-                                    )
-                                except Exception as exc:  # pragma: no cover
-                                    self.logger.warning("Failed to persist output item: %s", exc)
-                                    hidden_markers = ""
-                                if hidden_markers:
-                                    assistant_message += hidden_markers
-                                    await emitter.replace(assistant_message)
-
-                        status_desc = self._status_from_output_item(item)
-                        if status_desc:
-                            await emit_status(status_desc)
-                        continue
-
-                    # Reasoning summary
-                    if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
-                        text_val = (event.text or "").strip()
-                        if text_val:
-                            title, content = self._parse_reasoning_summary(text_val)
-                            await self._cancel_tasks(thinking_tasks)
-                            await emit_status(f"{title}\n{content}")
-                        continue
-
-                    # Text done
-                    if isinstance(event, ResponseOutputTextDoneEvent):
-                        text_val = event.text
-                        if debug_enabled:
-                            self.logger.debug("event=response.output_text.done text_len=%d", len(text_val or ""))
-                        await self._cancel_tasks(thinking_tasks)
-                        if text_val and not assistant_message:
-                            assistant_message = text_val
-                        await emitter.replace(assistant_message or text_val)
-                        continue
-
-                    # Envelope
-                    if isinstance(event, ResponseCompletedEvent):
-                        if debug_enabled:
-                            usage = event.response.get("usage") or {}
-                            self.logger.debug("event=response.completed usage_keys=%s", sorted(usage.keys()))
-                        final_response_payload = event.response
-                        await self._cancel_tasks(thinking_tasks)
-                        break
-
-                    if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
-                        await self._cancel_tasks(thinking_tasks)
-                        error_occurred = True
-                        if isinstance(event, ErrorEvent):
-                            last_error = event.message
-                        else:
-                            response_payload = event.response
-                            last_error = (response_payload.get("error") or {}).get("message", "OpenAI returned an error.")
-                        self.logger.error("turn.error type=response_error message=%s", last_error)
-                        await self._handle_stream_error(emitter, last_error)
-                        break
-
-                    if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
-                        if debug_enabled:
-                            self.logger.debug(
-                                "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
-                            )
-                        continue
-
-                # -- post-stream processing --
-                if final_response_payload:
-                    usage_from_response = self._extract_usage_from_final_response(final_response_payload)
-                    if usage_from_response:
-                        last_usage = usage_from_response
-
-                    response_output_items = self._sanitize_output_items(
-                        final_response_payload.get("output") or [], store=body.store
-                    )
-                    if response_output_items:
-                        existing_input = list(body.input) if isinstance(body.input, list) else []
-                        body.input = existing_input + response_output_items
-
-                if error_occurred or not final_response_payload:
+                if session.state.has_error or not session.state.completed_response:
                     break
 
-                if not supports("function_calling", body.model):
+                if not function_calls_supported:
                     break
 
-                call_items = response_output_items or (final_response_payload or {}).get("output", [])
-                tool_calls = [item for item in call_items if item.get("type") == "function_call"]
+                response_output_items = await session.collect_output_items()
+                tool_calls = session.find_tool_calls(response_output_items)
                 if not tool_calls:
                     break
-                tool_call_count += len(tool_calls)
 
-                try:
-                    if not openwebui_tools:
-                        self.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
-                        await emit_status("Tool execution skipped: no tool registry available.")
-                        break
-                    function_outputs = await execute_tool_calls(tool_calls, openwebui_tools)
-                except ToolExecutionError as exc:
-                    self.logger.warning("Skipping malformed tool arguments: %s", exc)
-                    await emit_status("Skipping malformed tool arguments.")
-                    break
+                function_outputs = await session.execute_tool_calls(tool_calls)
                 if not function_outputs:
                     break
 
-                last_tool_output = str(function_outputs[-1].get("output", ""))
-                if getattr(valves, "PERSIST_TOOL_RESULTS", True):
-                    chat_id = metadata.get("chat_id")
-                    message_id = metadata.get("message_id")
-                    model_id = (metadata.get("model") or {}).get("id")
-                    if chat_id and message_id and model_id:
-                        try:
-                            hidden_markers = self.history_persistence.persist_items_for_message(
-                                chat_id,
-                                message_id,
-                                function_outputs,
-                                model_id=model_id,
-                            )
-                        except Exception as exc:  # pragma: no cover
-                            self.logger.warning("Failed to persist tool results: %s", exc)
-                            hidden_markers = ""
-                        if hidden_markers:
-                            assistant_message += hidden_markers
-                            await emitter.replace(assistant_message)
+                if not await session.append_tool_outputs(function_outputs):
+                    break
 
-                for output in function_outputs:
-                    output_str = output.get("output", "")
-                    if output_str:
-                        await emit_status(f"Received tool result\n{output_str}")
-
-                existing_input = list(body.input) if isinstance(body.input, list) else []
-                body.input = existing_input + function_outputs
-
-                # Loop again with the appended tool outputs.
-                continue
-
-            # debug payload preview
-            if debug_enabled and final_response_payload:
+            if session.debug_enabled and session.state.completed_response:
                 try:
-                    payload_str = json.dumps(final_response_payload, ensure_ascii=False)
+                    payload_str = json.dumps(session.state.completed_response, ensure_ascii=False)
                     preview, truncated = truncate_for_log(payload_str, limit=1000)
                     self.logger.debug(
-                        "response.payload_preview enabled=true truncated=%s len=%d payload=%s",
+                        'response.payload_preview enabled=true truncated=%s len=%d payload=%s',
                         truncated,
                         len(payload_str),
                         preview,
@@ -321,87 +375,59 @@ class ResponsesEngine:
                 except Exception:
                     pass
 
-            usage_summary = last_usage or {}
-            tokens_in = usage_summary.get("input_tokens")
-            tokens_out = usage_summary.get("output_tokens")
-            total_tokens = usage_summary.get("total_tokens")
-            try:
-                tokens_total = (
-                    total_tokens
-                    if isinstance(total_tokens, (int, float))
-                    else (tokens_in or 0) + (tokens_out or 0)
-                )
-            except Exception:
-                tokens_total = None
+            usage_summary = session.state.usage_summary or {}
+            tokens_in = usage_summary.get('input_tokens')
+            tokens_out = usage_summary.get('output_tokens')
             respond_time = perf_counter() - start_time
-            tokens_sec = round(tokens_total / respond_time, 2) if tokens_total and respond_time > 0 else None
             summary_kwargs = {
-                "status": "error" if error_occurred else "ok",
-                "model": body.model,
-                "duration_sec": respond_time,
-                "deltas": delta_count,
-                "text_chars": delta_chars,
-                "tool_calls": tool_call_count,
-                "citations": len(emitted_citations),
-                "input_tokens": tokens_in,
-                "output_tokens": tokens_out,
-                "tokens_sec": tokens_sec,
+                'status': 'error' if session.state.has_error else 'ok',
+                'model': body.model,
+                'duration_sec': respond_time,
+                'tool_calls': session.state.tool_calls_executed,
+                'citations': len(session.state.citations),
+                'input_tokens': tokens_in,
+                'output_tokens': tokens_out,
             }
-            if last_error:
-                summary_kwargs["last_error"] = last_error
+            if session.state.error_message:
+                summary_kwargs['last_error'] = session.state.error_message
             self.logger.info(
-                "Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f "
-                "deltas=%(deltas)d text_chars=%(text_chars)d tool_calls=%(tool_calls)d citations=%(citations)d "
-                "input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s tokens_sec=%(tokens_sec)s"
-                + (" last_error=%(last_error)s" if last_error else ""),
+                'Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f '
+                'tool_calls=%(tool_calls)d citations=%(citations)d '
+                'input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s'
+                + (' last_error=%(last_error)s' if session.state.error_message else ''),
                 summary_kwargs,
             )
 
         except Exception as exc:  # pragma: no cover
-            await self._cancel_tasks(thinking_tasks)
-            error_occurred = True
-            last_error = str(exc)
-            self.logger.error("turn.error type=%s message=%s", type(exc).__name__, last_error)
-            await self._handle_stream_error(emitter, last_error)
+            await self._cancel_tasks(session.state.thinking_tasks)
+            session.state.has_error = True
+            session.state.error_message = str(exc)
+            self.logger.error('turn.error type=%s message=%s', type(exc).__name__, session.state.error_message)
+            await self._handle_stream_error(session.emitter, session.state.error_message)
 
         finally:
-            await self._emit_log_citation(emitter, emitted_citations)
-            if not assistant_message and not error_occurred and last_tool_output:
-                assistant_message = last_tool_output
-            usage_for_completion = last_usage or self._extract_usage_from_final_response(final_response_payload or {}) or None
-            # Emit a final visible status marked as done so the UI collapses the in-progress badge.
-            await emit_status("Done", done=True, hidden=False, require_previous=True)
-            await emitter.chat_completion(
-                {"content": assistant_message, "usage": usage_for_completion, "done": True}
+            await self._emit_log_citation(session.emitter, session.state.citations)
+            if not session.state.response_text and not session.state.has_error and session.state.last_tool_result:
+                session.state.response_text = session.state.last_tool_result
+            usage_for_completion = (
+                session.state.usage_summary
+                or self._extract_usage_from_final_response(session.state.completed_response or {})
+                or None
             )
-            chat_id = metadata.get("chat_id")
-            message_id = metadata.get("message_id")
-            if chat_id and message_id and emitted_citations:
+            await session.emit_status('Done', done=True, hidden=False, require_previous=True)
+            await session.emitter.chat_completion(
+                {'content': session.state.response_text, 'usage': usage_for_completion, 'done': True}
+            )
+            chat_id = metadata.get('chat_id')
+            message_id = metadata.get('message_id')
+            if chat_id and message_id and session.state.citations:
                 Chats.upsert_message_to_chat_by_id_and_message_id(
                     chat_id,
                     message_id,
-                    {"sources": emitted_citations},
+                    {'id': message_id, 'sources': session.state.citations},
                 )
 
-        return assistant_message
-
-    async def run_nonstreaming_turn(
-        self,
-        body: ResponseCreateParams,
-        *,
-        valves: Any,
-        metadata: dict[str, Any],
-        event_emitter: EventEmitterFn,
-        openwebui_tools: dict[str, dict[str, Any]] | None = None,
-    ) -> str:
-        body.stream = True
-        return await self.run_streaming_turn(
-            body,
-            valves=valves,
-            metadata=metadata,
-            event_emitter=event_emitter,
-            openwebui_tools=openwebui_tools,
-        )
+        return session.state.response_text
 
     async def run_task_model(
         self,
@@ -502,14 +528,16 @@ class ResponsesEngine:
 
     def _sanitize_output_items(self, items: list[dict[str, Any]], *, store: bool | None) -> list[dict[str, Any]]:
         """Strip server-side IDs when store=False to avoid lookups on replay."""
+
+        if store is not False:
+            return [item for item in items if isinstance(item, dict)]
+
         cleaned: list[dict[str, Any]] = []
         for item in items:
-            if not isinstance(item, dict):
-                continue
-            clone = json.loads(json.dumps(item))
-            if store is False:
+            if isinstance(item, dict):
+                clone = dict(item)
                 clone.pop("id", None)
-            cleaned.append(clone)
+                cleaned.append(clone)
         return cleaned
 
     def _extract_usage_from_final_response(self, final_response: dict[str, Any]) -> dict[str, Any]:
@@ -533,6 +561,21 @@ class ResponsesEngine:
         self.logger.error("Streaming error: %s", message)
         if emitter:
             await emitter.chat_completion({"error": {"message": message}, "done": False})
+
+    async def _stream_response(
+        self,
+        session: _StreamSession,
+        body: ResponseCreateParams,
+        valves: Any,
+    ) -> None:
+        async for event in self.client.stream(
+            body.model_dump(exclude_none=True),
+            api_key=valves.API_KEY,
+            base_url=valves.BASE_URL,
+            typed=True,
+        ):
+            if await session.handle_event(event):
+                break
 
     def _status_from_output_item(self, item: dict[str, Any]) -> str | None:
         """Return a user-facing status string for a completed output item."""
