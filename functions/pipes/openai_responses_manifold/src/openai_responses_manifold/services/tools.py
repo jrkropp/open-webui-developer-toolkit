@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Any
 
-from ..core.api_models import ResponsesBody
+from ..core.openai_requests import ResponseCreateParams
 from ..core.errors import ToolExecutionError
 from ..model_catalog import supports
 from ..utils import get_logger, truncate_for_log
@@ -16,8 +16,34 @@ from ..utils import get_logger, truncate_for_log
 logger = get_logger(__name__)
 
 
+async def resolve_tools(
+    responses_body: ResponseCreateParams,
+    valves: Any,
+    provided_tools: list[dict[str, Any]] | dict[str, Any] | asyncio.Future | None,
+    *,
+    features: dict[str, Any] | None = None,
+    extra_tools: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """
+    Normalize OpenWebUI tool inputs and build the Responses tool spec list.
+
+    Returns (tools, tool_registry) where tool_registry is an executable mapping for ResultsEngine.
+    """
+
+    resolved = await provided_tools if inspect.isawaitable(provided_tools) else provided_tools
+    tool_registry: dict[str, dict[str, Any]] | None = resolved if isinstance(resolved, dict) else None
+    tools = build_tools(
+        responses_body,
+        valves,
+        openwebui_tools=tool_registry,
+        features=features,
+        extra_tools=extra_tools,
+    )
+    return tools, tool_registry or {}
+
+
 def build_tools(
-    responses_body: ResponsesBody,
+    responses_body: ResponseCreateParams,
     valves: Any,
     openwebui_tools: dict[str, Any] | None = None,
     *,

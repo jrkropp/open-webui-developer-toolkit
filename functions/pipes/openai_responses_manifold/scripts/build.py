@@ -51,18 +51,19 @@ MODULE_ORDER: list[str] = [
     "model_catalog.py",
     "settings.py",
     "utils/logging.py",
-    "utils/events.py",
-    "core/events.py",
-    "core/api_models.py",
+    "utils/openwebui_events.py",
+    "core/openai_response_events.py",
+    "core/openai_requests.py",
     "core/ids.py",
-    "core/capabilities.py",
     "core/messages.py",
     "core/markers.py",
     "core/errors.py",
     "main.py",
     "engine.py",
     "services/history.py",
+    "services/request_builder.py",
     "services/tools.py",
+    "services/tasks.py",
     "services/routing.py",
     "infra/openwebui_store.py",
     "infra/openai_client.py",
@@ -197,7 +198,7 @@ def _get_module_docstring(rel_path: str) -> str:
     Return the first line of the module-level docstring for the given module,
     or an empty string if none is found.
 
-    rel_path is a path relative to PACKAGE_DIR, e.g. "core/api_models.py".
+    rel_path is a path relative to PACKAGE_DIR, e.g. "core/requests.py".
     """
     module_path = PACKAGE_DIR / rel_path
     if not module_path.exists():
@@ -256,6 +257,40 @@ def _render_file_tree_comment() -> str:
             lines.append(f"# - {rel_path}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Source discovery / validation
+# ---------------------------------------------------------------------------
+
+def _discover_source_modules() -> set[str]:
+    """Return all non-__init__ Python modules under PACKAGE_DIR, relative paths."""
+    modules: set[str] = set()
+    for path in PACKAGE_DIR.rglob("*.py"):
+        if path.name == "__init__.py":
+            continue
+        modules.add(path.relative_to(PACKAGE_DIR).as_posix())
+    return modules
+
+
+def _validate_module_order() -> None:
+    """
+    Ensure MODULE_ORDER includes every source module so new files are not skipped.
+
+    Raises a RuntimeError with a clear list of missing modules if the mapping
+    needs to be updated.
+    """
+    source_modules = _discover_source_modules()
+    missing = sorted(source_modules - set(MODULE_ORDER))
+    if not missing:
+        return
+
+    missing_lines = "\n".join(f"- {path}" for path in missing)
+    raise RuntimeError(
+        "MODULE_ORDER is missing source modules found in src/openai_responses_manifold/. "
+        "Add them to scripts/build.py (respecting the desired order) so they are bundled:\n"
+        f"{missing_lines}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +610,7 @@ def run_build() -> int:
     manifest_text = extract_manifest_block()
     manifest_block = f'"""\n{manifest_text}\n"""'
 
+    _validate_module_order()
     file_tree_comment = _render_file_tree_comment()
 
     sections: List[str] = [

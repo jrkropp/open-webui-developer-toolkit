@@ -27,7 +27,7 @@
 
 **Phase 2 — Core (pure logic, no I/O)**
 
-* [x] 2.1 `core/api_models.py`: move `CompletionsBody`, `ResponsesBody` (+ alias defaults validator).
+* [x] 2.1 `core/requests.py`: move `CompletionsBody`, `ResponsesBody` (+ alias defaults validator).
 * [x] 2.2 `core/ids.py`: implement `normalize()`, `base_model()` (prefix/dot/date-safe).
 * [x] 2.3 `core/capabilities.py`: move `MODEL_FEATURES`, `MODEL_ALIASES`, `supports()`.
 * [x] 2.4 `core/messages.py`: user/dev/assistant block helpers (text/image/file → Responses items).
@@ -65,7 +65,7 @@
 
 **Phase 7 — Tests & QA**
 
-* [x] 7.1 Unit tests (core): ids, markers, api_models.
+* [x] 7.1 Unit tests (core): ids, markers, requests.
 * [x] 7.2 Service tests: history (builder/persistence), tools (build/execute), routing.
 * [x] 7.3 Engine smoke test: mock SSE stream; assert emissions and loops.
 * [x] 7.4 Backward compatibility: existing chats still resolve markers; Function ID rename does not break.
@@ -105,7 +105,7 @@ openai_responses_manifold/
 ├─ engine.py                    # ResponsesEngine (single-turn orchestrator)
 ├─ core/
 │  ├─ __init__.py
-│  ├─ api_models.py             # CompletionsBody, ResponsesBody (+ alias defaults)
+│  ├─ requests.py               # CompletionsBody, ResponsesBody (+ alias defaults)
 │  ├─ messages.py               # message block helpers
 │  ├─ capabilities.py           # MODEL_FEATURES, MODEL_ALIASES, supports()
 │  ├─ ids.py                    # normalize(), base_model() – prefix/dot/date safe
@@ -138,7 +138,7 @@ openai_responses_manifold/
 | Current section / function                                                  | Target module & symbol                                                                         | Notes / changes                                                          |
 | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | `core/capabilities.py` (`MODEL_FEATURES`, `MODEL_ALIASES`, `supports`)      | `core/capabilities.py`                                                                         | Mostly move; drop `MODEL_PREFIX` stripping from here; rely on `core/ids` |
-| `core/models.py::CompletionsBody`, `ResponsesBody`                          | `core/api_models.py`                                                                           | Keep validator for alias defaults                                        |
+| `core/models.py::CompletionsBody`, `ResponsesBody`                          | `core/requests.py`                                                                             | Keep validator for alias defaults                                        |
 | `core/models.py::transform_messages_to_input`                               | `services/history.py::HistoryBuilder.build_input_from_messages` (+ `core/messages.py` helpers) | Inject resolver; remove DB/Chats coupling                                |
 | `core/markers.py`                                                           | `core/markers.py`                                                                              | Move as-is (pure)                                                        |
 | `core/session_logger.py`                                                    | `utils/logging.py`                                                                             | Rename to `SessionLogger`, keep ContextVar behavior                      |

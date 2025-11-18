@@ -8,8 +8,9 @@ from typing import Any
 
 import aiohttp
 import logging
+from pydantic import BaseModel
 
-from ..core.events import StreamEvent, UnknownStreamEventType, parse_event
+from ..core.openai_response_events import StreamEvent, parse_event
 from ..utils import get_logger, truncate_for_log
 
 
@@ -22,7 +23,7 @@ class OpenAIResponsesClient:
 
     async def stream(
         self,
-        request_body: dict[str, Any],
+        request_body: dict[str, Any] | BaseModel,
         *,
         api_key: str,
         base_url: str,
@@ -33,6 +34,12 @@ class OpenAIResponsesClient:
         Set ``typed=True`` to parse each payload into a structured ``StreamEvent``.
         """
 
+        payload = (
+            request_body.model_dump(exclude_none=True)
+            if isinstance(request_body, BaseModel)
+            else request_body
+        )
+
         session = await self._get_or_init_http_session()
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -41,16 +48,16 @@ class OpenAIResponsesClient:
         }
         url = base_url.rstrip("/") + "/responses"
         if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
-            input_items = request_body.get("input") or []
-            instructions = request_body.get("instructions") or ""
+            input_items = payload.get("input") or []
+            instructions = payload.get("instructions") or ""
             self._logger.debug(
                 "Streaming request prepared model=%s input_items=%d instructions_len=%d",
-                request_body.get("model"),
+                payload.get("model"),
                 len(input_items) if isinstance(input_items, list) else 0,
                 len(instructions) if isinstance(instructions, str) else 0,
             )
             try:
-                trimmed = dict(request_body)
+                trimmed = dict(payload)
                 if "instructions" in trimmed:
                     trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
                 payload_str = json.dumps(trimmed, ensure_ascii=False)
@@ -65,7 +72,7 @@ class OpenAIResponsesClient:
                 pass
 
         buf = bytearray()
-        async with session.post(url, json=request_body, headers=headers) as resp:
+        async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status >= 400:
                 await self._log_and_raise(resp, kind="streaming")
 
@@ -89,23 +96,33 @@ class OpenAIResponsesClient:
                             yield parse_event(evt)
                             continue
                         except Exception as exc:
-                            self._logger.warning(
-                                "Unable to parse streaming event type=%s exc=%s; yielding raw payload",
+                            preview, truncated = truncate_for_log(json.dumps(evt, ensure_ascii=False), 400)
+                            self._logger.error(
+                                "Failed to parse streaming event type=%s truncated=%s payload=%s error=%s",
                                 evt.get("type"),
-                                type(exc).__name__,
+                                truncated,
+                                preview,
+                                exc,
                             )
+                            raise
                     yield evt
                 if start_idx > 0:
                     del buf[:start_idx]
 
     async def create(
         self,
-        request_body: dict[str, Any],
+        request_body: dict[str, Any] | BaseModel,
         *,
         api_key: str,
         base_url: str,
     ) -> dict[str, Any]:
         """Send a non-streaming request to ``POST /responses``."""
+
+        payload = (
+            request_body.model_dump(exclude_none=True)
+            if isinstance(request_body, BaseModel)
+            else request_body
+        )
 
         session = await self._get_or_init_http_session()
         headers = {
@@ -114,16 +131,16 @@ class OpenAIResponsesClient:
         }
         url = base_url.rstrip("/") + "/responses"
         if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
-            input_items = request_body.get("input") or []
-            instructions = request_body.get("instructions") or ""
+            input_items = payload.get("input") or []
+            instructions = payload.get("instructions") or ""
             self._logger.debug(
                 "Non-streaming request prepared model=%s input_items=%d instructions_len=%d",
-                request_body.get("model"),
+                payload.get("model"),
                 len(input_items) if isinstance(input_items, list) else 0,
                 len(instructions) if isinstance(instructions, str) else 0,
             )
             try:
-                trimmed = dict(request_body)
+                trimmed = dict(payload)
                 if "instructions" in trimmed:
                     trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
                 payload_str = json.dumps(trimmed, ensure_ascii=False)
@@ -136,7 +153,7 @@ class OpenAIResponsesClient:
                 )
             except Exception:
                 pass
-        async with session.post(url, json=request_body, headers=headers) as resp:
+        async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status >= 400:
                 await self._log_and_raise(resp, kind="non-streaming")
             return await resp.json()

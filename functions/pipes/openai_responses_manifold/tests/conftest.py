@@ -204,18 +204,18 @@ def metadata_factory() -> Callable[[str, str, str], dict[str, Any]]:
 
 
 @pytest.fixture()
-def responses_body_factory() -> Callable[..., orm.ResponsesBody]:
-    """Factory for ResponsesBody instances."""
+def responses_body_factory() -> Callable[..., orm.ResponseCreateParams]:
+    """Factory for ResponseCreateParams instances."""
 
     def _make(
         *,
         model: str = "gpt-4o",
         stream: bool = True,
         input_items: list[dict[str, Any]] | None = None,
-    ) -> orm.ResponsesBody:
+    ) -> orm.ResponseCreateParams:
         if input_items is None:
             input_items = [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}]
-        return orm.ResponsesBody(model=model, input=input_items, stream=stream)
+        return orm.ResponseCreateParams(model=model, input=input_items, stream=stream)
 
     return _make
 

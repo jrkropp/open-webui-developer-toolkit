@@ -21,9 +21,8 @@ openai_responses_manifold/
 ├─ model_catalog.py             # Canonical model/capability table (edit this when adding models)
 ├─ core/                        # Pure domain logic (no I/O)
 │  ├─ __init__.py
-│  ├─ api_models.py             # Pydantic: CompletionsBody, ResponsesBody
+│  ├─ requests.py               # Pydantic: CompletionCreateParams, ResponseCreateParams
 │  ├─ messages.py               # Message block helpers (text/image/file → items)
-│  ├─ capabilities.py           # MODEL_FEATURES, MODEL_ALIASES, supports()
 │  ├─ ids.py                    # Model ID normalization (prefix/dot/date safe)
 │  ├─ markers.py                # Hidden marker format & parsing (no DB)
 │  └─ errors.py                 # Manifold exceptions (Tool, Routing, Stream)
@@ -77,7 +76,7 @@ openai_responses_manifold/
 
 5. **Engine Run (single turn)**
 
-   * Build `ResponsesBody` from the current conversation and valves.
+   * Build `ResponseCreateParams` from the current conversation and valves.
    * Stream SSE from OpenAI, handle tool calls, persist items, emit OpenWebUI events, finish with usage + citations + logs.
 
 6. **Valves (settings)**
@@ -115,6 +114,15 @@ openai_responses_manifold/
 
 ## 4) Module responsibilities and APIs (with SDK‑like naming)
 
+### SDK type mapping (requests + streaming)
+
+* **Responses request**: `openai.types.responses.ResponseCreateParams` ↔ `core.requests.ResponseCreateParams`
+* **Chat Completions request**: `openai.types.chat.CompletionCreateParams` ↔ `core.requests.CompletionCreateParams` (validated OpenWebUI payload)
+* **Streaming events**: `openai.types.responses.StreamEvent` ↔ `core.openai_response_events.StreamEvent`
+  * Text deltas/done: `ResponseOutputTextDeltaEvent` / `ResponseOutputTextDoneEvent`
+* **Client verbs**: `client.responses.create` / `client.responses.create(stream=True)` ↔ `infra.openai_client.OpenAIResponsesClient.create` / `.stream`
+* The bundled single‑file artifact re‑exports these via `core.__all__`, so the same names are available when imported as `openai_responses_manifold`.
+
 ### `main.py` — OpenWebUI adapter (Pipe)
 
 * **Purpose:** Speak OpenWebUI on one side, Engine on the other.
@@ -143,7 +151,7 @@ class Pipe:
                    __event_call__, __metadata__, __tools__, __task__=None,
                    __task_body__=None):
         # 1) Merge valves (pipe + user)
-        # 2) Build CompletionsBody (core.api_models)
+        # 2) Build CompletionCreateParams (core.requests)
         # 3) Use HistoryBuilder to construct Responses input
         # 4) Build tool specs (services.tools)
         # 5) Optionally route auto models (services.routing)
@@ -193,7 +201,7 @@ class ResponsesEngine:
 
     async def run_streaming_turn(
         self,
-        completions: core.api_models.CompletionsBody,
+        completions: core.requests.CompletionCreateParams,
         *,
         valves: PipeValves,
         user: dict[str, Any],
@@ -202,7 +210,7 @@ class ResponsesEngine:
         openwebui_tools: dict[str, Any] | None,
     ) -> str:
         """
-        1) Build ResponsesBody (messages → items)
+        1) Build ResponseCreateParams (messages → items)
         2) Attach tools, route if needed
         3) Stream SSE; emit events; persist items and append markers
         4) Handle tool call loops
@@ -220,10 +228,10 @@ class ResponsesEngine:
 
 ---
 
-### `core/api_models.py` — Pydantic models (API shapes)
+### `core/requests.py` — Pydantic models (API shapes)
 
-* `CompletionsBody`: mirrors what OpenWebUI already sends today.
-* `ResponsesBody`: the OpenAI Responses API payload.
+* `CompletionCreateParams`: mirrors what OpenWebUI already sends today.
+* `ResponseCreateParams`: the OpenAI Responses API payload.
 * Optional `@model_validator` to apply defaults for **aliases** (`MODEL_ALIASES`).
 
 ### `core/ids.py` — model ID normalization
@@ -231,7 +239,7 @@ class ResponsesEngine:
 * Lowercase, strip **OpenAI date suffix** (`-YYYY-MM-DD`), and if the full string is `<prefix>.<suffix>`, only strip the prefix **if the suffix is known** (in `MODEL_FEATURES` or `MODEL_ALIASES`).
   Works with dotted models like `gpt-4.1-2025-11-03`.
 
-### `core/capabilities.py` — model features and aliases
+### `model_catalog.py` — model features and aliases
 
 * `MODEL_FEATURES`: canonical model → frozenset of features.
 * `MODEL_ALIASES`: alias → `{base_model, params}`.
@@ -340,7 +348,7 @@ async def route_auto_model(
     base_body,
     tools,
     event_emitter=None,
-) -> core.api_models.ResponsesBody:
+) -> core.requests.ResponseCreateParams:
     """
     Call a small helper model to choose final 'model' and 'reasoning.effort'
     for 'auto' variants; merge and annotate as model_router_result.
@@ -413,7 +421,7 @@ class ItemStore:
 * **Markers**: keep the namespace **stable** (`openai_responses:v2`).
   Do not couple to Function ID, so old chats keep working after GUI renames.
 * **Store key**: keep **stable** (e.g., `"openai_responses_pipe"`). If you ever change it, provide a legacy fallback.
-* **Capabilities checks**: always go through `core.capabilities.supports(feature, model_id)`.
+* **Capabilities checks**: always go through `model_catalog.supports(feature, model_id)`.
 * **Attach tools** only if the target model supports function calling.
 * **Valves** control policy (web search, reasoning summary, parallel tool calls); the engine enforces them consistently.
 
@@ -423,7 +431,7 @@ class ItemStore:
 
 **Add a model**
 
-1. `core/capabilities.py`: add to `MODEL_FEATURES`; optionally add alias in `MODEL_ALIASES`.
+1. `model_catalog.py`: add to `MODEL_FEATURES`; optionally add alias in `MODEL_ALIASES`.
 2. Done — engine behavior flows from capability checks.
 
 **Add a tool**
@@ -451,14 +459,14 @@ class ItemStore:
 
   * `ids.py`: normalization of raw/dates/prefixed dotted ids.
   * `markers.py`: encode/decode/split/parse.
-  * `api_models.py`: alias defaults merging.
+  * `requests.py`: alias defaults merging.
   * `messages.py`: block transforms.
 
 * **services/** tests:
 
   * `history.HistoryBuilder`: messages with/without markers; resolver returns payloads; output items match expectations.
   * `tools`: function tool specs, web_search gating; execution (sync/async, errors).
-  * `routing`: mock client response, merged into `ResponsesBody`.
+  * `routing`: mock client response, merged into `ResponseCreateParams`.
 
 * **engine** tests:
 

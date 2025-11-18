@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable
 from typing import Any
 
-from fastapi import Request
 from open_webui.models.models import ModelForm, Models
 
-from .core.api_models import CompletionsBody, ResponsesBody
-from .engine import EventEmitter, ResponsesEngine
+from .core.openai_requests import CompletionCreateParams
+from .engine import ResponsesEngine
 from .infra import ItemStore, OpenAIResponsesClient
 from .model_catalog import supports
-from .services import HistoryBuilder, build_tools, route_auto_model
+from .services import route_auto_model
+from .services.request_builder import build_responses_body
 from .settings import PipeValves, UserValves
-from .utils import get_logger, logging_context, pop_logging_context, push_logging_context
+from .utils import (
+    EventCall,
+    EventCallerFn,
+    EventEmitterFn,
+    get_logger,
+    logging_context,
+)
 
 
 class Pipe:
@@ -48,9 +53,8 @@ class Pipe:
         self,
         body: dict[str, Any],
         __user__: dict[str, Any],
-        __request__: Request,
-        __event_emitter__: EventEmitter,
-        __event_call__: Callable[[dict[str, Any]], Awaitable[Any]] | None,
+        __event_emitter__: EventEmitterFn,
+        __event_call__: EventCallerFn | None,
         __metadata__: dict[str, Any],
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: dict[str, Any] | None = None,
@@ -63,92 +67,164 @@ class Pipe:
         user_identifier = __user__[valves.PROMPT_CACHE_KEY]
         features = __metadata__.get("features", {}).get("openai_responses", {})
 
-        tokens = push_logging_context(
+        with logging_context(
             __metadata__.get("session_id"),
             getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
             chat_id=__metadata__.get("chat_id"),
             message_id=__metadata__.get("message_id"),
             user_id=__metadata__.get("user_id"),
+        ):
+            await self._maybe_unclamp_status(__event_call__)
+
+            completions_body = CompletionCreateParams.model_validate(body)
+            responses_body = await build_responses_body(
+                completions_body.model_dump(),
+                valves=valves,
+                metadata=__metadata__,
+                user_identifier=user_identifier,
+                item_store=self.store,
+                provided_tools=__tools__,
+                features=features,
+                extra_tools=getattr(completions_body, "extra_tools", None),
+            )
+
+            if __task__:
+                self.logger.info("Detected task model: %s", __task__)
+                return await self.engine.run_task_model(responses_body.model_dump(), valves)
+
+            responses_body = await self._ensure_native_function_calling_if_needed(
+                responses_body, openwebui_model_id, __event_emitter__
+            )
+            responses_body = await self._ensure_routed_auto_model(
+                responses_body, valves, openwebui_model_id, __event_emitter__
+            )
+            self._apply_reasoning_options(responses_body, valves)
+            self._apply_parallel_tool_policy(responses_body, valves)
+
+            return await self.engine.run_streaming_turn(
+                responses_body,
+                valves=valves,
+                metadata=__metadata__,
+                event_emitter=__event_emitter__,
+            )
+
+    def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
+        merged = pipe_valves.model_copy(deep=True)
+        if user_valves.LOG_LEVEL != "INHERIT":
+            merged.LOG_LEVEL = user_valves.LOG_LEVEL
+        return merged
+
+    @staticmethod
+    def _status_unclamp_script() -> str:
+        return """
+        (() => {
+        if (document.getElementById("owui-status-unclamp")) return "ok";
+        const style = document.createElement("style");
+        style.id = "owui-status-unclamp";
+        style.textContent = `
+            .status-description .line-clamp-1,
+            .status-description .text-base.line-clamp-1,
+            .status-description .text-gray-500.text-base.line-clamp-1 {
+            display: block !important;
+            overflow: visible !important;
+            -webkit-line-clamp: unset !important;
+            -webkit-box-orient: initial !important;
+            white-space: pre-wrap !important;
+            word-break: break-word;
+            }
+
+            .status-description .text-base::first-line,
+            .status-description .text-gray-500.text-base::first-line {
+            font-weight: 500 !important;
+            }
+        `;
+
+        document.head.appendChild(style);
+        return "ok";
+        })();
+        """
+
+    async def _maybe_unclamp_status(self, event_call: EventCallerFn | None) -> None:
+        if not event_call:
+            return
+        # Temporary UI hack to unclamp status text so reasoning tokens can be shown multi-line.
+        call = EventCall(event_call)
+        await call.execute(self._status_unclamp_script())
+
+    async def _apply_model_policies(
+        self,
+        responses_body: Any,
+        valves: PipeValves,
+        openwebui_model_id: str,
+        event_emitter: EventEmitterFn,
+    ):
+        await self._ensure_native_function_calling_if_needed(
+            responses_body, openwebui_model_id, event_emitter
         )
-        if __event_call__:
-            await __event_call__(self._status_unclamp_script())
-
-        completions_body = CompletionsBody.model_validate(body)
-        history_input = self._build_history_input(
-            completions_body.messages,
-            __metadata__,
+        responses_body = await self._ensure_routed_auto_model(
+            responses_body, valves, openwebui_model_id, event_emitter
         )
-        extra_params: dict[str, Any] = {
-            "truncation": valves.TRUNCATION,
-            "user": user_identifier,
-        }
-        chat_id_value = __metadata__.get("chat_id")
-        if isinstance(chat_id_value, str):
-            extra_params["chat_id"] = chat_id_value
-        if valves.MAX_TOOL_CALLS is not None:
-            extra_params["max_tool_calls"] = valves.MAX_TOOL_CALLS
+        self._apply_reasoning_options(responses_body, valves)
+        self._apply_parallel_tool_policy(responses_body, valves)
+        return responses_body
 
-        responses_body = ResponsesBody.from_completions(
-            completions_body=completions_body,
-            history_input=history_input,
-            **extra_params,
+    async def _ensure_native_function_calling_if_needed(
+        self,
+        responses_body: Any,
+        openwebui_model_id: str,
+        event_emitter: EventEmitterFn,
+    ) -> None:
+        tools = responses_body.tools or []
+        if not (tools and supports("function_calling", responses_body.model)):
+            return
+        model = Models.get_model_by_id(openwebui_model_id)
+        if not model:
+            return
+        params = dict(model.params or {})
+        if params.get("function_calling") == "native":
+            return
+
+        await self.engine.emit_notification(
+            event_emitter,
+            content=(
+                f"Enabling native function calling for model: {openwebui_model_id}. "
+                "Please re-run your query."
+            ),
+            level="info",
         )
+        params["function_calling"] = "native"
+        form_data = model.model_dump()
+        form_data["params"] = params
+        Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
 
-        if __task__:
-            self.logger.info("Detected task model: %s", __task__)
-            return await self.engine.run_task_model(responses_body.model_dump(), valves)
-
-        __tools__ = await __tools__ if inspect.isawaitable(__tools__) else __tools__
-        tool_registry: dict[str, dict[str, Any]] | None = (
-            __tools__ if isinstance(__tools__, dict) else None
-        )
-        tools = build_tools(
-            responses_body,
-            valves,
-            openwebui_tools=tool_registry,
-            features=features,
-            extra_tools=getattr(completions_body, "extra_tools", None),
-        )
-
-        if tools and supports("function_calling", responses_body.model):
-            model = Models.get_model_by_id(openwebui_model_id)
-            if model:
-                params = dict(model.params or {})
-                if params.get("function_calling") != "native":
-                    await self.engine.emit_notification(
-                        __event_emitter__,
-                        content=f"Enabling native function calling for model: {openwebui_model_id}. Please re-run your query.",
-                        level="info",
-                    )
-                    params["function_calling"] = "native"
-                    form_data = model.model_dump()
-                    form_data["params"] = params
-                    Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
-
+    async def _ensure_routed_auto_model(
+        self,
+        responses_body: Any,
+        valves: PipeValves,
+        openwebui_model_id: str,
+        event_emitter: EventEmitterFn,
+    ):
         if openwebui_model_id.endswith(".gpt-5-auto-dev"):
-            responses_body = await route_auto_model(
+            return await route_auto_model(
                 self.engine.client,
                 router_model="gpt-4.1-mini",
                 responses_body=responses_body,
                 valves=valves,
-                tools=tools,
-                event_emitter=__event_emitter__,
+                tools=responses_body.tools or [],
+                event_emitter=event_emitter,
             )
-        elif openwebui_model_id.endswith(".gpt-5-auto"):
+
+        if openwebui_model_id.endswith(".gpt-5-auto"):
             responses_body.model = "gpt-5-chat-latest"
             await self.engine.emit_notification(
-                __event_emitter__,
+                event_emitter,
                 content="Model router coming soon — using gpt-5-chat-latest (GPT-5 Fast).",
                 level="warning",
             )
+        return responses_body
 
-        if supports("function_calling", responses_body.model):
-            responses_body.tools = tools
-
-        if (
-            supports("reasoning_summary", responses_body.model)
-            and valves.REASONING_SUMMARY != "disabled"
-        ):
+    def _apply_reasoning_options(self, responses_body: Any, valves: PipeValves) -> None:
+        if supports("reasoning_summary", responses_body.model) and valves.REASONING_SUMMARY != "disabled":
             reasoning_params = dict(responses_body.reasoning or {})
             reasoning_params["summary"] = valves.REASONING_SUMMARY
             responses_body.reasoning = reasoning_params
@@ -162,86 +238,11 @@ class Pipe:
             if "reasoning.encrypted_content" not in responses_body.include:
                 responses_body.include.append("reasoning.encrypted_content")
 
+    def _apply_parallel_tool_policy(self, responses_body: Any, valves: PipeValves) -> None:
         if any(
             isinstance(tool, dict) and tool.get("type") == "web_search"
             for tool in (responses_body.tools or [])
         ):
             responses_body.parallel_tool_calls = False
-        else:
-            responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
-
-        try:
-            return await self.engine.run_streaming_turn(
-                responses_body,
-                valves=valves,
-                metadata=__metadata__,
-                event_emitter=__event_emitter__,
-                tool_registry=tool_registry or {},
-            )
-        finally:
-            pop_logging_context(tokens)
-
-    def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
-        merged = pipe_valves.model_copy(deep=True)
-        if user_valves.LOG_LEVEL != "INHERIT":
-            merged.LOG_LEVEL = user_valves.LOG_LEVEL
-        return merged
-
-    def _build_history_input(
-        self,
-        messages: list[dict[str, Any]],
-        metadata: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        chat_id = metadata.get("chat_id")
-        openwebui_model_id = metadata.get("model", {}).get("id")
-
-        def _resolver(item_ids: list[str], resolver_chat: str | None, model_id: str | None) -> dict[str, dict[str, Any]]:
-            target_chat = resolver_chat or chat_id or ""
-            target_model = model_id or openwebui_model_id
-            return self.store.load_items(
-                target_chat,
-                item_ids,
-                model_id=target_model,
-            )
-
-        builder = HistoryBuilder(resolve_items=_resolver)
-        return builder.build_input_from_messages(
-            messages,
-            chat_id=chat_id,
-            openwebui_model_id=openwebui_model_id,
-        )
-
-    @staticmethod
-    def _status_unclamp_script() -> dict[str, Any]:
-        return {
-            "type": "execute",
-            "data": {
-                "code": """
-                (() => {
-                if (document.getElementById("owui-status-unclamp")) return "ok";
-                const style = document.createElement("style");
-                style.id = "owui-status-unclamp";
-                style.textContent = `
-                    .status-description .line-clamp-1,
-                    .status-description .text-base.line-clamp-1,
-                    .status-description .text-gray-500.text-base.line-clamp-1 {
-                    display: block !important;
-                    overflow: visible !important;
-                    -webkit-line-clamp: unset !important;
-                    -webkit-box-orient: initial !important;
-                    white-space: pre-wrap !important;
-                    word-break: break-word;
-                    }
-
-                    .status-description .text-base::first-line,
-                    .status-description .text-gray-500.text-base::first-line {
-                    font-weight: 500 !important;
-                    }
-                `;
-
-                document.head.appendChild(style);
-                return "ok";
-                })();
-                """,
-            },
-        }
+            return
+        responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)

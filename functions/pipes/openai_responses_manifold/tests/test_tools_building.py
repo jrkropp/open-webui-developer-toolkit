@@ -7,11 +7,11 @@ import json
 import pytest
 
 import openai_responses_manifold as orm
-from openai_responses_manifold import ResponsesBody
+from openai_responses_manifold import ResponseCreateParams
 
 
-def _responses_body(model: str = "gpt-4o") -> ResponsesBody:
-    return ResponsesBody(model=model, input=[], stream=True)
+def _responses_body(model: str = "gpt-4o") -> ResponseCreateParams:
+    return ResponseCreateParams(model=model, input=[], stream=True)
 
 
 def test_build_tools_includes_web_search_when_enabled() -> None:

@@ -92,26 +92,38 @@ class ResponseEnvelopeEvent(BaseStreamEvent):
 
 
 class ResponseQueuedEvent(ResponseEnvelopeEvent):
+    """Emitted when a response is queued and waiting to be processed."""
+
     type: Literal[EventType.RESPONSE_QUEUED] = EventType.RESPONSE_QUEUED
 
 
 class ResponseCreatedEvent(ResponseEnvelopeEvent):
+    """Emitted when a response object has been created."""
+
     type: Literal[EventType.RESPONSE_CREATED] = EventType.RESPONSE_CREATED
 
 
 class ResponseInProgressEvent(ResponseEnvelopeEvent):
+    """Emitted while a response is being generated."""
+
     type: Literal[EventType.RESPONSE_IN_PROGRESS] = EventType.RESPONSE_IN_PROGRESS
 
 
 class ResponseCompletedEvent(ResponseEnvelopeEvent):
+    """Emitted when the response has completed successfully."""
+
     type: Literal[EventType.RESPONSE_COMPLETED] = EventType.RESPONSE_COMPLETED
 
 
 class ResponseFailedEvent(ResponseEnvelopeEvent):
+    """Emitted when the response fails."""
+
     type: Literal[EventType.RESPONSE_FAILED] = EventType.RESPONSE_FAILED
 
 
 class ResponseIncompleteEvent(ResponseEnvelopeEvent):
+    """Emitted when the response finishes in an incomplete state (e.g., max_tokens)."""
+
     type: Literal[EventType.RESPONSE_INCOMPLETE] = EventType.RESPONSE_INCOMPLETE
 
 
@@ -121,10 +133,14 @@ class ResponseOutputItemEvent(BaseStreamEvent):
 
 
 class ResponseOutputItemAddedEvent(ResponseOutputItemEvent):
+    """Emitted when a new output item is added to the response."""
+
     type: Literal[EventType.RESPONSE_OUTPUT_ITEM_ADDED] = EventType.RESPONSE_OUTPUT_ITEM_ADDED
 
 
 class ResponseOutputItemDoneEvent(ResponseOutputItemEvent):
+    """Emitted when an output item is marked completed."""
+
     type: Literal[EventType.RESPONSE_OUTPUT_ITEM_DONE] = EventType.RESPONSE_OUTPUT_ITEM_DONE
 
 
@@ -136,32 +152,44 @@ class ResponseContentPartEvent(BaseStreamEvent):
 
 
 class ResponseContentPartAddedEvent(ResponseContentPartEvent):
+    """Emitted when a new content part is added to an output item."""
+
     type: Literal[EventType.RESPONSE_CONTENT_PART_ADDED] = EventType.RESPONSE_CONTENT_PART_ADDED
 
 
 class ResponseContentPartDoneEvent(ResponseContentPartEvent):
+    """Emitted when a content part is finalized."""
+
     type: Literal[EventType.RESPONSE_CONTENT_PART_DONE] = EventType.RESPONSE_CONTENT_PART_DONE
 
 
 class ResponseOutputTextDeltaEvent(BaseStreamEvent):
+    """Emitted when an incremental text delta is available."""
+
     type: Literal[EventType.RESPONSE_OUTPUT_TEXT_DELTA] = EventType.RESPONSE_OUTPUT_TEXT_DELTA
-    output_index: int
-    item_id: str
-    content_index: int
+    output_index: int | None = None
+    item_id: str | None = None
+    content_index: int | None = None
     delta: str
     logprobs: list[Any] | None = None
+    obfuscation: str | None = None
 
 
 class ResponseOutputTextDoneEvent(BaseStreamEvent):
+    """Emitted when a text content part is finalized."""
+
     type: Literal[EventType.RESPONSE_OUTPUT_TEXT_DONE] = EventType.RESPONSE_OUTPUT_TEXT_DONE
-    output_index: int
-    item_id: str
-    content_index: int
+    output_index: int | None = None
+    item_id: str | None = None
+    content_index: int | None = None
     text: str
     logprobs: list[Any] | None = None
+    obfuscation: str | None = None
 
 
 class ResponseOutputTextAnnotationAddedEvent(BaseStreamEvent):
+    """Emitted when an annotation is added to text content."""
+
     type: Literal[EventType.RESPONSE_OUTPUT_TEXT_ANNOTATION_ADDED] = (
         EventType.RESPONSE_OUTPUT_TEXT_ANNOTATION_ADDED
     )
@@ -173,14 +201,19 @@ class ResponseOutputTextAnnotationAddedEvent(BaseStreamEvent):
 
 
 class ResponseRefusalDeltaEvent(BaseStreamEvent):
+    """Emitted when partial refusal text is streamed."""
+
     type: Literal[EventType.RESPONSE_REFUSAL_DELTA] = EventType.RESPONSE_REFUSAL_DELTA
     output_index: int
     item_id: str
     content_index: int
     delta: str
+    obfuscation: str | None = None
 
 
 class ResponseRefusalDoneEvent(BaseStreamEvent):
+    """Emitted when refusal text is finalized."""
+
     type: Literal[EventType.RESPONSE_REFUSAL_DONE] = EventType.RESPONSE_REFUSAL_DONE
     output_index: int
     item_id: str
@@ -189,15 +222,20 @@ class ResponseRefusalDoneEvent(BaseStreamEvent):
 
 
 class ResponseFunctionCallArgumentsDeltaEvent(BaseStreamEvent):
+    """Emitted when function-call arguments are streamed as a delta."""
+
     type: Literal[EventType.RESPONSE_FUNCTION_CALL_ARGS_DELTA] = (
         EventType.RESPONSE_FUNCTION_CALL_ARGS_DELTA
     )
     output_index: int
     item_id: str
     delta: str
+    obfuscation: str | None = None
 
 
 class ResponseFunctionCallArgumentsDoneEvent(BaseStreamEvent):
+    """Emitted when function-call arguments are finalized."""
+
     type: Literal[EventType.RESPONSE_FUNCTION_CALL_ARGS_DONE] = (
         EventType.RESPONSE_FUNCTION_CALL_ARGS_DONE
     )
@@ -208,15 +246,20 @@ class ResponseFunctionCallArgumentsDoneEvent(BaseStreamEvent):
 
 
 class ResponseCustomToolCallInputDeltaEvent(BaseStreamEvent):
+    """Emitted when a custom tool call input delta arrives."""
+
     type: Literal[EventType.RESPONSE_CUSTOM_TOOL_CALL_INPUT_DELTA] = (
         EventType.RESPONSE_CUSTOM_TOOL_CALL_INPUT_DELTA
     )
     output_index: int
     item_id: str
     delta: str
+    obfuscation: str | None = None
 
 
 class ResponseCustomToolCallInputDoneEvent(BaseStreamEvent):
+    """Emitted when custom tool call input is finalized."""
+
     type: Literal[EventType.RESPONSE_CUSTOM_TOOL_CALL_INPUT_DONE] = (
         EventType.RESPONSE_CUSTOM_TOOL_CALL_INPUT_DONE
     )
@@ -231,18 +274,24 @@ class ResponseFileSearchCallEvent(BaseStreamEvent):
 
 
 class ResponseFileSearchCallInProgressEvent(ResponseFileSearchCallEvent):
+    """Emitted when a file search call starts."""
+
     type: Literal[EventType.RESPONSE_FILE_SEARCH_CALL_IN_PROGRESS] = (
         EventType.RESPONSE_FILE_SEARCH_CALL_IN_PROGRESS
     )
 
 
 class ResponseFileSearchCallSearchingEvent(ResponseFileSearchCallEvent):
+    """Emitted while a file search call is running."""
+
     type: Literal[EventType.RESPONSE_FILE_SEARCH_CALL_SEARCHING] = (
         EventType.RESPONSE_FILE_SEARCH_CALL_SEARCHING
     )
 
 
 class ResponseFileSearchCallCompletedEvent(ResponseFileSearchCallEvent):
+    """Emitted when a file search call completes."""
+
     type: Literal[EventType.RESPONSE_FILE_SEARCH_CALL_COMPLETED] = (
         EventType.RESPONSE_FILE_SEARCH_CALL_COMPLETED
     )
@@ -254,18 +303,24 @@ class ResponseWebSearchCallEvent(BaseStreamEvent):
 
 
 class ResponseWebSearchCallInProgressEvent(ResponseWebSearchCallEvent):
+    """Emitted when a web search call starts."""
+
     type: Literal[EventType.RESPONSE_WEB_SEARCH_CALL_IN_PROGRESS] = (
         EventType.RESPONSE_WEB_SEARCH_CALL_IN_PROGRESS
     )
 
 
 class ResponseWebSearchCallSearchingEvent(ResponseWebSearchCallEvent):
+    """Emitted while a web search call is executing."""
+
     type: Literal[EventType.RESPONSE_WEB_SEARCH_CALL_SEARCHING] = (
         EventType.RESPONSE_WEB_SEARCH_CALL_SEARCHING
     )
 
 
 class ResponseWebSearchCallCompletedEvent(ResponseWebSearchCallEvent):
+    """Emitted when a web search call completes."""
+
     type: Literal[EventType.RESPONSE_WEB_SEARCH_CALL_COMPLETED] = (
         EventType.RESPONSE_WEB_SEARCH_CALL_COMPLETED
     )
@@ -279,18 +334,24 @@ class ResponseReasoningSummaryPartEvent(BaseStreamEvent):
 
 
 class ResponseReasoningSummaryPartAddedEvent(ResponseReasoningSummaryPartEvent):
+    """Emitted when a new reasoning summary part is added."""
+
     type: Literal[EventType.RESPONSE_REASONING_SUMMARY_PART_ADDED] = (
         EventType.RESPONSE_REASONING_SUMMARY_PART_ADDED
     )
 
 
 class ResponseReasoningSummaryPartDoneEvent(ResponseReasoningSummaryPartEvent):
+    """Emitted when a reasoning summary part is completed."""
+
     type: Literal[EventType.RESPONSE_REASONING_SUMMARY_PART_DONE] = (
         EventType.RESPONSE_REASONING_SUMMARY_PART_DONE
     )
 
 
 class ResponseReasoningSummaryTextDeltaEvent(BaseStreamEvent):
+    """Emitted when a reasoning summary text delta is streamed."""
+
     type: Literal[EventType.RESPONSE_REASONING_SUMMARY_TEXT_DELTA] = (
         EventType.RESPONSE_REASONING_SUMMARY_TEXT_DELTA
     )
@@ -298,9 +359,12 @@ class ResponseReasoningSummaryTextDeltaEvent(BaseStreamEvent):
     item_id: str
     summary_index: int
     delta: str
+    obfuscation: str | None = None
 
 
 class ResponseReasoningSummaryTextDoneEvent(BaseStreamEvent):
+    """Emitted when reasoning summary text is finalized."""
+
     type: Literal[EventType.RESPONSE_REASONING_SUMMARY_TEXT_DONE] = (
         EventType.RESPONSE_REASONING_SUMMARY_TEXT_DONE
     )
@@ -311,14 +375,19 @@ class ResponseReasoningSummaryTextDoneEvent(BaseStreamEvent):
 
 
 class ResponseReasoningTextDeltaEvent(BaseStreamEvent):
+    """Emitted when a reasoning text delta is streamed."""
+
     type: Literal[EventType.RESPONSE_REASONING_TEXT_DELTA] = EventType.RESPONSE_REASONING_TEXT_DELTA
     output_index: int
     item_id: str
     content_index: int
     delta: str
+    obfuscation: str | None = None
 
 
 class ResponseReasoningTextDoneEvent(BaseStreamEvent):
+    """Emitted when reasoning text is finalized."""
+
     type: Literal[EventType.RESPONSE_REASONING_TEXT_DONE] = EventType.RESPONSE_REASONING_TEXT_DONE
     output_index: int
     item_id: str
@@ -332,24 +401,32 @@ class ResponseImageGenerationCallEvent(BaseStreamEvent):
 
 
 class ResponseImageGenerationCallInProgressEvent(ResponseImageGenerationCallEvent):
+    """Emitted when an image generation call starts."""
+
     type: Literal[EventType.RESPONSE_IMAGE_GENERATION_CALL_IN_PROGRESS] = (
         EventType.RESPONSE_IMAGE_GENERATION_CALL_IN_PROGRESS
     )
 
 
 class ResponseImageGenerationCallGeneratingEvent(ResponseImageGenerationCallEvent):
+    """Emitted while a web search call is executing."""
+
     type: Literal[EventType.RESPONSE_IMAGE_GENERATION_CALL_GENERATING] = (
         EventType.RESPONSE_IMAGE_GENERATION_CALL_GENERATING
     )
 
 
 class ResponseImageGenerationCallCompletedEvent(ResponseImageGenerationCallEvent):
+    """Emitted when a web search call completes."""
+
     type: Literal[EventType.RESPONSE_IMAGE_GENERATION_CALL_COMPLETED] = (
         EventType.RESPONSE_IMAGE_GENERATION_CALL_COMPLETED
     )
 
 
 class ResponseImageGenerationCallPartialImageEvent(ResponseImageGenerationCallEvent):
+    """Emitted when a partial image is available during image generation."""
+
     type: Literal[EventType.RESPONSE_IMAGE_GENERATION_CALL_PARTIAL_IMAGE] = (
         EventType.RESPONSE_IMAGE_GENERATION_CALL_PARTIAL_IMAGE
     )
@@ -358,13 +435,18 @@ class ResponseImageGenerationCallPartialImageEvent(ResponseImageGenerationCallEv
 
 
 class ResponseMCPCallArgumentsDeltaEvent(BaseStreamEvent):
+    """Emitted when MCP tool call arguments are streamed as a delta."""
+
     type: Literal[EventType.RESPONSE_MCP_CALL_ARGS_DELTA] = EventType.RESPONSE_MCP_CALL_ARGS_DELTA
     output_index: int
     item_id: str
     delta: str
+    obfuscation: str | None = None
 
 
 class ResponseMCPCallArgumentsDoneEvent(BaseStreamEvent):
+    """Emitted when MCP tool call arguments are finalized."""
+
     type: Literal[EventType.RESPONSE_MCP_CALL_ARGS_DONE] = EventType.RESPONSE_MCP_CALL_ARGS_DONE
     output_index: int
     item_id: str
@@ -377,14 +459,20 @@ class ResponseMCPCallEvent(BaseStreamEvent):
 
 
 class ResponseMCPCallInProgressEvent(ResponseMCPCallEvent):
+    """Emitted when an MCP tool call starts."""
+
     type: Literal[EventType.RESPONSE_MCP_CALL_IN_PROGRESS] = EventType.RESPONSE_MCP_CALL_IN_PROGRESS
 
 
 class ResponseMCPCallCompletedEvent(ResponseMCPCallEvent):
+    """Emitted when an MCP tool call completes successfully."""
+
     type: Literal[EventType.RESPONSE_MCP_CALL_COMPLETED] = EventType.RESPONSE_MCP_CALL_COMPLETED
 
 
 class ResponseMCPCallFailedEvent(ResponseMCPCallEvent):
+    """Emitted when an MCP tool call fails."""
+
     type: Literal[EventType.RESPONSE_MCP_CALL_FAILED] = EventType.RESPONSE_MCP_CALL_FAILED
 
 
@@ -394,18 +482,24 @@ class ResponseMCPListToolsEvent(BaseStreamEvent):
 
 
 class ResponseMCPListToolsInProgressEvent(ResponseMCPListToolsEvent):
+    """Emitted when listing available MCP tools begins."""
+
     type: Literal[EventType.RESPONSE_MCP_LIST_TOOLS_IN_PROGRESS] = (
         EventType.RESPONSE_MCP_LIST_TOOLS_IN_PROGRESS
     )
 
 
 class ResponseMCPListToolsCompletedEvent(ResponseMCPListToolsEvent):
+    """Emitted when listing available MCP tools completes."""
+
     type: Literal[EventType.RESPONSE_MCP_LIST_TOOLS_COMPLETED] = (
         EventType.RESPONSE_MCP_LIST_TOOLS_COMPLETED
     )
 
 
 class ResponseMCPListToolsFailedEvent(ResponseMCPListToolsEvent):
+    """Emitted when listing available MCP tools fails."""
+
     type: Literal[EventType.RESPONSE_MCP_LIST_TOOLS_FAILED] = EventType.RESPONSE_MCP_LIST_TOOLS_FAILED
 
 
@@ -415,33 +509,44 @@ class ResponseCodeInterpreterCallEvent(BaseStreamEvent):
 
 
 class ResponseCodeInterpreterCallInProgressEvent(ResponseCodeInterpreterCallEvent):
+    """Emitted when a code interpreter call starts."""
+
     type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_IN_PROGRESS] = (
         EventType.RESPONSE_CODE_INTERPRETER_CALL_IN_PROGRESS
     )
 
 
 class ResponseCodeInterpreterCallInterpretingEvent(ResponseCodeInterpreterCallEvent):
+    """Emitted while the code interpreter is interpreting code."""
+
     type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_INTERPRETING] = (
         EventType.RESPONSE_CODE_INTERPRETER_CALL_INTERPRETING
     )
 
 
 class ResponseCodeInterpreterCallCompletedEvent(ResponseCodeInterpreterCallEvent):
+    """Emitted when the code interpreter finishes execution."""
+
     type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_COMPLETED] = (
         EventType.RESPONSE_CODE_INTERPRETER_CALL_COMPLETED
     )
 
 
 class ResponseCodeInterpreterCallCodeDeltaEvent(BaseStreamEvent):
+    """Emitted when a partial code snippet is streamed."""
+
     type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA] = (
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA
     )
     output_index: int
     item_id: str
     delta: str
+    obfuscation: str | None = None
 
 
 class ResponseCodeInterpreterCallCodeDoneEvent(BaseStreamEvent):
+    """Emitted when the streamed code snippet is finalized."""
+
     type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE] = (
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE
     )
@@ -451,6 +556,8 @@ class ResponseCodeInterpreterCallCodeDoneEvent(BaseStreamEvent):
 
 
 class ErrorEvent(BaseStreamEvent):
+    """Emitted when an error occurs outside the response envelope."""
+
     type: Literal[EventType.ERROR] = EventType.ERROR
     code: str
     message: str
@@ -519,7 +626,9 @@ def parse_event(payload: Mapping[str, Any]) -> StreamEvent:
     try:
         return _STREAM_EVENT_ADAPTER.validate_python(payload)
     except ValidationError as exc:  # pragma: no cover - defensive
-        raise UnknownStreamEventType(f"Unknown or invalid event type: {payload.get('type')}") from exc
+        raise UnknownStreamEventType(
+            f"Unknown or invalid event type: {payload.get('type')} (errors: {exc.errors()})"
+        ) from exc
 
 
 __all__ = [
@@ -578,7 +687,6 @@ __all__ = [
     "ResponseReasoningTextDoneEvent",
     "ResponseRefusalDeltaEvent",
     "ResponseRefusalDoneEvent",
-    "ResponseSearchEvent",
     "ResponseWebSearchCallCompletedEvent",
     "ResponseWebSearchCallInProgressEvent",
     "ResponseWebSearchCallSearchingEvent",

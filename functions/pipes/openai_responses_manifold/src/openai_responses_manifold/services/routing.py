@@ -4,16 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..core.api_models import ResponsesBody
-from ..utils import emit_status, truncate_for_log
+from ..core.openai_requests import ResponseCreateParams
+from ..utils import EventEmitter, EventEmitterFn, get_logger, truncate_for_log
 from ..infra.openai_client import OpenAIResponsesClient
-
-EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
-
-from ..utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -25,7 +20,7 @@ async def route_auto_model(
     responses_body: ResponsesBody,
     valves: Any,
     tools: list[dict[str, Any]],
-    event_emitter: EventEmitter | None = None,
+    event_emitter: EventEmitterFn | None = None,
 ) -> ResponsesBody:
     """
     Use a small helper model to choose the final GPT-5 variant and reasoning effort.
@@ -87,9 +82,9 @@ async def route_auto_model(
     responses_body.model_router_result = router_json
     explanation = router_json.get("explanation")
     if isinstance(explanation, str):
-        await emit_status(
-            event_emitter,
-            f"Routing to {router_json.get('model')} (effort: {router_json.get('reasoning_effort')})\nExplanation: {explanation}",
+        emitter = EventEmitter(event_emitter)
+        await emitter.status(
+            f"Routing to {router_json.get('model')} (effort: {router_json.get('reasoning_effort')})\nExplanation: {explanation}"
         )
     return responses_body
 

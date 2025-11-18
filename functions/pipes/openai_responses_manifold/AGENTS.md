@@ -98,7 +98,7 @@ Key implications for agents:
 - Tests then:
   - Use `orm.Pipe` as the Open WebUI adapter.
   - Use `orm.ResponsesEngine` directly for scenario tests (`tests/test_runner_scenarios.py`).
-  - Import core helpers from the package (`CompletionsBody`, `ResponsesBody`, markers, etc.).
+  - Import core helpers from the package (`CompletionCreateParams`, `ResponseCreateParams`, markers, etc.).
 
 When modifying engine behavior:
 

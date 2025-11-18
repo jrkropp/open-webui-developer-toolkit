@@ -299,6 +299,12 @@ To bridge this gap, the manifold includes an experimental **`gpt-5-auto`** model
 
 ## How It Works (Design Notes)
 
+### Requests vs events (schema split)
+
+- **Outbound requests** use `core/requests.py` (`ResponsesBody`) with `extra="forbid"`; the pipe uses `services/request_builder.py` to adapt OpenWebUI chat payloads into the strict Responses API shape (and hardcodes `include_obfuscation=false` to save bandwidth—see OpenAI docs).
+- **Inbound streaming events** use `core/events.py`, a discriminated union keyed by `type`; `OpenAIResponsesClient.stream(typed=True)` yields validated models instead of raw dicts.
+- Tests/fakes run through the same schemas to catch drift early.
+
 ### Persisting non-message items (function calls, tool outputs, reasoning tokens, …)
 
 The **OpenAI Responses API** doesn’t just return text. A single response can include:

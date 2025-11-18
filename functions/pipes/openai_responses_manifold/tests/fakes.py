@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from collections import deque
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator
 
-from openai_responses_manifold.core.events import UnknownStreamEventType, parse_event
+from openai_responses_manifold.core.openai_response_events import UnknownStreamEventType, parse_event
+from openai_responses_manifold.core.openai_requests import ResponseCreateParams
+from openai_responses_manifold.utils import EventEmitterFn
 
 
 class InMemoryChats:
@@ -72,18 +74,20 @@ class FakeResponsesClient:
         base_url: str,
         typed: bool = False,
     ) -> AsyncIterator[Any]:
-        self.stream_calls.append((json.loads(json.dumps(request_body)), api_key, base_url))
+        validated_body = (
+            ResponseCreateParams.model_validate(request_body)
+            if isinstance(request_body, dict)
+            else ResponseCreateParams.model_validate(request_body.model_dump())
+        )
+        self.stream_calls.append((validated_body.model_dump(exclude_none=True), api_key, base_url))
         if not self._stream_scripts:
             raise AssertionError("No queued stream events for FakeResponsesClient")
         script = self._stream_scripts.popleft()
         for event in script:
             clone = json.loads(json.dumps(event))
             if typed:
-                try:
-                    yield parse_event(clone)
-                    continue
-                except Exception:
-                    pass
+                yield parse_event(clone)
+                continue
             yield clone
 
     async def stream_events(
@@ -111,7 +115,12 @@ class FakeResponsesClient:
         api_key: str,
         base_url: str,
     ) -> dict[str, Any]:
-        self.request_calls.append((json.loads(json.dumps(request_body)), api_key, base_url))
+        validated_body = (
+            ResponseCreateParams.model_validate(request_body)
+            if isinstance(request_body, dict)
+            else ResponseCreateParams.model_validate(request_body.model_dump())
+        )
+        self.request_calls.append((validated_body.model_dump(exclude_none=True), api_key, base_url))
         if not self._responses:
             raise AssertionError("No queued responses for FakeResponsesClient")
         return json.loads(json.dumps(self._responses.popleft()))
@@ -130,4 +139,4 @@ class SpyEventEmitter:
         return [event.get("type", "") for event in self.events]
 
 
-EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
+EventEmitter = EventEmitterFn

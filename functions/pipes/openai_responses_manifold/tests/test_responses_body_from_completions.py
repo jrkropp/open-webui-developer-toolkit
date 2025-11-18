@@ -1,13 +1,18 @@
-"""Baseline tests for the CompletionsBody -> ResponsesBody conversion."""
+"""Baseline tests for mapping OpenWebUI chat payloads to ResponseCreateParams."""
 
 from __future__ import annotations
 
-from openai_responses_manifold import CompletionsBody, ResponsesBody
+import pytest
+
+from openai_responses_manifold import CompletionCreateParams
+from openai_responses_manifold.infra import ItemStore
+from openai_responses_manifold.services.request_builder import build_responses_body
 
 
-def test_responses_body_from_completions_maps_reasoning_and_tokens() -> None:
+@pytest.mark.asyncio()
+async def test_responses_body_from_completions_maps_reasoning_and_tokens() -> None:
     """Ensure reasoning effort and max_tokens are mapped to the new schema."""
-    completions = CompletionsBody(
+    completions = CompletionCreateParams(
         model="gpt-5-mini",
         messages=[
             {"role": "system", "content": "Act helpful"},
@@ -17,14 +22,23 @@ def test_responses_body_from_completions_maps_reasoning_and_tokens() -> None:
         reasoning_effort="minimal",
     )
 
-    responses = ResponsesBody.from_completions(completions)
+    responses = await build_responses_body(
+        completions.model_dump(),
+        valves=type("V", (), {"TRUNCATION": "auto", "PARALLEL_TOOL_CALLS": True})(),
+        metadata={},
+        item_store=ItemStore(),
+    )
 
     assert responses.max_output_tokens == 128
     assert responses.reasoning["effort"] == "minimal"  # type: ignore[index]
     assert responses.instructions == "Act helpful"
+    assert responses.truncation == "auto"
+    assert responses.include_obfuscation is False
+    assert responses.tools in (None, [])
 
 
-def test_responses_body_from_completions_converts_messages() -> None:
+@pytest.mark.asyncio()
+async def test_responses_body_from_completions_converts_messages() -> None:
     """Validate that messages become the structured Responses API input."""
     messages = [
         {"role": "system", "content": "System prompt"},
@@ -38,12 +52,17 @@ def test_responses_body_from_completions_converts_messages() -> None:
         {"role": "assistant", "content": "intermediate result"},
     ]
 
-    completions = CompletionsBody(
+    completions = CompletionCreateParams(
         model="gpt-4o",
         messages=messages,
     )
 
-    responses = ResponsesBody.from_completions(completions)
+    responses = await build_responses_body(
+        completions.model_dump(),
+        valves=type("V", (), {})(),
+        metadata={},
+        item_store=ItemStore(),
+    )
 
     assert isinstance(responses.input, list)
     assert len(responses.input) == 2  # system message is removed
@@ -58,18 +77,19 @@ def test_responses_body_from_completions_converts_messages() -> None:
     content = assistant_block["content"][0]  # type: ignore[index]
     assert content["type"] == "output_text"
     assert content["text"] == "intermediate result"
+    assert responses.tools in (None, [])
 
 
-def test_responses_body_prefers_history_input_when_provided() -> None:
-    completions = CompletionsBody(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": "ignored"}],
-    )
+@pytest.mark.asyncio()
+async def test_responses_body_prefers_history_input_when_provided() -> None:
     history_input = [
         {"role": "assistant", "content": [{"type": "output_text", "text": "restored"}]},
     ]
-    responses = ResponsesBody.from_completions(
-        completions,
-        history_input=history_input,
+    responses = await build_responses_body(
+        {"model": "gpt-4o", "input": history_input},
+        valves=type("V", (), {})(),
+        metadata={},
+        item_store=ItemStore(),
     )
     assert responses.input == history_input
+    assert responses.tools in (None, [])

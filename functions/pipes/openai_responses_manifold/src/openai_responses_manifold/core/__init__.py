@@ -1,7 +1,6 @@
 """Core primitives used across the OpenAI Responses manifold."""
 
-from .api_models import CompletionsBody, ResponsesBody
-from .capabilities import MODEL_ALIASES, MODEL_FEATURES, alias_defaults, features, supports
+from ..model_catalog import MODEL_ALIASES, MODEL_FEATURES, alias_defaults, features, supports
 from .errors import (
     ManifoldError,
     OpenAIStreamError,
@@ -20,7 +19,7 @@ from .markers import (
     split_text_by_markers,
     wrap_marker,
 )
-from .events import (
+from .openai_response_events import (
     BaseStreamEvent,
     ErrorEvent,
     EventType,
@@ -28,6 +27,7 @@ from .events import (
     UnknownStreamEventType,
     parse_event,
 )
+from .openai_requests import CompletionCreateParams, ResponseCreateParams
 
 __all__ = [
     "MODEL_ALIASES",
@@ -35,7 +35,6 @@ __all__ = [
     "ULID_LENGTH",
     "alias_defaults",
     "base_model",
-    "CompletionsBody",
     "ManifoldError",
     "OpenAIStreamError",
     "PersistenceError",
@@ -43,7 +42,6 @@ __all__ = [
     "ToolExecutionError",
     "features",
     "normalize",
-    "ResponsesBody",
     "contains_marker",
     "create_marker",
     "extract_markers",
@@ -53,6 +51,8 @@ __all__ = [
     "split_text_by_markers",
     "wrap_marker",
     "BaseStreamEvent",
+    "CompletionCreateParams",
+    "ResponseCreateParams",
     "ErrorEvent",
     "EventType",
     "StreamEvent",

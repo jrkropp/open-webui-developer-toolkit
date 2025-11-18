@@ -7,17 +7,14 @@ import logging
 import os
 import random
 import json
-from collections.abc import Awaitable, Callable
 from time import perf_counter
 from typing import Any, Literal
 
 from open_webui.models.chats import Chats
 
-from .core.api_models import ResponsesBody
-from .core.events import (
-    BaseStreamEvent,
+from .core.openai_requests import ResponseCreateParams
+from .core.openai_response_events import (
     ErrorEvent,
-    EventType,
     ResponseCompletedEvent,
     ResponseCreatedEvent,
     ResponseFailedEvent,
@@ -25,27 +22,23 @@ from .core.events import (
     ResponseInProgressEvent,
     ResponseOutputTextDeltaEvent,
     ResponseOutputTextDoneEvent,
+    ResponseQueuedEvent,
 )
 from .core.errors import ToolExecutionError
 from .model_catalog import supports
 from .infra import ItemStore, OpenAIResponsesClient
 from .services.history import HistoryPersistence
+from .services.tasks import run_task_model
 from .services.tools import execute_tool_calls
 from .utils import (
     OWUI_SESSION_ID,
     clear_session_logs,
-    emit_chat_message,
-    emit_citation,
-    emit_completion,
-    emit_error,
-    emit_status,
-    get_logger,
+    EventEmitter,
+    EventEmitterFn,
     get_session_logs,
-    merge_usage_stats,
-    wrap_event_emitter,
+    get_logger,
+    truncate_for_log,
 )
-
-EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class ResponsesEngine:
@@ -66,17 +59,18 @@ class ResponsesEngine:
 
     async def run_streaming_turn(
         self,
-        body: ResponsesBody,
+        body: ResponseCreateParams,
         *,
         valves: Any,
         metadata: dict[str, Any],
-        event_emitter: EventEmitter,
+        event_emitter: EventEmitterFn,
         tool_registry: dict[str, dict[str, Any]] | None = None,
     ) -> str:
+        emitter = EventEmitter(event_emitter)
         delta_log_stride = int(os.getenv("DELTA_LOG_STRIDE", "500") or "500")
         tool_registry = tool_registry or {}
         assistant_message = ""
-        total_usage: dict[str, Any] = {}
+        last_usage: dict[str, Any] | None = None
         emitted_citations: list[dict[str, Any]] = []
         debug_enabled = self.logger.isEnabledFor(logging.DEBUG)
         delta_count = 0
@@ -84,16 +78,19 @@ class ResponsesEngine:
         tool_call_count = 0
         last_error: str | None = None
 
-        thinking_tasks = self._schedule_reasoning_statuses(body, event_emitter)
-        final_response: dict[str, Any] | None = None
+        thinking_tasks = self._schedule_reasoning_statuses(body, emitter)
+        final_response_payload: dict[str, Any] | None = None
 
         model_router_result = body.model_router_result
         if model_router_result:
             body.model_router_result = None
             explanation = model_router_result.get("explanation", "")
-            await emit_status(
-                event_emitter,
-                f"Routing to {model_router_result.get('model')} (effort: {model_router_result.get('reasoning_effort')})\nExplanation: {explanation}",
+            await emitter.status(
+                description=(
+                    f"Routing to {model_router_result.get('model')} "
+                    f"(effort: {model_router_result.get('reasoning_effort')})\n"
+                    f"Explanation: {explanation}"
+                )
             )
 
         self.logger.info("turn.start model=%s task=chat", body.model)
@@ -102,88 +99,82 @@ class ResponsesEngine:
         try:
             max_loops = getattr(valves, "MAX_FUNCTION_CALL_LOOPS", 10)
             for _ in range(max_loops):
-                final_response = None
+                final_response_payload = None
                 async for event in self.client.stream(
                     body.model_dump(exclude_none=True),
                     api_key=valves.API_KEY,
                     base_url=valves.BASE_URL,
                     typed=True,
                 ):
-                    event_dict = event.model_dump() if isinstance(event, BaseStreamEvent) else event
-                    event_type = event_dict.get("type")
-
-                    if event_type == EventType.RESPONSE_OUTPUT_TEXT_DELTA.value:
-                        delta_val = (
-                            event.delta if isinstance(event, ResponseOutputTextDeltaEvent) else event_dict.get("delta", "")
-                        )
+                    if isinstance(event, ResponseOutputTextDeltaEvent):
+                        delta_val = event.delta
                         delta_count += 1
                         delta_chars += len(delta_val or "")
                         if debug_enabled and delta_val and (delta_count == 1 or delta_count % delta_log_stride == 0):
                             self.logger.debug("delta_progress count=%d chars=%d", delta_count, delta_chars)
                         if delta_val:
                             assistant_message += delta_val
-                            await emit_chat_message(event_emitter, assistant_message)
+                            await emitter.delta(delta_val)
                         continue
 
-                    if event_type == EventType.RESPONSE_OUTPUT_TEXT_DONE.value:
-                        text_val = (
-                            event.text if isinstance(event, ResponseOutputTextDoneEvent) else event_dict.get("text", "")
-                        )
+                    if isinstance(event, ResponseOutputTextDoneEvent):
+                        text_val = event.text
                         if debug_enabled:
                             self.logger.debug("event=response.output_text.done text_len=%d", len(text_val or ""))
-                        final_response = event_dict
                         await self._cancel_tasks(thinking_tasks)
+                        # Emit a final chat message reflecting the accumulated text.
+                        if text_val and not assistant_message:
+                            assistant_message = text_val
+                        await emitter.replace(assistant_message or text_val)
                         continue
 
-                    if event_type == EventType.RESPONSE_COMPLETED.value:
+                    if isinstance(event, ResponseCompletedEvent):
                         if debug_enabled:
-                            response_payload = event_dict.get("response") or {}
-                            usage = response_payload.get("usage") or {}
+                            usage = event.response.get("usage") or {}
                             self.logger.debug("event=response.completed usage_keys=%s", sorted(usage.keys()))
-                        final_response = event_dict.get("response") or event_dict
+                        final_response_payload = event.response
                         await self._cancel_tasks(thinking_tasks)
                         break
 
-                    if event_type in {
-                        EventType.RESPONSE_FAILED.value,
-                        EventType.RESPONSE_INCOMPLETE.value,
-                        EventType.ERROR.value,
-                    }:
+                    if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
                         await self._cancel_tasks(thinking_tasks)
                         error_occurred = True
                         if isinstance(event, ErrorEvent):
                             last_error = event.message
                         else:
-                            response_payload = event_dict.get("response") or {}
+                            response_payload = event.response
                             last_error = (response_payload.get("error") or {}).get(
                                 "message", "OpenAI returned an error."
                             )
                         self.logger.error("turn.error type=response_error message=%s", last_error)
-                        await self._handle_stream_error(event_emitter, last_error)
+                        await self._handle_stream_error(emitter, last_error)
                         break
 
-                    if event_type in {
-                        EventType.RESPONSE_CREATED.value,
-                        EventType.RESPONSE_IN_PROGRESS.value,
-                    }:
+                    if isinstance(
+                        event,
+                        (
+                            ResponseCreatedEvent,
+                            ResponseInProgressEvent,
+                            ResponseQueuedEvent,
+                        ),
+                    ):
                         if debug_enabled:
-                            response_payload = event_dict.get("response") or {}
-                            self.logger.debug("event=%s model=%s", event_type, response_payload.get("model"))
+                            self.logger.debug(
+                                "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
+                            )
                         continue
 
-                if final_response and not total_usage:
-                    usage_from_response = self._extract_usage_from_final_response(
-                        final_response
-                    )
+                if final_response_payload:
+                    usage_from_response = self._extract_usage_from_final_response(final_response_payload)
                     if usage_from_response:
-                        total_usage = merge_usage_stats(total_usage, usage_from_response)
+                        last_usage = usage_from_response
 
-                if error_occurred or not final_response:
+                if error_occurred or not final_response_payload:
                     break
 
                 if not supports("function_calling", body.model):
                     break
-                call_items = (final_response or {}).get("output", [])
+                call_items = (final_response_payload or {}).get("output", [])
                 tool_calls = [item for item in call_items if item.get("type") == "function_call"]
                 if not tool_calls:
                     break
@@ -192,16 +183,16 @@ class ResponsesEngine:
                     function_outputs = await execute_tool_calls(tool_calls, tool_registry)
                 except ToolExecutionError as exc:
                     self.logger.warning("Skipping malformed tool arguments: %s", exc)
-                    await emit_status(event_emitter, "Skipping malformed tool arguments.", action="warning")
+                    await emitter.status("Skipping malformed tool arguments.")
                     break
                 if not function_outputs:
                     break
                 existing_input = list(body.input) if isinstance(body.input, list) else []
                 body.input = existing_input + function_outputs
 
-            if debug_enabled and final_response:
+            if debug_enabled and final_response_payload:
                 try:
-                    payload_str = json.dumps(final_response, ensure_ascii=False)
+                    payload_str = json.dumps(final_response_payload, ensure_ascii=False)
                     preview, truncated = truncate_for_log(payload_str, limit=1000)
                     self.logger.debug(
                         "response.payload_preview enabled=true truncated=%s len=%d payload=%s",
@@ -212,9 +203,10 @@ class ResponsesEngine:
                 except Exception:
                     pass
 
-            tokens_in = (total_usage or {}).get("input_tokens")
-            tokens_out = (total_usage or {}).get("output_tokens")
-            total_tokens = (total_usage or {}).get("total_tokens")
+            usage_summary = last_usage or {}
+            tokens_in = usage_summary.get("input_tokens")
+            tokens_out = usage_summary.get("output_tokens")
+            total_tokens = usage_summary.get("total_tokens")
             try:
                 tokens_total = (
                     total_tokens
@@ -236,8 +228,8 @@ class ResponsesEngine:
                 "text_chars": delta_chars,
                 "tool_calls": tool_call_count,
                 "citations": len(emitted_citations),
-                "input_tokens": (total_usage or {}).get("input_tokens"),
-                "output_tokens": (total_usage or {}).get("output_tokens"),
+                "input_tokens": tokens_in,
+                "output_tokens": tokens_out,
                 "tokens_sec": tokens_sec,
             }
             if last_error:
@@ -253,43 +245,40 @@ class ResponsesEngine:
             error_occurred = True
             last_error = str(exc)
             self.logger.error("turn.error type=%s message=%s", type(exc).__name__, last_error)
-            await self._handle_stream_error(event_emitter, last_error)
+            await self._handle_stream_error(emitter, last_error)
 
         finally:
-            await self._flush_logs(event_emitter, valves, emitted_citations)
-            await emit_completion(
-                event_emitter,
-                content=assistant_message,
-                usage=total_usage or None,
-                done=True,
+            await self._emit_log_citation(emitter, emitted_citations)
+            usage_for_completion = last_usage or self._extract_usage_from_final_response(final_response_payload or {}) or None
+            await emitter.chat_completion(
+                {"content": assistant_message, "usage": usage_for_completion, "done": True}
             )
             chat_id = metadata.get("chat_id")
             message_id = metadata.get("message_id")
             if chat_id and message_id and emitted_citations:
                 Chats.upsert_message_to_chat_by_id_and_message_id(
-                    chat_id, message_id, {"sources": emitted_citations}
+                    chat_id,
+                    message_id,
+                    {"sources": emitted_citations},
                 )
 
         return assistant_message
 
     async def run_nonstreaming_turn(
         self,
-        body: ResponsesBody,
+        body: ResponseCreateParams,
         *,
         valves: Any,
         metadata: dict[str, Any],
-        event_emitter: EventEmitter,
+        event_emitter: EventEmitterFn,
         tool_registry: dict[str, dict[str, Any]] | None = None,
     ) -> str:
         body.stream = True
-        wrapped_emitter = wrap_event_emitter(
-            event_emitter, suppress_chat_messages=True, suppress_completion=False
-        )
         return await self.run_streaming_turn(
             body,
             valves=valves,
             metadata=metadata,
-            event_emitter=wrapped_emitter,
+            event_emitter=event_emitter,
             tool_registry=tool_registry,
         )
 
@@ -298,37 +287,20 @@ class ResponsesEngine:
         body: dict[str, Any],
         valves: Any,
     ) -> str:
-        task_body = {
-            "model": body.get("model"),
-            "instructions": body.get("instructions", ""),
-            "input": body.get("input", ""),
-            "stream": False,
-            "store": False,
-        }
-        response = await self.client.create(
-            task_body, api_key=valves.API_KEY, base_url=valves.BASE_URL
-        )
-        text_parts: list[str] = []
-        for item in response.get("output", []):
-            if item.get("type") != "message":
-                continue
-            for content in item.get("content", []):
-                if content.get("type") == "output_text":
-                    text_parts.append(content.get("text", ""))
-        return "".join(text_parts)
+        return await run_task_model(self.client, body, valves)
 
     async def emit_notification(
         self,
-        event_emitter: EventEmitter | None,
+        event_emitter: EventEmitterFn | None,
         content: str,
         *,
         level: Literal["info", "success", "warning", "error"] = "info",
     ) -> None:
-        await emit_status(event_emitter, content, action=level)
+        await EventEmitter(event_emitter).notification(content, level=level)
 
     async def emit_error(
         self,
-        event_emitter: EventEmitter | None,
+        event_emitter: EventEmitterFn | None,
         error_obj: Exception | str,
         *,
         show_error_message: bool = True,
@@ -336,17 +308,19 @@ class ResponsesEngine:
     ) -> None:
         if not show_error_message:
             return
-        await emit_error(event_emitter, str(error_obj), done=done)
+        await EventEmitter(event_emitter).chat_completion(
+            {"error": {"message": str(error_obj)}, "done": done}
+        )
 
     def _schedule_reasoning_statuses(
-        self, body: ResponsesBody, event_emitter: EventEmitter
+        self, body: ResponsesBody, emitter: EventEmitter
     ) -> list[asyncio.Task[Any]]:
         if not supports("reasoning", body.model):
             return []
 
         async def _later(delay: float, msg: str) -> None:
             await asyncio.sleep(delay)
-            await emit_status(event_emitter, msg)
+            await emitter.status(msg)
 
         tasks: list[asyncio.Task[Any]] = []
         for delay, msg in [
@@ -368,9 +342,44 @@ class ResponsesEngine:
             task.cancel()
         await asyncio.gather(*to_cancel, return_exceptions=True)
 
-    def _extract_usage_from_final_response(
-        self, final_response: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def _emit_log_citation(
+        self,
+        emitter: EventEmitter,
+        emitted_citations: list[dict[str, Any]],
+    ) -> None:
+        session_id = OWUI_SESSION_ID.get()
+        if not session_id:
+            return
+        logs = get_session_logs(session_id)
+        if not logs:
+            return
+        log_text = "\n".join(logs)
+        truncated = len(log_text) > 4000
+        self.logger.debug("Emitting log citation lines=%d truncated=%s", len(logs), truncated)
+        await emitter.citation(
+            {
+                "document": [log_text],
+                "metadata": [{"source": "Logs"}],
+                "source": {"name": "Logs"},
+            }
+        )
+        snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
+        emitted_citations.append(
+            {
+                "provider": "openai:logs",
+                "id": str(len(emitted_citations) + 1),
+                "title": "Logs",
+                "snippet": snippet,
+                "metadata": {
+                    "source": "Logs",
+                    "total_lines": len(logs),
+                    "truncated": len(snippet) < len(log_text),
+                },
+            }
+        )
+        clear_session_logs(session_id)
+
+    def _extract_usage_from_final_response(self, final_response: dict[str, Any]) -> dict[str, Any]:
         if "usage" in final_response:
             usage = final_response.get("usage")
             return usage if isinstance(usage, dict) else {}
@@ -385,77 +394,11 @@ class ResponsesEngine:
 
     async def _handle_stream_error(
         self,
-        event_emitter: EventEmitter | None,
+        emitter: EventEmitter | None,
         message: str,
     ) -> None:
         self.logger.error("Streaming error: %s", message)
-        await emit_error(event_emitter, message, done=False)
+        if emitter:
+            await emitter.chat_completion({"error": {"message": message}, "done": False})
 
-    async def _flush_logs(
-        self,
-        event_emitter: EventEmitter | None,
-        valves: Any,
-        emitted_citations: list[dict[str, Any]] | None = None,
-    ) -> None:
-        session_id = OWUI_SESSION_ID.get()
-        if not session_id:
-            return
-        logs = get_session_logs(session_id)
-        if logs:
-            log_text = "\n".join(logs)
-            is_truncated = len(log_text) > 4000
-            self.logger.debug(
-                "Emitting log citation lines=%d truncated=%s", len(logs), is_truncated
-            )
-            await emit_citation(event_emitter, log_text, "Logs")
-            if emitted_citations is not None:
-                snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
-                emitted_citations.append(
-                    {
-                        "provider": "openai:logs",
-                        "id": str(len(emitted_citations) + 1),
-                        "title": "Logs",
-                        "snippet": snippet,
-                        "metadata": {
-                            "source": "Logs",
-                            "total_lines": len(logs),
-                            "truncated": len(snippet) < len(log_text),
-                        },
-                    }
-                )
-            clear_session_logs(session_id)
-
-    async def _handle_message_delta(
-        self,
-        event: dict[str, Any],
-        emitted_citations: list[dict[str, Any]],
-        ordinal_by_url: dict[str, int],
-    ) -> None:
-        deltas = event.get("delta", {}).get("content", [])
-        for delta in deltas:
-            if delta.get("type") == "citations":
-                citations = delta.get("citations") or []
-                for citation in citations:
-                    content_items = citation.get("content") or []
-                    for item in content_items:
-                        if item.get("type") != "input_text":
-                            continue
-                        text_value = item.get("text") or ""
-                        if not text_value or len(text_value) < 20:
-                            continue
-                        source_url = citation.get("metadata", {}).get("url")
-                        if not source_url:
-                            continue
-                        ordinal = ordinal_by_url.setdefault(source_url, len(ordinal_by_url) + 1)
-                        payload = {
-                            "provider": "openai:citation",
-                            "id": f"{ordinal}",
-                            "title": citation.get("metadata", {}).get("title") or source_url,
-                            "link": source_url,
-                            "snippet": text_value,
-                            "metadata": citation.get("metadata", {}),
-                        }
-                        emitted_citations.append(payload)
-
-
-__all__ = ["EventEmitter", "ResponsesEngine"]
+__all__ = ["EventEmitterFn", "ResponsesEngine"]

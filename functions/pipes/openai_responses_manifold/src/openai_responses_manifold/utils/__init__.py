@@ -1,15 +1,10 @@
 """Utility helpers shared across the manifold."""
 
-from .events import (
-    emit_chat_message,
-    emit_citation,
-    emit_completion,
-    emit_error,
-    emit_status,
-    emit_usage_delta,
-    merge_usage_stats,
-    wrap_code_block,
-    wrap_event_emitter,
+from .openwebui_events import (
+    EventCall,
+    EventCallerFn,
+    EventEmitter,
+    EventEmitterFn,
 )
 from .logging import (
     OWUI_CHAT_ID,
@@ -43,13 +38,8 @@ __all__ = [
     "OWUI_USER_ID",
     "OWUI_LOG_LEVEL",
     "truncate_for_log",
-    "emit_chat_message",
-    "emit_citation",
-    "emit_completion",
-    "emit_error",
-    "emit_status",
-    "emit_usage_delta",
-    "merge_usage_stats",
-    "wrap_code_block",
-    "wrap_event_emitter",
+    "EventCallerFn",
+    "EventCall",
+    "EventEmitterFn",
+    "EventEmitter",
 ]

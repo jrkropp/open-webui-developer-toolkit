@@ -107,4 +107,53 @@ class HistoryBuilder:
         return openai_input
 
 
-__all__ = ["HistoryBuilder", "HistoryPersistence"]
+class HistoryService:
+    """Facade for reconstructing Responses input items and instructions from stored chat history."""
+
+    def __init__(self, store: ItemStore) -> None:
+        self.store = store
+
+    def build_input_and_instructions(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        metadata: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        resolver = self._resolver(metadata)
+        builder = HistoryBuilder(resolve_items=resolver)
+        input_items = builder.build_input_from_messages(
+            messages,
+            chat_id=metadata.get("chat_id"),
+            openwebui_model_id=metadata.get("model", {}).get("id"),
+        )
+        instructions = self._extract_system_instructions(messages)
+        return input_items, instructions
+
+    def _resolver(self, metadata: dict[str, Any]) -> Resolver:
+        chat_id = metadata.get("chat_id")
+        openwebui_model_id = metadata.get("model", {}).get("id")
+
+        def _resolve(
+            item_ids: list[str],
+            resolver_chat: str | None,
+            model_id: str | None,
+        ) -> dict[str, dict[str, Any]]:
+            target_chat = resolver_chat or chat_id or ""
+            target_model = model_id or openwebui_model_id
+            return self.store.load_items(target_chat, item_ids, model_id=target_model)
+
+        return _resolve
+
+    @staticmethod
+    def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
+        """Return the most recent system message content, if present."""
+
+        for message in reversed(messages):
+            if message.get("role") == "system":
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+        return None
+
+
+__all__ = ["HistoryBuilder", "HistoryPersistence", "HistoryService"]

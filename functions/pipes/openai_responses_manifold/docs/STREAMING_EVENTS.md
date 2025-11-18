@@ -23,8 +23,8 @@ Quick reference for the OpenAI Responses SSE event types that the manifold consu
 ## Content parts and text streaming
 - `response.content_part.added` – New content part placeholder; `output_index`, `item_id`, `content_index`, `part` scaffold.
 - `response.content_part.done` – Content part finalized; same indices plus completed `part`.
-- `response.output_text.delta` – Text chunk; `delta` string plus `output_index`, `item_id`, `content_index` (optional `logprobs`).
-- `response.output_text.done` – Final text for a content part; payload adds `text` (optional `logprobs`).
+- `response.output_text.delta` – Text chunk; `delta` string plus `output_index`, `item_id`, `content_index` (optional `logprobs`). Some tenants may see `obfuscation` when upstream padding is enabled.
+- `response.output_text.done` – Final text for a content part; payload adds `text` (optional `logprobs`, optional `obfuscation`).
 - `response.output_text.annotation.added` – Annotation attached to a text part; includes `annotation_index` and full `annotation` object.
 - `response.refusal.delta` / `response.refusal.done` – Partial/final refusal text; carries `refusal` in the done event.
 

@@ -21,13 +21,12 @@ async def test_pipes_listing_and_pipe_smoke(monkeypatch: pytest.MonkeyPatch) -> 
         valves: orm.Pipe.Valves,
         metadata: dict[str, Any],
         event_emitter,
-        tool_registry,
+        tool_registry=None,
     ) -> str:
         await event_emitter({"type": "chat:message", "data": {"content": "stub"}})
         return "final-output"
 
     monkeypatch.setattr(orm.ResponsesEngine, "run_streaming_turn", fake_streaming_loop, raising=False)
-    monkeypatch.setattr(orm, "build_tools", lambda *args, **kwargs: [], raising=False)
 
     events: list[dict[str, Any]] = []
     css_patches: list[dict[str, Any]] = []
@@ -58,7 +57,6 @@ async def test_pipes_listing_and_pipe_smoke(monkeypatch: pytest.MonkeyPatch) -> 
     result = await pipe.pipe(
         body,
         user,
-        __request__=None,
         __event_emitter__=fake_event_emitter,
         __event_call__=fake_event_call,
         __metadata__=metadata,

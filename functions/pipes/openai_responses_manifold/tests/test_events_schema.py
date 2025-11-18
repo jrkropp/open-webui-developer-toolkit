@@ -1,5 +1,6 @@
-from openai_responses_manifold.core.events import (
+from openai_responses_manifold.core.openai_response_events import (
     EventType,
+    ResponseFunctionCallArgumentsDeltaEvent,
     ResponseOutputTextDeltaEvent,
     StreamEvent,
     UnknownStreamEventType,
@@ -16,6 +17,7 @@ def test_parse_event_to_typed_model_preserves_fields_and_extras() -> None:
         "delta": "In",
         "sequence_number": 1,
         "logprobs": None,
+        "obfuscation": "abc123",
     }
 
     event = parse_event(payload)
@@ -48,3 +50,18 @@ def test_stream_event_union_accepts_literal_value() -> None:
     }
     event = parse_event(payload)
     assert isinstance(event, StreamEvent.__args__)  # type: ignore[attr-defined]
+
+
+def test_parse_event_handles_obfuscation_on_tool_calls() -> None:
+    payload = {
+        "type": "response.function_call_arguments.delta",
+        "output_index": 0,
+        "item_id": "tool_123",
+        "delta": '{"key": "va',
+        "obfuscation": "xyz987",
+    }
+
+    event = parse_event(payload)
+
+    assert isinstance(event, ResponseFunctionCallArgumentsDeltaEvent)
+    assert event.obfuscation == "xyz987"

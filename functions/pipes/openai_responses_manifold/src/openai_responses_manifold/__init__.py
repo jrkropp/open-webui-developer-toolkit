@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from . import core as _core
 from .core import *  # noqa: F401, F403
-from .engine import EventEmitter, ResponsesEngine
+from .engine import ResponsesEngine
 from .infra import ItemStore, OpenAIResponsesClient
 from .main import Pipe
-from .services import build_tools, execute_tool_calls, route_auto_model
+from .services import build_tools, execute_tool_calls, resolve_tools, route_auto_model
 from .utils import (
+    EventEmitter,
+    EventEmitterFn,
     OWUI_CHAT_ID,
     OWUI_LOG_LEVEL,
     OWUI_MESSAGE_ID,
@@ -29,9 +31,11 @@ __all__ = [
     "EventEmitter",
     "Pipe",
     "ResponsesEngine",
+    "EventEmitterFn",
     "ItemStore",
     "build_tools",
     "execute_tool_calls",
+    "resolve_tools",
     "route_auto_model",
     "OpenAIResponsesClient",
     "get_logger",

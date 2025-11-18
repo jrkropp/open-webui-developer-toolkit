@@ -27,9 +27,9 @@
 
 **Phase 2 — Core (pure logic, no I/O)**
 
-* [ ] 2.1 `core/api_models.py`: move `CompletionsBody`, `ResponsesBody` (+ alias defaults validator).
+* [ ] 2.1 `core/requests.py`: move `CompletionCreateParams`, `ResponseCreateParams` (+ alias defaults validator).
 * [ ] 2.2 `core/ids.py`: implement `normalize()`, `base_model()` (prefix/dot/date-safe).
-* [ ] 2.3 `core/capabilities.py`: move `MODEL_FEATURES`, `MODEL_ALIASES`, `supports()`.
+* [ ] 2.3 `model_catalog.py`: centralize `MODEL_FEATURES`, `MODEL_ALIASES`, `supports()`.
 * [ ] 2.4 `core/messages.py`: user/dev/assistant block helpers (text/image/file → Responses items).
 * [ ] 2.5 `core/markers.py`: move marker syntax helpers (no DB).
 * [ ] 2.6 `core/errors.py`: define typed exceptions.
@@ -65,7 +65,7 @@
 
 **Phase 7 — Tests & QA**
 
-* [ ] 7.1 Unit tests (core): ids, markers, api_models.
+* [ ] 7.1 Unit tests (core): ids, markers, requests.
 * [ ] 7.2 Service tests: history (builder/persistence), tools (build/execute), routing.
 * [ ] 7.3 Engine smoke test: mock SSE stream; assert emissions and loops.
 * [ ] 7.4 Backward compatibility: existing chats still resolve markers; Function ID rename does not break.
@@ -103,11 +103,11 @@ openai_responses_manifold/
 ├─ main.py                      # Pipe (OpenWebUI manifold adapter)
 ├─ settings.py                  # Valves (PipeValves, UserValves)
 ├─ engine.py                    # ResponsesEngine (single-turn orchestrator)
+├─ model_catalog.py             # MODEL_FEATURES, MODEL_ALIASES, supports()
 ├─ core/
 │  ├─ __init__.py
-│  ├─ api_models.py             # CompletionsBody, ResponsesBody (+ alias defaults)
+│  ├─ requests.py               # CompletionCreateParams, ResponseCreateParams (+ alias defaults)
 │  ├─ messages.py               # message block helpers
-│  ├─ capabilities.py           # MODEL_FEATURES, MODEL_ALIASES, supports()
 │  ├─ ids.py                    # normalize(), base_model() – prefix/dot/date safe
 │  ├─ markers.py                # marker format/parse/split
 │  └─ errors.py                 # typed exceptions
@@ -137,8 +137,8 @@ openai_responses_manifold/
 
 | Current section / function                                                  | Target module & symbol                                                                         | Notes / changes                                                          |
 | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `core/capabilities.py` (`MODEL_FEATURES`, `MODEL_ALIASES`, `supports`)      | `core/capabilities.py`                                                                         | Mostly move; drop `MODEL_PREFIX` stripping from here; rely on `core/ids` |
-| `core/models.py::CompletionsBody`, `ResponsesBody`                          | `core/api_models.py`                                                                           | Keep validator for alias defaults                                        |
+| `model_catalog.py` (`MODEL_FEATURES`, `MODEL_ALIASES`, `supports`)          | `model_catalog.py`                                                                             | Single source of truth; rely on `core/ids` for normalization             |
+| `core/models.py::CompletionCreateParams`, `ResponseCreateParams`                          | `core/requests.py`                                                                             | Keep validator for alias defaults                                        |
 | `core/models.py::transform_messages_to_input`                               | `services/history.py::HistoryBuilder.build_input_from_messages` (+ `core/messages.py` helpers) | Inject resolver; remove DB/Chats coupling                                |
 | `core/markers.py`                                                           | `core/markers.py`                                                                              | Move as-is (pure)                                                        |
 | `core/session_logger.py`                                                    | `utils/logging.py`                                                                             | Replace with unified logging helpers (ContextVar fields + citation buffer) |
@@ -244,7 +244,7 @@ openai_responses_manifold/
 * **Never** hard-code Function ID for normalization/capabilities.
 * Marker namespace **stable** (`openai_responses:v2`).
 * Store key **stable** (`openai_responses_pipe`).
-* Capability checks always via `core.capabilities.supports()` after `core.ids.normalize()`.
+* Capability checks always via `model_catalog.supports()` after `core.ids.normalize()`.
 * Only attach tools when model supports function calling.
 
 **Risks & Mitigations**
