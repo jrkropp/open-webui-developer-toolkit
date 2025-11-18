@@ -64,7 +64,7 @@ async def build_responses_body(
     if payload["input"] is None:
         raise ValueError("input must be provided to build a ResponsesBody")
 
-    if instructions:
+    if instructions and instructions.strip():
         payload["instructions"] = instructions
 
     effort = owui_request.get("reasoning_effort")

@@ -84,16 +84,16 @@ MODEL_FEATURES: dict[str, frozenset[str]] = {
 # Each alias is a preset that points to a base model and optional default params,
 # e.g. gpt-5-thinking-high -> gpt-5 with reasoning effort fixed to high.
 MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
-    "gpt-5.1-thinking": {"base_model": "gpt-5.1"},
+    "gpt-5.1-thinking": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "medium"}}},
     "gpt-5.1-thinking-minimal": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "minimal"}}},
     "gpt-5.1-thinking-high": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "high"}}},
-    "gpt-5-thinking": {"base_model": "gpt-5"},
+    "gpt-5-thinking": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "medium"}}},
     "gpt-5-thinking-minimal": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "minimal"}}},
     "gpt-5-thinking-high": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "high"}}},
-    "gpt-5-thinking-mini": {"base_model": "gpt-5-mini"},
+    "gpt-5-thinking-mini": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "medium"}}},
     "gpt-5-thinking-mini-minimal": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "minimal"}}},
     "gpt-5-thinking-mini-high": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "high"}}},
-    "gpt-5-thinking-nano": {"base_model": "gpt-5-nano"},
+    "gpt-5-thinking-nano": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "medium"}}},
     "gpt-5-thinking-nano-minimal": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "minimal"}}},
     "gpt-5-thinking-nano-high": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "high"}}},
     "o3-mini-high": {"base_model": "o3-mini", "params": {"reasoning": {"effort": "high"}}},
@@ -1532,32 +1532,56 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 # from .ids import base_model
 
 
-class ResponseCreateParams(BaseModel):
-    """Request body for the OpenAI Responses API.
+class ReasoningParams(BaseModel):
+    """Reasoning configuration accepted by the Responses API."""
 
-    This mirrors the semantics of :class:`openai.types.responses.ResponseCreateParams`
-    but only declares the core fields the manifold relies on. Additional documented
-    fields are rejected by default to keep the contract strict.
-    """
+    effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
+    summary: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StreamOptions(BaseModel):
+    """Streaming options for responses."""
+
+    include_usage: bool | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ResponseCreateParams(BaseModel):
+    """Request body for the OpenAI Responses API."""
 
     model: str
-    input: str | list[dict[str, Any]]
-    instructions: str | None = ""
+    input: str | list[dict[str, Any]] | None = None
+    instructions: str | None = None
     stream: bool = False
-    store: bool | None = False
-    temperature: float | None = None
-    top_p: float | None = None
-    max_output_tokens: int | None = None
-    truncation: Literal["auto", "disabled"] | None = None
-    reasoning: dict[str, Any] | None = None
-    parallel_tool_calls: bool | None = True
-    user: str | None = None
-    tool_choice: dict[str, Any] | None = None
-    tools: list[dict[str, Any]] | None = None
+    store: bool | None = True
+    background: bool | None = False
+    conversation: str | dict[str, Any] | None = None
     include: list[str] | None = None
+    max_output_tokens: int | None = None
+    max_tool_calls: int | None = None
+    metadata: dict[str, str] | None = None
+    parallel_tool_calls: bool | None = True
+    previous_response_id: str | None = None
+    prompt: dict[str, Any] | None = None
+    prompt_cache_key: str | None = None
+    prompt_cache_retention: str | None = None
+    reasoning: ReasoningParams | None = None
+    safety_identifier: str | None = None
+    service_tier: Literal["auto", "default", "flex", "priority"] | None = None
+    stream_options: StreamOptions | None = None
+    temperature: float | None = 1.0
+    top_p: float | None = 1.0
+    top_logprobs: int | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    tools: list[dict[str, Any]] | None = None
+    truncation: Literal["auto", "disabled"] | None = "disabled"
     text: dict[str, Any] | None = None
     model_router_result: dict[str, Any] | None = None
     include_obfuscation: bool | None = False
+    user: str | None = None  # deprecated upstream; kept for compatibility
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1616,12 +1640,7 @@ class ResponseCreateParams(BaseModel):
 
 
 class CompletionCreateParams(BaseModel):
-    """Request body for OpenAI's Chat Completions API.
-
-    This mirrors :class:`openai.types.chat.CompletionCreateParams` at a high level
-    but only specifies the core fields the manifold consumes (model, messages, stream).
-    All other documented parameters are accepted and passed through via ``extra='allow'``.
-    """
+    """Request body for OpenAI's Chat Completions API."""
 
     model: str
     messages: list[dict[str, Any]]
@@ -1649,6 +1668,8 @@ def dump_response_create_params(payload: ResponseCreateParams | Mapping[str, Any
 
 __all__ = [
     "CompletionCreateParams",
+    "ReasoningParams",
+    "StreamOptions",
     "ResponseCreateParams",
     "validate_response_create_params",
     "dump_response_create_params",
@@ -1993,12 +2014,14 @@ class Pipe:
                 self.logger.info("Detected task model: %s", __task__)
                 return await self.engine.run_task_model(responses_body.model_dump(), valves)
 
-            responses_body = await self._apply_model_policies(
-                responses_body,
-                valves,
-                openwebui_model_id,
-                __event_emitter__,
+            responses_body = await self._ensure_native_function_calling_if_needed(
+                responses_body, openwebui_model_id, __event_emitter__
             )
+            responses_body = await self._ensure_routed_auto_model(
+                responses_body, valves, openwebui_model_id, __event_emitter__
+            )
+            self._apply_reasoning_options(responses_body, valves)
+            self._apply_parallel_tool_policy(responses_body, valves)
 
             return await self.engine.run_streaming_turn(
                 responses_body,
@@ -2057,32 +2080,31 @@ class Pipe:
         openwebui_model_id: str,
         event_emitter: EventEmitterFn,
     ):
-        tools = responses_body.tools or []
-        if tools and supports("function_calling", responses_body.model):
-            await self._ensure_native_function_calling(openwebui_model_id, event_emitter)
-
-        responses_body = await self._maybe_route_auto_model(
-            responses_body,
-            valves,
-            openwebui_model_id,
-            event_emitter,
+        await self._ensure_native_function_calling_if_needed(
+            responses_body, openwebui_model_id, event_emitter
         )
-
+        responses_body = await self._ensure_routed_auto_model(
+            responses_body, valves, openwebui_model_id, event_emitter
+        )
         self._apply_reasoning_options(responses_body, valves)
         self._apply_parallel_tool_policy(responses_body, valves)
         return responses_body
 
-    async def _ensure_native_function_calling(
+    async def _ensure_native_function_calling_if_needed(
         self,
+        responses_body: Any,
         openwebui_model_id: str,
         event_emitter: EventEmitterFn,
-    ) -> None:
+    ) -> Any:
+        tools = responses_body.tools or []
+        if not (tools and supports("function_calling", responses_body.model)):
+            return responses_body
         model = Models.get_model_by_id(openwebui_model_id)
         if not model:
-            return
+            return responses_body
         params = dict(model.params or {})
         if params.get("function_calling") == "native":
-            return
+            return responses_body
 
         await self.engine.emit_notification(
             event_emitter,
@@ -2096,8 +2118,9 @@ class Pipe:
         form_data = model.model_dump()
         form_data["params"] = params
         Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
+        return responses_body
 
-    async def _maybe_route_auto_model(
+    async def _ensure_routed_auto_model(
         self,
         responses_body: Any,
         valves: PipeValves,
@@ -2778,7 +2801,7 @@ async def build_responses_body(
     if payload["input"] is None:
         raise ValueError("input must be provided to build a ResponsesBody")
 
-    if instructions:
+    if instructions and instructions.strip():
         payload["instructions"] = instructions
 
     effort = owui_request.get("reasoning_effort")

@@ -173,16 +173,16 @@ class Pipe:
         responses_body: Any,
         openwebui_model_id: str,
         event_emitter: EventEmitterFn,
-    ) -> None:
+    ) -> Any:
         tools = responses_body.tools or []
         if not (tools and supports("function_calling", responses_body.model)):
-            return
+            return responses_body
         model = Models.get_model_by_id(openwebui_model_id)
         if not model:
-            return
+            return responses_body
         params = dict(model.params or {})
         if params.get("function_calling") == "native":
-            return
+            return responses_body
 
         await self.engine.emit_notification(
             event_emitter,
@@ -196,6 +196,7 @@ class Pipe:
         form_data = model.model_dump()
         form_data["params"] = params
         Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
+        return responses_body
 
     async def _ensure_routed_auto_model(
         self,

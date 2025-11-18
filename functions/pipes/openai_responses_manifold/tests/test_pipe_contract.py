@@ -22,6 +22,7 @@ async def test_pipes_listing_and_pipe_smoke(monkeypatch: pytest.MonkeyPatch) -> 
         metadata: dict[str, Any],
         event_emitter,
         tool_registry=None,
+        **_: Any,
     ) -> str:
         await event_emitter({"type": "chat:message", "data": {"content": "stub"}})
         return "final-output"

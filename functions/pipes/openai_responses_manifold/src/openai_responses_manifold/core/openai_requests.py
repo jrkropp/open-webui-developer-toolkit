@@ -11,32 +11,56 @@ from ..model_catalog import MODEL_ALIASES, alias_defaults
 from .ids import base_model
 
 
-class ResponseCreateParams(BaseModel):
-    """Request body for the OpenAI Responses API.
+class ReasoningParams(BaseModel):
+    """Reasoning configuration accepted by the Responses API."""
 
-    This mirrors the semantics of :class:`openai.types.responses.ResponseCreateParams`
-    but only declares the core fields the manifold relies on. Additional documented
-    fields are rejected by default to keep the contract strict.
-    """
+    effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
+    summary: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StreamOptions(BaseModel):
+    """Streaming options for responses."""
+
+    include_usage: bool | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ResponseCreateParams(BaseModel):
+    """Request body for the OpenAI Responses API."""
 
     model: str
-    input: str | list[dict[str, Any]]
-    instructions: str | None = ""
+    input: str | list[dict[str, Any]] | None = None
+    instructions: str | None = None
     stream: bool = False
-    store: bool | None = False
-    temperature: float | None = None
-    top_p: float | None = None
-    max_output_tokens: int | None = None
-    truncation: Literal["auto", "disabled"] | None = None
-    reasoning: dict[str, Any] | None = None
-    parallel_tool_calls: bool | None = True
-    user: str | None = None
-    tool_choice: dict[str, Any] | None = None
-    tools: list[dict[str, Any]] | None = None
+    store: bool | None = True
+    background: bool | None = False
+    conversation: str | dict[str, Any] | None = None
     include: list[str] | None = None
+    max_output_tokens: int | None = None
+    max_tool_calls: int | None = None
+    metadata: dict[str, str] | None = None
+    parallel_tool_calls: bool | None = True
+    previous_response_id: str | None = None
+    prompt: dict[str, Any] | None = None
+    prompt_cache_key: str | None = None
+    prompt_cache_retention: str | None = None
+    reasoning: ReasoningParams | None = None
+    safety_identifier: str | None = None
+    service_tier: Literal["auto", "default", "flex", "priority"] | None = None
+    stream_options: StreamOptions | None = None
+    temperature: float | None = 1.0
+    top_p: float | None = 1.0
+    top_logprobs: int | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    tools: list[dict[str, Any]] | None = None
+    truncation: Literal["auto", "disabled"] | None = "disabled"
     text: dict[str, Any] | None = None
     model_router_result: dict[str, Any] | None = None
     include_obfuscation: bool | None = False
+    user: str | None = None  # deprecated upstream; kept for compatibility
 
     model_config = ConfigDict(extra="forbid")
 
@@ -95,12 +119,7 @@ class ResponseCreateParams(BaseModel):
 
 
 class CompletionCreateParams(BaseModel):
-    """Request body for OpenAI's Chat Completions API.
-
-    This mirrors :class:`openai.types.chat.CompletionCreateParams` at a high level
-    but only specifies the core fields the manifold consumes (model, messages, stream).
-    All other documented parameters are accepted and passed through via ``extra='allow'``.
-    """
+    """Request body for OpenAI's Chat Completions API."""
 
     model: str
     messages: list[dict[str, Any]]
@@ -128,6 +147,8 @@ def dump_response_create_params(payload: ResponseCreateParams | Mapping[str, Any
 
 __all__ = [
     "CompletionCreateParams",
+    "ReasoningParams",
+    "StreamOptions",
     "ResponseCreateParams",
     "validate_response_create_params",
     "dump_response_create_params",

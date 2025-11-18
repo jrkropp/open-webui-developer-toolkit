@@ -30,7 +30,8 @@ async def test_responses_body_from_completions_maps_reasoning_and_tokens() -> No
     )
 
     assert responses.max_output_tokens == 128
-    assert responses.reasoning["effort"] == "minimal"  # type: ignore[index]
+    assert responses.reasoning is not None
+    assert responses.reasoning.effort == "minimal"
     assert responses.instructions == "Act helpful"
     assert responses.truncation == "auto"
     assert responses.include_obfuscation is False
