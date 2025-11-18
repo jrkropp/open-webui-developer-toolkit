@@ -212,10 +212,11 @@ def responses_body_factory() -> Callable[..., orm.ResponseCreateParams]:
         model: str = "gpt-4o",
         stream: bool = True,
         input_items: list[dict[str, Any]] | None = None,
+        store: bool | None = True,
     ) -> orm.ResponseCreateParams:
         if input_items is None:
             input_items = [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}]
-        return orm.ResponseCreateParams(model=model, input=input_items, stream=stream)
+        return orm.ResponseCreateParams(model=model, input=input_items, stream=stream, store=store)
 
     return _make
 

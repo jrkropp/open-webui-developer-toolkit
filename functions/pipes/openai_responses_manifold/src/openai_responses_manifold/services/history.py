@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import json
 
 from ..core.markers import (
     contains_marker,
@@ -40,9 +41,21 @@ class HistoryPersistence:
         if not items:
             return ""
 
-        ulids = self.store.save_items(chat_id, message_id, items, model_id)
+        cleaned: list[dict[str, Any]] = []
+        for payload in items:
+            if not isinstance(payload, dict):
+                continue
+            clone = json.loads(json.dumps(payload))
+            # Drop server-side IDs so we never depend on OpenAI-side persistence when store=False.
+            clone.pop("id", None)
+            cleaned.append(clone)
+
+        if not cleaned:
+            return ""
+
+        ulids = self.store.save_items(chat_id, message_id, cleaned, model_id)
         hidden_markers: list[str] = []
-        for ulid, payload in zip(ulids, items):
+        for ulid, payload in zip(ulids, cleaned):
             marker = create_marker(payload.get("type", "unknown"), ulid=ulid, model_id=model_id)
             hidden_markers.append(wrap_marker(marker))
         return "".join(hidden_markers)

@@ -241,7 +241,6 @@ class ResponseFunctionCallArgumentsDoneEvent(BaseStreamEvent):
     )
     output_index: int
     item_id: str
-    name: str
     arguments: str
 
 

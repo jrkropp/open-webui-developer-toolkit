@@ -7,7 +7,6 @@ from typing import Any
 from ..core.openai_requests import ResponseCreateParams
 from ..infra import ItemStore
 from ..services.history import HistoryService
-from ..services.tools import resolve_tools
 from ..utils import get_logger
 
 logger = get_logger(__name__)
@@ -20,9 +19,6 @@ async def build_responses_body(
     metadata: dict[str, Any],
     user_identifier: str | None = None,
     item_store: ItemStore,
-    provided_tools: list[dict[str, Any]] | dict[str, Any] | None = None,
-    features: dict[str, Any] | None = None,
-    extra_tools: list[dict[str, Any]] | None = None,
 ) -> ResponseCreateParams:
     """
     Convert an OpenWebUI-style payload plus valves/metadata into a validated ResponsesBody.
@@ -84,15 +80,6 @@ async def build_responses_body(
         logger.error("Failed to build ResponseCreateParams: %s payload_keys=%s", exc, list(payload.keys()))
         raise
 
-    tools, _tool_registry = await resolve_tools(
-        responses_body,
-        valves,
-        provided_tools if provided_tools is not None else owui_request.get("tools"),
-        features=features or metadata.get("features", {}).get("openai_responses", {}),
-        extra_tools=extra_tools or owui_request.get("extra_tools"),
-    )
-    if tools:
-        responses_body.tools = tools
     return responses_body
 
 

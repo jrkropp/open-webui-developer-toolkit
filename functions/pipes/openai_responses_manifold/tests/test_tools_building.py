@@ -68,6 +68,39 @@ def test_build_tools_dedupes_function_specs() -> None:
     assert function_tools[0]["name"] == "duplicate"
 
 
+def test_build_tools_allows_extra_tools_and_override() -> None:
+    owui_tools = {
+        "custom": {
+            "spec": {
+                "name": "custom",
+                "description": "Registry version",
+                "parameters": {"type": "object", "properties": {"a": {"type": "string"}}},
+            }
+        }
+    }
+    extra_tools = [
+        {
+            "type": "function",
+            "name": "custom",
+            "description": "Override from extra_tools",
+            "parameters": {"type": "object", "properties": {"a": {"type": "integer"}}},
+        }
+    ]
+    valves = orm.Pipe.Valves(ENABLE_STRICT_TOOL_CALLING=False)
+    tools = orm.build_tools(
+        _responses_body(),
+        valves,
+        openwebui_tools=owui_tools,
+        extra_tools=extra_tools,
+    )
+
+    function_tools = [tool for tool in tools if tool.get("type") == "function" and tool.get("name") == "custom"]
+    assert len(function_tools) == 1
+    tool = function_tools[0]
+    assert tool["description"] == "Override from extra_tools"
+    assert tool["parameters"]["properties"]["a"]["type"] == "integer"
+
+
 @pytest.mark.asyncio()
 async def test_execute_tool_calls_supports_sync_and_async() -> None:
     calls = [

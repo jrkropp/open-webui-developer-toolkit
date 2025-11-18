@@ -14,6 +14,7 @@ from .infra import ItemStore, OpenAIResponsesClient
 from .model_catalog import supports
 from .services import route_auto_model
 from .services.request_builder import build_responses_body
+from .services.tools import build_tools
 from .settings import PipeValves, UserValves
 from .utils import (
     EventCall,
@@ -83,10 +84,18 @@ class Pipe:
                 metadata=__metadata__,
                 user_identifier=user_identifier,
                 item_store=self.store,
-                provided_tools=__tools__,
-                features=features,
-                extra_tools=getattr(completions_body, "extra_tools", None),
             )
+            provided_tools = __tools__ if __tools__ is not None else body.get("tools")
+            extra_tools = getattr(completions_body, "extra_tools", None) or body.get("extra_tools")
+            tool_specs = build_tools(
+                responses_body,
+                valves,
+                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
+                features=features,
+                extra_tools=extra_tools if isinstance(extra_tools, list) else None,
+            )
+            if tool_specs:
+                responses_body.tools = tool_specs
 
             if __task__:
                 self.logger.info("Detected task model: %s", __task__)
@@ -106,6 +115,7 @@ class Pipe:
                 valves=valves,
                 metadata=__metadata__,
                 event_emitter=__event_emitter__,
+                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
             )
 
     def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:

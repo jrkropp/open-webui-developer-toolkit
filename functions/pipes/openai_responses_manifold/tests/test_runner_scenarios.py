@@ -57,7 +57,7 @@ async def test_streaming_flow_emits_single_completion(
         valves=valves,
         metadata=metadata,
         event_emitter=spy_event_emitter,
-        tool_registry={},
+        openwebui_tools={},
     )
 
     assert result == "Hello world"
@@ -85,6 +85,11 @@ async def test_function_call_loop_executes_local_tools(
                 "type": "response.completed",
                 "response": {
                     "output": [
+                        {
+                            "type": "reasoning",
+                            "id": "rs_drop_me",
+                            "summary": [],
+                        },
                         {
                             "type": "function_call",
                             "call_id": "call-1",
@@ -131,22 +136,29 @@ async def test_function_call_loop_executes_local_tools(
         return f"echo:{value}"
 
     await runner.run_streaming_turn(
-        responses_body_factory(model="gpt-4o"),
+        responses_body_factory(model="gpt-4o", store=False),
         valves=valves,
         metadata=metadata,
         event_emitter=spy_event_emitter,
-        tool_registry={"echo": {"callable": echo}},
+        openwebui_tools={"echo": {"callable": echo}},
     )
 
     assert len(fake_responses_client.stream_calls) == 2, "runner should retry after tool output"
     _, _, _ = fake_responses_client.stream_calls[0]
     second_request, _, _ = fake_responses_client.stream_calls[1]
+    reasoning_items = [item for item in second_request["input"] if item.get("type") == "reasoning"]
+    assert reasoning_items and all("id" not in item for item in reasoning_items)
+    assert second_request["input"][-2]["type"] == "function_call"
+    assert second_request["input"][-2]["call_id"] == "call-1"
     appended = second_request["input"][-1]
     assert appended["type"] == "function_call_output"
+    assert appended["call_id"] == "call-1"
     assert appended["output"] == "echo:hi"
 
     messages = [evt for evt in spy_event_emitter.events if evt["type"] == "chat:message"]
-    assert messages[-1]["data"]["content"] == "Result"
+    final_content = messages[-1]["data"]["content"]
+    assert final_content.strip().endswith("Result")
+    assert orm.contains_marker(final_content)
 
 
 @pytest.mark.asyncio()
@@ -180,7 +192,7 @@ async def test_errors_emit_log_citation(
             valves=valves,
             metadata=metadata,
             event_emitter=spy_event_emitter,
-            tool_registry={},
+            openwebui_tools={},
         )
     finally:
         orm.pop_logging_context(tokens)
@@ -235,7 +247,7 @@ async def test_usage_backfills_from_final_response(
         valves=valves,
         metadata=metadata_factory(),
         event_emitter=spy_event_emitter,
-        tool_registry={},
+        openwebui_tools={},
     )
 
     completion_events = [
@@ -296,7 +308,7 @@ async def test_function_call_arguments_delta_handles_bad_json(
         valves=valves,
         metadata=metadata_factory(),
         event_emitter=spy_event_emitter,
-        tool_registry={},
+        openwebui_tools={"broken_tool": {"callable": lambda **_: None}},
     )
 
     assert result == "Done"

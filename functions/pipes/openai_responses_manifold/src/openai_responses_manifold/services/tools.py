@@ -294,4 +294,8 @@ def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     return list(seen.values())
 
 
-__all__ = ["build_tools", "execute_tool_calls"]
+__all__ = [
+    "build_tools",
+    "execute_tool_calls",
+    "resolve_tools",
+]
