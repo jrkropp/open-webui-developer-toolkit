@@ -585,13 +585,17 @@ class Pipe:
             default=False,
             description="Enable OpenAI's built-in 'web_search' tool when supported (gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, o3, o4-mini, o4-mini-high).  NOTE: This appears to disable parallel tool calling. Read more: https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses",
         )
-        WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None] = Field(
-            default="medium",
+        WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", "default"] = Field(
+            default="default",
             description="Specifies the OpenAI web search context size: low | medium | high. Default is 'medium'. Affects cost, quality, and latency. Only used if ENABLE_WEB_SEARCH_TOOL=True.",
         )
         WEB_SEARCH_USER_LOCATION: Optional[str] = Field(
             default=None,
             description='User location for web search context. Leave blank to disable. Must be in valid JSON format according to OpenAI spec.  E.g., {"type": "approximate","country": "US","city": "San Francisco","region": "CA"}.',
+        )
+        WEB_SEARCH_REQUEST_SOURCES: bool = Field(
+            default=True,
+            description="When web search is used, request the complete list of URLs the model consulted when forming its response.",
         )
 
         # Integrations
@@ -817,12 +821,13 @@ class Pipe:
              if "reasoning.encrypted_content" not in responses_body.include:
                  responses_body.include.append("reasoning.encrypted_content")
 
-        # If a web_search tool is present, always request sources
-        if any(isinstance(t, dict) and t.get("type") == "web_search" for t in (responses_body.tools or [])):
-            if ModelFamily.supports("web_search_tool", responses_body.model):
-                responses_body.include = list(responses_body.include or [])
-                if "web_search_call.action.sources" not in responses_body.include:
-                    responses_body.include.append("web_search_call.action.sources")
+        # If enabled and if a web_search tool is present, request sources
+        if valves.WEB_SEARCH_REQUEST_SOURCES:
+            if any(isinstance(t, dict) and t.get("type") == "web_search" for t in (responses_body.tools or [])):
+                if ModelFamily.supports("web_search_tool", responses_body.model):
+                    responses_body.include = list(responses_body.include or [])
+                    if "web_search_call.action.sources" not in responses_body.include:
+                        responses_body.include.append("web_search_call.action.sources")
 
         # STEP 9: Map WebUI "Add Details" / "More Concise" → text.verbosity (if supported by model), then strip the stub
         input_items = responses_body.input if isinstance(responses_body.input, list) else None
@@ -2153,8 +2158,9 @@ def build_tools(
     if allow_web:
         web_search_tool: Dict[str, Any] = {
             "type": "web_search",
-            "search_context_size": valves.WEB_SEARCH_CONTEXT_SIZE,
         }
+        if valves.WEB_SEARCH_CONTEXT_SIZE != 'default':
+            web_search_tool["search_context_size"] = valves.WEB_SEARCH_CONTEXT_SIZE
         if valves.WEB_SEARCH_USER_LOCATION:
             try:
                 web_search_tool["user_location"] = json.loads(valves.WEB_SEARCH_USER_LOCATION)
