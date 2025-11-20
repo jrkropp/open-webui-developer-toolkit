@@ -441,6 +441,12 @@ __all__ = [
 ]
 
 # === core/model_catalog.py ===
+# =============================================================================
+# Change Log
+# 2025-11-20: Align model feature flags with current OpenAI docs (web search and
+#             image tool coverage), add gpt-5-pro entry, adjust deep-research
+#             capabilities to match API usage.
+# =============================================================================
 """Single source of truth for OpenAI model IDs, aliases, and capabilities."""
 
 import re
@@ -451,11 +457,12 @@ EMPTY_FEATURES: frozenset[str] = frozenset()
 
 # Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
 MODEL_FEATURES: dict[str, frozenset[str]] = {
-    "gpt-5-auto": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
-    "gpt-5.1": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
-    "gpt-5": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
-    "gpt-5-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
-    "gpt-5-nano": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
+    "gpt-5-auto": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
+    "gpt-5.1": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
+    "gpt-5-pro": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
+    "gpt-5": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
+    "gpt-5-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
+    "gpt-5-nano": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
     "gpt-4.1": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
     "gpt-4.1-mini": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
     "gpt-4.1-nano": frozenset({"function_calling", "image_gen_tool"}),
@@ -465,11 +472,11 @@ MODEL_FEATURES: dict[str, frozenset[str]] = {
     "o3-mini": frozenset({"function_calling", "reasoning", "reasoning_summary"}),
     "o3-pro": frozenset({"function_calling", "reasoning"}),
     "o4-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool"}),
-    "o3-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
-    "o4-mini-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
+    "o3-deep-research": frozenset({"reasoning", "reasoning_summary", "deep_research"}),
+    "o4-mini-deep-research": frozenset({"reasoning", "reasoning_summary", "deep_research"}),
     "gpt-5.1-chat-latest": frozenset({"function_calling", "web_search_tool"}),
-    "gpt-5-chat-latest": EMPTY_FEATURES,
-    "chatgpt-4o-latest": EMPTY_FEATURES,
+    "gpt-5-chat-latest": frozenset({"function_calling", "web_search_tool"}),
+    "chatgpt-4o-latest": frozenset({"function_calling", "web_search_tool"}),
 }
 
 # Add entries to MODEL_ALIASES for any pseudo-model name users can pick.
