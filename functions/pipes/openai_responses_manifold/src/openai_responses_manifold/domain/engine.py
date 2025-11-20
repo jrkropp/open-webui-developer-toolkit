@@ -16,6 +16,11 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Awaitable, Callable, Literal
 
+try:  # pragma: no cover - fallback for test stubs without aiohttp
+    from aiohttp.client_exceptions import ClientResponseError
+except Exception:  # pragma: no cover
+    ClientResponseError = Exception  # type: ignore[assignment]
+
 from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
 from openai_responses_manifold.adapters.openai.events import (
     ErrorEvent,
@@ -44,7 +49,7 @@ from openai_responses_manifold.core.model_catalog import supports
 from openai_responses_manifold.domain.events import NullRuntimeEvents, RuntimeEvents
 from openai_responses_manifold.domain.history import HistoryPersistence, HistoryStore
 from openai_responses_manifold.domain.tasks import run_task_model
-from openai_responses_manifold.domain.tools import execute_tool_calls
+from openai_responses_manifold.domain.tools import execute_tool_calls, tool_summaries_for_log
 
 
 @dataclass
@@ -327,6 +332,7 @@ class ResponsesEngine:
             runtime_events,
             openwebui_tools=openwebui_tools,
         )
+        self._log_tool_summaries(body.tools or [], logging.DEBUG, reason="request")
 
         model_router_result = body.model_router_result
         if model_router_result:
@@ -425,11 +431,30 @@ class ResponsesEngine:
                 summary_kwargs,
             )
 
+        except ClientResponseError as exc:
+            await self._cancel_tasks(session.state.thinking_tasks)
+            session.state.has_error = True
+            session.state.error_message = f"{exc.status} {exc.message}"
+            request_url = ""
+            try:
+                request_url = str(exc.request_info.real_url) if exc.request_info else ""
+            except Exception:
+                request_url = ""
+            self.logger.error(
+                "turn.error type=ClientResponseError status=%s url=%s message=%s",
+                exc.status,
+                request_url,
+                exc.message,
+            )
+            self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
+            await self._handle_stream_error(runtime_events, session.state.error_message)
+
         except Exception as exc:  # pragma: no cover
             await self._cancel_tasks(session.state.thinking_tasks)
             session.state.has_error = True
             session.state.error_message = str(exc)
             self.logger.error('turn.error type=%s message=%s', type(exc).__name__, session.state.error_message)
+            self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
             await self._handle_stream_error(runtime_events, session.state.error_message)
 
         finally:
@@ -587,6 +612,27 @@ class ResponsesEngine:
         self.logger.error("Streaming error: %s", message)
         if events:
             await events.chat_completion({"error": {"message": message}, "done": False})
+
+    def _log_tool_summaries(
+        self,
+        tools: list[dict[str, Any]],
+        level: int,
+        *,
+        reason: str,
+    ) -> None:
+        if not self.logger.isEnabledFor(level):
+            return
+        summaries = tool_summaries_for_log(tools)
+        if not summaries:
+            self.logger.log(level, "%s.tools count=0", reason)
+            return
+        self.logger.log(
+            level,
+            "%s.tools count=%d summary=%s",
+            reason,
+            len(tools),
+            "; ".join(summaries),
+        )
 
     async def _stream_response(
         self,

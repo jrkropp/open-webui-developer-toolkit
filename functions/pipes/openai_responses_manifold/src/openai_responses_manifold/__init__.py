@@ -75,6 +75,7 @@ from openai_responses_manifold.domain.tools import (
     build_tools,
     execute_tool_calls,
     resolve_tools,
+    tool_summaries_for_log,
 )
 
 __all__ = [
@@ -123,6 +124,7 @@ __all__ = [
     "build_tools",
     "execute_tool_calls",
     "resolve_tools",
+    "tool_summaries_for_log",
     "route_auto_model",
     "OpenAIResponsesClient",
     "get_logger",

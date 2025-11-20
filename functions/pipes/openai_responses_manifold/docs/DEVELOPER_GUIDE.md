@@ -165,7 +165,7 @@ class PipeValves(BaseModel):
     ENABLE_STRICT_TOOL_CALLING: bool = True
     TRUNCATION: Literal["auto","disabled"] = "auto"
     LOG_LEVEL: Literal["DEBUG","INFO","WARNING","ERROR","CRITICAL"] = "INFO"
-    # ... WEB_SEARCH_CONTEXT_SIZE, WEB_SEARCH_USER_LOCATION, MCP JSON, etc.
+    # ... WEB_SEARCH_USER_LOCATION, MCP JSON, etc.
 
 class UserValves(BaseModel):
     LOG_LEVEL: Literal["DEBUG","INFO","WARNING","ERROR","CRITICAL","INHERIT"] = "INHERIT"

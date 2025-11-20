@@ -288,10 +288,15 @@ class Pipe:
                 responses_body.include.append("reasoning.encrypted_content")
 
     def _apply_parallel_tool_policy(self, responses_body: Any, valves: PipeValves) -> None:
-        if any(
+        has_web_search = any(
             isinstance(tool, dict) and tool.get("type") == "web_search"
             for tool in (responses_body.tools or [])
-        ):
+        )
+        if has_web_search:
             responses_body.parallel_tool_calls = False
+            if getattr(valves, "WEB_SEARCH_INCLUDE_SOURCES", True):
+                responses_body.include = responses_body.include or []
+                if "web_search_call.action.sources" not in responses_body.include:
+                    responses_body.include.append("web_search_call.action.sources")
             return
         responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)

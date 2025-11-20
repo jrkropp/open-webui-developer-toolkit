@@ -25,6 +25,19 @@ def test_build_tools_includes_web_search_when_enabled() -> None:
     assert web_search["user_location"]["country"] == "US"
 
 
+def test_build_tools_applies_domains_and_external_web_access() -> None:
+    valves = orm.Pipe.Valves(
+        ENABLE_WEB_SEARCH_TOOL=True,
+        WEB_SEARCH_ALLOWED_DOMAINS="https://openai.com, example.org, openai.com/docs",
+        WEB_SEARCH_EXTERNAL_WEB_ACCESS=False,
+    )
+    tools = orm.build_tools(_responses_body(), valves)
+
+    web_search = next(tool for tool in tools if tool["type"] == "web_search")
+    assert web_search["filters"]["allowed_domains"] == ["openai.com", "example.org"]
+    assert web_search["external_web_access"] is False
+
+
 def test_build_tools_adds_remote_mcp_servers() -> None:
     valves = orm.Pipe.Valves(
         REMOTE_MCP_SERVERS_JSON=json.dumps(
@@ -101,6 +114,65 @@ def test_build_tools_allows_extra_tools_and_override() -> None:
     assert tool["parameters"]["properties"]["a"]["type"] == "integer"
 
 
+def test_strictifies_extra_function_tools_when_strict_enabled() -> None:
+    extra_tools = [
+        {
+            "type": "function",
+            "name": "strict_me",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "count": {"type": "integer"},
+                },
+            },
+        }
+    ]
+    valves = orm.Pipe.Valves(ENABLE_STRICT_TOOL_CALLING=True)
+    tools = orm.build_tools(_responses_body(), valves, extra_tools=extra_tools)
+
+    fn = next(tool for tool in tools if tool.get("name") == "strict_me")
+    assert fn["strict"] is True
+    params = fn["parameters"]
+    assert params["additionalProperties"] is False
+    assert set(params["required"]) == {"text", "count"}
+    assert params["properties"]["text"]["type"] == ["string", "null"]
+    assert params["properties"]["count"]["type"] == ["integer", "null"]
+
+
+def test_tool_summaries_for_log_captures_web_search_details() -> None:
+    tools = [
+        {
+            "type": "web_search",
+            "context": {"size": "high"},
+            "filters": {"allowed_domains": ["openai.com", "example.com"]},
+            "external_web_access": False,
+        },
+        {
+            "type": "function",
+            "name": "do_it",
+            "strict": True,
+            "parameters": {
+                "type": "object",
+                "properties": {"foo": {"type": "string"}},
+            },
+        },
+    ]
+
+    summaries = orm.tool_summaries_for_log(tools)
+    assert len(summaries) == 2
+    summary_web = summaries[0]
+    assert summary_web.startswith("[0] type=web_search")
+    assert "context.size=high" in summary_web
+    assert "filters.allowed_domains=2" in summary_web
+    assert "external_web_access=False" in summary_web
+
+    summary_fn = summaries[1]
+    assert summary_fn.startswith("[1] type=function name=do_it")
+    assert "strict=True" in summary_fn
+    assert "params=foo" in summary_fn
+
+
 @pytest.mark.asyncio()
 async def test_execute_tool_calls_supports_sync_and_async() -> None:
     calls = [
@@ -119,3 +191,26 @@ async def test_execute_tool_calls_supports_sync_and_async() -> None:
     outputs = await orm.execute_tool_calls(calls, registry)
     assert outputs[0]["output"] == "echo:hi"
     assert outputs[1]["output"] == "3"
+
+
+def test_apply_parallel_tool_policy_requests_sources_include() -> None:
+    pipe = orm.Pipe()
+    valves = pipe.Valves(WEB_SEARCH_INCLUDE_SOURCES=True)
+    body = _responses_body()
+    body.tools = [{"type": "web_search"}]
+
+    pipe._apply_parallel_tool_policy(body, valves)
+
+    assert body.parallel_tool_calls is False
+    assert "web_search_call.action.sources" in (body.include or [])
+
+
+def test_apply_parallel_tool_policy_allows_opt_out_of_sources() -> None:
+    pipe = orm.Pipe()
+    valves = pipe.Valves(WEB_SEARCH_INCLUDE_SOURCES=False)
+    body = _responses_body()
+    body.tools = [{"type": "web_search"}]
+
+    pipe._apply_parallel_tool_policy(body, valves)
+
+    assert body.include is None

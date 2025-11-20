@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import re
 from typing import Any
 
 from openai_responses_manifold.core.logging import get_logger, truncate_for_log
@@ -56,10 +57,11 @@ def build_tools(
     if not supports("function_calling", responses_body.model):
         return []
 
+    strict_mode = getattr(valves, "ENABLE_STRICT_TOOL_CALLING", False)
     tools: list[dict[str, Any]] = []
     tools.extend(
         _transform_owui_tools(
-            openwebui_tools, strict=getattr(valves, "ENABLE_STRICT_TOOL_CALLING", False)
+            openwebui_tools, strict=strict_mode
         )
     )
 
@@ -85,9 +87,12 @@ def build_tools(
                     preview,
                     exc,
                 )
-        context_size = getattr(valves, "WEB_SEARCH_CONTEXT_SIZE", None)
-        if isinstance(context_size, str) and context_size:
-            web_search_tool["context"] = {"size": context_size}
+        allowed_domains = _parse_allowed_domains(getattr(valves, "WEB_SEARCH_ALLOWED_DOMAINS", None))
+        if allowed_domains:
+            web_search_tool["filters"] = {"allowed_domains": allowed_domains}
+        external_web_access = getattr(valves, "WEB_SEARCH_EXTERNAL_WEB_ACCESS", None)
+        if isinstance(external_web_access, bool):
+            web_search_tool["external_web_access"] = external_web_access
         tools.append(web_search_tool)
 
     remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
@@ -95,9 +100,17 @@ def build_tools(
         tools.extend(_build_mcp_tools(remote_mcp))
 
     if isinstance(extra_tools, list) and extra_tools:
-        tools.extend(extra_tools)
+        tools.extend(_maybe_strictify_extra_tools(extra_tools, strict_mode))
 
-    return _dedupe_tools(tools)
+    deduped = _dedupe_tools(tools)
+    if logger.isEnabledFor(logging.DEBUG):
+        summaries = tool_summaries_for_log(deduped)
+        logger.debug(
+            "tools.built count=%d summary=%s",
+            len(deduped),
+            "; ".join(summaries) if summaries else "none",
+        )
+    return deduped
 
 
 async def execute_tool_calls(
@@ -245,6 +258,144 @@ def _strictify_schema(schema: Any) -> dict[str, Any]:
 
     _enforce(data)
     return data
+
+
+def _maybe_strictify_extra_tools(
+    extra_tools: list[dict[str, Any]],
+    strict: bool,
+) -> list[dict[str, Any]]:
+    """Apply strict schemas to extra function tools when strict mode is enabled."""
+
+    if not strict:
+        return [tool for tool in extra_tools if isinstance(tool, dict)]
+
+    strictified: list[dict[str, Any]] = []
+    for tool in extra_tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") != "function":
+            strictified.append(tool)
+            continue
+
+        clone: dict[str, Any] = json.loads(json.dumps(tool))
+        params = clone.get("parameters")
+        if isinstance(params, dict):
+            clone["parameters"] = _strictify_schema(params)
+        else:
+            clone["parameters"] = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+        clone.setdefault("strict", True)
+        strictified.append(clone)
+
+    return strictified
+
+
+def _parse_allowed_domains(raw: Any) -> list[str]:
+    """
+    Normalize allowed domain inputs for the web_search tool.
+
+    Accepts JSON (list or string) or comma-separated strings. Removes protocols and trailing slashes.
+    Caps the allow-list at 20 entries, preserving order.
+    """
+
+    if raw is None:
+        return []
+
+    candidates: list[Any] = []
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            candidates = parsed
+        elif isinstance(parsed, str):
+            candidates = [parsed]
+        elif parsed is None:
+            candidates = raw.split(",")
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        return []
+
+    normalized: list[str] = []
+    for cand in candidates:
+        if not isinstance(cand, str):
+            continue
+        domain = _normalize_domain(cand)
+        if not domain or domain in normalized:
+            continue
+        normalized.append(domain)
+        if len(normalized) >= 20:
+            break
+    return normalized
+
+
+def _normalize_domain(domain: str) -> str:
+    """Strip protocol/path and whitespace from a domain string."""
+
+    cleaned = domain.strip()
+    cleaned = re.sub(r"^https?://", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.split("/")[0]
+    return cleaned.rstrip("/")
+
+
+def tool_summaries_for_log(tools: list[dict[str, Any]]) -> list[str]:
+    """Return compact, index-aware summaries for log output."""
+
+    summaries: list[str] = []
+    for idx, tool in enumerate(tools or []):
+        if not isinstance(tool, dict):
+            summaries.append(f"[{idx}] <invalid tool>")
+            continue
+
+        tool_type = tool.get("type") or "unknown"
+        parts = [f"[{idx}] type={tool_type}"]
+        name = tool.get("name")
+        if isinstance(name, str) and name:
+            parts.append(f"name={name}")
+
+        if tool_type == "function":
+            if tool.get("strict"):
+                parts.append("strict=True")
+            params = tool.get("parameters")
+            if isinstance(params, dict):
+                props = params.get("properties")
+                if isinstance(props, dict) and props:
+                    parts.append(f"params={','.join(sorted(props.keys()))}")
+        elif tool_type == "web_search":
+            context = tool.get("context")
+            if isinstance(context, dict):
+                size = context.get("size")
+                if isinstance(size, str) and size:
+                    parts.append(f"context.size={size}")
+            filters = tool.get("filters")
+            if isinstance(filters, dict):
+                allowed = filters.get("allowed_domains")
+                if isinstance(allowed, list) and allowed:
+                    parts.append(f"filters.allowed_domains={len(allowed)}")
+            external = tool.get("external_web_access")
+            if isinstance(external, bool):
+                parts.append(f"external_web_access={external}")
+        elif tool_type == "mcp":
+            server_label = tool.get("server_label") or tool.get("server_name")
+            if isinstance(server_label, str) and server_label:
+                parts.append(f"server_label={server_label}")
+            server_url = tool.get("server_url")
+            if isinstance(server_url, str) and server_url:
+                parts.append(f"server_url={server_url}")
+        else:
+            extra_keys = [key for key in sorted(tool.keys()) if key != "type"]
+            if extra_keys:
+                parts.append(f"keys={','.join(extra_keys)}")
+
+        summary = " ".join(parts)
+        preview, truncated = truncate_for_log(summary, limit=240)
+        summaries.append(f"{preview}{'…' if truncated else ''}")
+
+    return summaries
 
 
 def _build_mcp_tools(mcp_json: str) -> list[dict[str, Any]]:

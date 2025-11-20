@@ -121,9 +121,20 @@ def _install_open_webui_stubs() -> None:
         def __init__(self, *_, **__) -> None:  # pragma: no cover - stub
             return None
 
+    class _ClientResponseError(Exception):
+        def __init__(self, status: int = 0, message: str = "", request_info: Any | None = None) -> None:  # pragma: no cover - stub
+            super().__init__(message)
+            self.status = status
+            self.message = message
+            self.request_info = request_info
+
     aiohttp_mod.ClientSession = _ClientSession
     aiohttp_mod.TCPConnector = _TCPConnector
     aiohttp_mod.ClientTimeout = _ClientTimeout
+    aiohttp_mod.ClientResponseError = _ClientResponseError
+
+    client_exceptions_mod = _ensure_module("aiohttp.client_exceptions")
+    client_exceptions_mod.ClientResponseError = _ClientResponseError
 
 
 def _ensure_src_on_path() -> None:

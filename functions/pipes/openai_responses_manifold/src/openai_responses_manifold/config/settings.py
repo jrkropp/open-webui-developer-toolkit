@@ -86,15 +86,32 @@ class PipeValves(BaseModel):
     )
     ENABLE_WEB_SEARCH_TOOL: bool = Field(
         default=False,
-        description="Enable OpenAI's built-in 'web_search' tool when supported (gpt-4.1, gpt-4.1-mini, gpt-4o, gpt-4o-mini, o3, o4-mini, o4-mini-high). NOTE: This appears to disable parallel tool calling. Read more: https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses",
-    )
-    WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None] = Field(
-        default="medium",
-        description="Specifies the OpenAI web search context size: low | medium | high. Default is 'medium'. Affects cost, quality, and latency. Only used if ENABLE_WEB_SEARCH_TOOL=True.",
+        description="Enable OpenAI's built-in 'web_search' tool when supported. Read more: https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses",
     )
     WEB_SEARCH_USER_LOCATION: str | None = Field(
         default=None,
         description='User location for web search context. Leave blank to disable. Must be in valid JSON format according to OpenAI spec.  E.g., {"type": "approximate","country": "US","city": "San Francisco","region": "CA"}.',
+    )
+    WEB_SEARCH_ALLOWED_DOMAINS: str | None = Field(
+        default=None,
+        description=(
+            "Comma-separated or JSON array of domains for web_search filters.allowed_domains. "
+            "Per OpenAI docs, omit http/https (e.g., openai.com). Applies to Responses API only."
+        ),
+    )
+    WEB_SEARCH_EXTERNAL_WEB_ACCESS: bool = Field(
+        default=True,
+        description=(
+            "When False, sets web_search.external_web_access=false to use cached/indexed results "
+            "instead of live internet access."
+        ),
+    )
+    WEB_SEARCH_INCLUDE_SOURCES: bool = Field(
+        default=True,
+        description=(
+            "Automatically request web_search_call.action.sources when a web_search tool is present, "
+            "surfacing the full list of consulted URLs alongside inline citations."
+        ),
     )
     REMOTE_MCP_SERVERS_JSON: str | None = Field(
         default=None,
