@@ -76,7 +76,7 @@ async def test_responses_body_from_completions_converts_messages() -> None:
     assistant_block = responses.input[1]
     assert assistant_block["role"] == "assistant"
     content = assistant_block["content"][0]  # type: ignore[index]
-    assert content["type"] == "input_text"
+    assert content["type"] == "output_text"
     assert content["text"] == "intermediate result"
     assert responses.tools in (None, [])
 

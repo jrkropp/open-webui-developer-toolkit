@@ -218,6 +218,7 @@ OWUI_USER_ID: ContextVar[str | None] = ContextVar("owui_user_id", default=None) 
 OWUI_LOG_LEVEL: ContextVar[int] = ContextVar("owui_log_level", default=logging.INFO)
 
 # Buffered per-session logs for citations
+MAX_SESSION_LOGS = 1000
 SESSION_LOGS: DefaultDict[str, Deque[str]] = defaultdict(lambda: deque(maxlen=2000))
 
 
@@ -243,6 +244,7 @@ class SessionMemoryHandler(logging.Handler):
         session_id = getattr(record, "session_id", None)
         if not session_id:
             return
+        _ensure_session_log_capacity(session_id)
         SESSION_LOGS[session_id].append(self.format(record))
 
 
@@ -361,6 +363,14 @@ def logging_context(
 # Citation buffer helpers
 # ---------------------------------------------------------------------------
 
+
+def _ensure_session_log_capacity(session_id: str) -> None:
+    if session_id in SESSION_LOGS or len(SESSION_LOGS) < MAX_SESSION_LOGS:
+        return
+    evicted_session = next(iter(SESSION_LOGS))
+    SESSION_LOGS.pop(evicted_session, None)
+
+
 def get_session_logs(session_id: str | None) -> list[str]:
     if not session_id:
         return []
@@ -409,6 +419,7 @@ __all__ = [
     "OWUI_MESSAGE_ID",
     "OWUI_USER_ID",
     "OWUI_LOG_LEVEL",
+    "MAX_SESSION_LOGS",
     "SESSION_LOGS",
     "get_session_logs",
     "clear_session_logs",
@@ -663,6 +674,17 @@ def user_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[st
     return responses
 
 
+def assistant_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenWebUI assistant blocks into Responses output items."""
+
+    responses: list[dict[str, Any]] = []
+    for block in blocks:
+        block_type = block.get("type")
+        if block_type in {"text", "input_text", "output_text"}:
+            responses.append({"type": "output_text", "text": block.get("text", "")})
+    return responses
+
+
 def assistant_text_item(text: str) -> dict[str, Any]:
     """Generate an assistant message item for plain text segments."""
 
@@ -670,7 +692,7 @@ def assistant_text_item(text: str) -> dict[str, Any]:
         "role": "assistant",
         "content": [
             {
-                "type": "input_text",
+                "type": "output_text",
                 "text": text,
             }
         ],
@@ -678,13 +700,17 @@ def assistant_text_item(text: str) -> dict[str, Any]:
 
 
 def developer_message(content: str) -> dict[str, Any]:
-    """Construct a developer-role message block."""
+    """Construct a developer-role message block.
+
+    For the Responses API, developer messages can carry plain string content; we use that simpler form.
+    """
 
     return {"role": "developer", "content": content}
 
 
 __all__ = [
     "assistant_text_item",
+    "assistant_blocks_to_responses_items",
     "developer_message",
     "normalize_user_blocks",
     "user_blocks_to_responses_items",
@@ -1010,8 +1036,8 @@ class EventType(str, Enum):
     RESPONSE_CODE_INTERPRETER_CALL_IN_PROGRESS = "response.code_interpreter_call.in_progress"
     RESPONSE_CODE_INTERPRETER_CALL_INTERPRETING = "response.code_interpreter_call.interpreting"
     RESPONSE_CODE_INTERPRETER_CALL_COMPLETED = "response.code_interpreter_call.completed"
-    RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA = "response.code_interpreter_call_code.delta"
-    RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE = "response.code_interpreter_call_code.done"
+    RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA = "response.code_interpreter_call.code.delta"
+    RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE = "response.code_interpreter_call.code.done"
 
     ERROR = "error"
 
@@ -1022,7 +1048,7 @@ class BaseStreamEvent(BaseModel):
     type: EventType
     sequence_number: int | None = Field(default=None, description="Monotonic within a stream.")
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
 
 class ResponseEnvelopeEvent(BaseStreamEvent):
@@ -1442,7 +1468,7 @@ class ResponseMCPListToolsFailedEvent(ResponseMCPListToolsEvent):
 
 class ResponseCodeInterpreterCallEvent(BaseStreamEvent):
     output_index: int
-    item_id: str
+    code_interpreter_call: dict[str, Any]
 
 
 class ResponseCodeInterpreterCallInProgressEvent(ResponseCodeInterpreterCallEvent):
@@ -1476,9 +1502,7 @@ class ResponseCodeInterpreterCallCodeDeltaEvent(BaseStreamEvent):
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA
     )
     output_index: int
-    item_id: str
     delta: str
-    obfuscation: str | None = None
 
 
 class ResponseCodeInterpreterCallCodeDoneEvent(BaseStreamEvent):
@@ -1488,7 +1512,6 @@ class ResponseCodeInterpreterCallCodeDoneEvent(BaseStreamEvent):
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE
     )
     output_index: int
-    item_id: str
     code: str
 
 
@@ -1922,6 +1945,7 @@ from typing import Any, Callable, Protocol
 #     wrap_marker,
 # )
 # from openai_responses_manifold.core.messages import (
+#     assistant_blocks_to_responses_items,
 #     assistant_text_item,
 #     developer_message,
 #     normalize_user_blocks,
@@ -2068,21 +2092,28 @@ class HistoryBuilder:
                 if isinstance(content, str) and content:
                     openai_input.append(developer_message(content))
                 continue
-            if role == "assistant" and isinstance(content, str):
-                if not contains_marker(content):
-                    if content.strip():
-                        openai_input.append(assistant_text_item(content.strip()))
+            if role == "assistant":
+                if isinstance(content, str):
+                    if not contains_marker(content):
+                        if content.strip():
+                            openai_input.append(assistant_text_item(content.strip()))
+                        continue
+                    for segment in split_text_by_markers(content):
+                        if segment["type"] == "marker":
+                            marker = parse_marker(segment["marker"])
+                            payload = resolved.get(marker["ulid"])
+                            if payload:
+                                openai_input.append(payload)
+                        elif segment["type"] == "text":
+                            text_segment = segment.get("text", "").strip()
+                            if text_segment:
+                                openai_input.append(assistant_text_item(text_segment))
                     continue
-                for segment in split_text_by_markers(content):
-                    if segment["type"] == "marker":
-                        marker = parse_marker(segment["marker"])
-                        payload = resolved.get(marker["ulid"])
-                        if payload:
-                            openai_input.append(payload)
-                    elif segment["type"] == "text":
-                        text_segment = segment.get("text", "").strip()
-                        if text_segment:
-                            openai_input.append(assistant_text_item(text_segment))
+                if isinstance(content, list):
+                    blocks = assistant_blocks_to_responses_items(normalize_user_blocks(content))
+                    if blocks:
+                        openai_input.append({"role": "assistant", "content": blocks})
+                continue
 
         return openai_input
 
@@ -2209,6 +2240,7 @@ def build_tools(
     reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
     effort = reasoning.get("effort")
     effort_level = effort.lower() if isinstance(effort, str) else ""
+    # 2025-11-20: Web search is not available for gpt-5 with minimal reasoning and for gpt-4.1-nano.
     allow_web = (
         supports("web_search_tool", responses_body.model)
         and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
@@ -2706,7 +2738,6 @@ async def route_auto_model(
                 "name": "gpt5_router",
                 "strict": True,
                 "schema": _ROUTER_SCHEMA,
-                "verbosity": "medium",
             },
         },
     }
@@ -3071,7 +3102,7 @@ class _StreamSession:
                 self.engine.logger.debug("event=response.completed usage_keys=%s", usage_keys)
             return True
 
-        if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
+        if isinstance(event, (ResponseFailedEvent, ErrorEvent)):
             await self.engine._cancel_tasks(self.state.thinking_tasks)
             self.state.has_error = True
             if isinstance(event, ErrorEvent):
@@ -3083,6 +3114,18 @@ class _StreamSession:
                 )
             self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
             await self.engine._handle_stream_error(self.events, self.state.error_message or "")
+            return True
+
+        if isinstance(event, ResponseIncompleteEvent):
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            self.state.completed_response = event.response
+            self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
+            if self.debug_enabled:
+                usage_keys = sorted((self.state.usage_summary or {}).keys())
+                self.engine.logger.debug("event=response.incomplete usage_keys=%s", usage_keys)
+            await self.emit_status(
+                "Response was incomplete (e.g., max_output_tokens or content filter)."
+            )
             return True
 
         if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
@@ -3425,9 +3468,13 @@ class ResponsesEngine:
                 or None
             )
             await session.emit_status('Done', done=True, hidden=False, require_previous=True)
-            await runtime_events.chat_completion(
-                {'content': session.state.response_text, 'usage': usage_for_completion, 'done': True}
-            )
+            completion_payload: dict[str, Any] = {'done': True}
+            if session.state.has_error:
+                if session.state.error_message:
+                    completion_payload['error'] = {'message': session.state.error_message}
+            else:
+                completion_payload.update({'content': session.state.response_text, 'usage': usage_for_completion})
+            await runtime_events.chat_completion(completion_payload)
 
         return TurnResult(
             text=session.state.response_text,
@@ -4011,8 +4058,8 @@ __all__ = [
 # === adapters/openwebui/store.py ===
 """Persistence helpers for storing Responses items in OpenWebUI."""
 
-import datetime
 import secrets
+from datetime import datetime, timezone
 from typing import Any
 
 from open_webui.models.chats import Chats
@@ -4055,7 +4102,7 @@ class ItemStore:
             {"role": "assistant", "done": True, "item_ids": []},
         )
 
-        now = int(datetime.datetime.now(datetime.UTC).timestamp())
+        now = int(datetime.now(timezone.utc).timestamp())
         stored_ids: list[str] = []
         for payload in items:
             item_id = _generate_item_id()
@@ -4343,14 +4390,24 @@ class Pipe:
             )
             provided_tools = __tools__ if __tools__ is not None else body.get("tools")
             extra_tools = getattr(completions_body, "extra_tools", None) or body.get("extra_tools")
-            if isinstance(provided_tools, list) and not provided_tools:
-                provided_tools = None
-            if provided_tools is not None and not isinstance(provided_tools, dict):
+            if isinstance(provided_tools, list):
+                if not provided_tools:
+                    provided_tools = None
+                else:
+                    registry: dict[str, dict[str, Any]] = {}
+                    for entry in provided_tools:
+                        if not isinstance(entry, dict):
+                            continue
+                        spec = entry.get("spec") or {}
+                        name = spec.get("name")
+                        if isinstance(name, str) and name:
+                            registry[name] = entry
+                    provided_tools = registry or None
+            elif provided_tools is not None and not isinstance(provided_tools, dict):
                 await self.engine.emit_error(
                     runtime_events,
                     (
-                        "Tools must be provided as a registry dict "
-                        "(name -> {spec, callable}); list-form specs are not supported."
+                        "Tools must be provided as a registry dict or a list of {spec, callable} entries."
                     ),
                     done=True,
                 )

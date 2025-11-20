@@ -93,14 +93,24 @@ class Pipe:
             )
             provided_tools = __tools__ if __tools__ is not None else body.get("tools")
             extra_tools = getattr(completions_body, "extra_tools", None) or body.get("extra_tools")
-            if isinstance(provided_tools, list) and not provided_tools:
-                provided_tools = None
-            if provided_tools is not None and not isinstance(provided_tools, dict):
+            if isinstance(provided_tools, list):
+                if not provided_tools:
+                    provided_tools = None
+                else:
+                    registry: dict[str, dict[str, Any]] = {}
+                    for entry in provided_tools:
+                        if not isinstance(entry, dict):
+                            continue
+                        spec = entry.get("spec") or {}
+                        name = spec.get("name")
+                        if isinstance(name, str) and name:
+                            registry[name] = entry
+                    provided_tools = registry or None
+            elif provided_tools is not None and not isinstance(provided_tools, dict):
                 await self.engine.emit_error(
                     runtime_events,
                     (
-                        "Tools must be provided as a registry dict "
-                        "(name -> {spec, callable}); list-form specs are not supported."
+                        "Tools must be provided as a registry dict or a list of {spec, callable} entries."
                     ),
                     done=True,
                 )

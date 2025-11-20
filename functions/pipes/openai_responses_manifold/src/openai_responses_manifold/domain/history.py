@@ -15,6 +15,7 @@ from openai_responses_manifold.core.markers import (
     wrap_marker,
 )
 from openai_responses_manifold.core.messages import (
+    assistant_blocks_to_responses_items,
     assistant_text_item,
     developer_message,
     normalize_user_blocks,
@@ -161,21 +162,28 @@ class HistoryBuilder:
                 if isinstance(content, str) and content:
                     openai_input.append(developer_message(content))
                 continue
-            if role == "assistant" and isinstance(content, str):
-                if not contains_marker(content):
-                    if content.strip():
-                        openai_input.append(assistant_text_item(content.strip()))
+            if role == "assistant":
+                if isinstance(content, str):
+                    if not contains_marker(content):
+                        if content.strip():
+                            openai_input.append(assistant_text_item(content.strip()))
+                        continue
+                    for segment in split_text_by_markers(content):
+                        if segment["type"] == "marker":
+                            marker = parse_marker(segment["marker"])
+                            payload = resolved.get(marker["ulid"])
+                            if payload:
+                                openai_input.append(payload)
+                        elif segment["type"] == "text":
+                            text_segment = segment.get("text", "").strip()
+                            if text_segment:
+                                openai_input.append(assistant_text_item(text_segment))
                     continue
-                for segment in split_text_by_markers(content):
-                    if segment["type"] == "marker":
-                        marker = parse_marker(segment["marker"])
-                        payload = resolved.get(marker["ulid"])
-                        if payload:
-                            openai_input.append(payload)
-                    elif segment["type"] == "text":
-                        text_segment = segment.get("text", "").strip()
-                        if text_segment:
-                            openai_input.append(assistant_text_item(text_segment))
+                if isinstance(content, list):
+                    blocks = assistant_blocks_to_responses_items(normalize_user_blocks(content))
+                    if blocks:
+                        openai_input.append({"role": "assistant", "content": blocks})
+                continue
 
         return openai_input
 

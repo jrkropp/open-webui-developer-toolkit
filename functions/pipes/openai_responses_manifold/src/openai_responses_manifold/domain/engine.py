@@ -151,7 +151,7 @@ class _StreamSession:
                 self.engine.logger.debug("event=response.completed usage_keys=%s", usage_keys)
             return True
 
-        if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
+        if isinstance(event, (ResponseFailedEvent, ErrorEvent)):
             await self.engine._cancel_tasks(self.state.thinking_tasks)
             self.state.has_error = True
             if isinstance(event, ErrorEvent):
@@ -163,6 +163,18 @@ class _StreamSession:
                 )
             self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
             await self.engine._handle_stream_error(self.events, self.state.error_message or "")
+            return True
+
+        if isinstance(event, ResponseIncompleteEvent):
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            self.state.completed_response = event.response
+            self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
+            if self.debug_enabled:
+                usage_keys = sorted((self.state.usage_summary or {}).keys())
+                self.engine.logger.debug("event=response.incomplete usage_keys=%s", usage_keys)
+            await self.emit_status(
+                "Response was incomplete (e.g., max_output_tokens or content filter)."
+            )
             return True
 
         if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
@@ -505,9 +517,13 @@ class ResponsesEngine:
                 or None
             )
             await session.emit_status('Done', done=True, hidden=False, require_previous=True)
-            await runtime_events.chat_completion(
-                {'content': session.state.response_text, 'usage': usage_for_completion, 'done': True}
-            )
+            completion_payload: dict[str, Any] = {'done': True}
+            if session.state.has_error:
+                if session.state.error_message:
+                    completion_payload['error'] = {'message': session.state.error_message}
+            else:
+                completion_payload.update({'content': session.state.response_text, 'usage': usage_for_completion})
+            await runtime_events.chat_completion(completion_payload)
 
         return TurnResult(
             text=session.state.response_text,

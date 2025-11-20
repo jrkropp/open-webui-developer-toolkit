@@ -72,8 +72,8 @@ class EventType(str, Enum):
     RESPONSE_CODE_INTERPRETER_CALL_IN_PROGRESS = "response.code_interpreter_call.in_progress"
     RESPONSE_CODE_INTERPRETER_CALL_INTERPRETING = "response.code_interpreter_call.interpreting"
     RESPONSE_CODE_INTERPRETER_CALL_COMPLETED = "response.code_interpreter_call.completed"
-    RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA = "response.code_interpreter_call_code.delta"
-    RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE = "response.code_interpreter_call_code.done"
+    RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA = "response.code_interpreter_call.code.delta"
+    RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE = "response.code_interpreter_call.code.done"
 
     ERROR = "error"
 
@@ -84,7 +84,7 @@ class BaseStreamEvent(BaseModel):
     type: EventType
     sequence_number: int | None = Field(default=None, description="Monotonic within a stream.")
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
 
 class ResponseEnvelopeEvent(BaseStreamEvent):
@@ -504,7 +504,7 @@ class ResponseMCPListToolsFailedEvent(ResponseMCPListToolsEvent):
 
 class ResponseCodeInterpreterCallEvent(BaseStreamEvent):
     output_index: int
-    item_id: str
+    code_interpreter_call: dict[str, Any]
 
 
 class ResponseCodeInterpreterCallInProgressEvent(ResponseCodeInterpreterCallEvent):
@@ -538,9 +538,7 @@ class ResponseCodeInterpreterCallCodeDeltaEvent(BaseStreamEvent):
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA
     )
     output_index: int
-    item_id: str
     delta: str
-    obfuscation: str | None = None
 
 
 class ResponseCodeInterpreterCallCodeDoneEvent(BaseStreamEvent):
@@ -550,7 +548,6 @@ class ResponseCodeInterpreterCallCodeDoneEvent(BaseStreamEvent):
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE
     )
     output_index: int
-    item_id: str
     code: str
 
 

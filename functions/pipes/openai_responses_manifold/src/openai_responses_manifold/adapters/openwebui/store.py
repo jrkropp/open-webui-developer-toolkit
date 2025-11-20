@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import datetime
 import secrets
+from datetime import datetime, timezone
 from typing import Any
 
 from open_webui.models.chats import Chats
@@ -46,7 +46,7 @@ class ItemStore:
             {"role": "assistant", "done": True, "item_ids": []},
         )
 
-        now = int(datetime.datetime.now(datetime.UTC).timestamp())
+        now = int(datetime.now(timezone.utc).timestamp())
         stored_ids: list[str] = []
         for payload in items:
             item_id = _generate_item_id()

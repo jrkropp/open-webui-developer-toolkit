@@ -20,6 +20,7 @@ OWUI_USER_ID: ContextVar[str | None] = ContextVar("owui_user_id", default=None) 
 OWUI_LOG_LEVEL: ContextVar[int] = ContextVar("owui_log_level", default=logging.INFO)
 
 # Buffered per-session logs for citations
+MAX_SESSION_LOGS = 1000
 SESSION_LOGS: DefaultDict[str, Deque[str]] = defaultdict(lambda: deque(maxlen=2000))
 
 
@@ -45,6 +46,7 @@ class SessionMemoryHandler(logging.Handler):
         session_id = getattr(record, "session_id", None)
         if not session_id:
             return
+        _ensure_session_log_capacity(session_id)
         SESSION_LOGS[session_id].append(self.format(record))
 
 
@@ -163,6 +165,14 @@ def logging_context(
 # Citation buffer helpers
 # ---------------------------------------------------------------------------
 
+
+def _ensure_session_log_capacity(session_id: str) -> None:
+    if session_id in SESSION_LOGS or len(SESSION_LOGS) < MAX_SESSION_LOGS:
+        return
+    evicted_session = next(iter(SESSION_LOGS))
+    SESSION_LOGS.pop(evicted_session, None)
+
+
 def get_session_logs(session_id: str | None) -> list[str]:
     if not session_id:
         return []
@@ -211,6 +221,7 @@ __all__ = [
     "OWUI_MESSAGE_ID",
     "OWUI_USER_ID",
     "OWUI_LOG_LEVEL",
+    "MAX_SESSION_LOGS",
     "SESSION_LOGS",
     "get_session_logs",
     "clear_session_logs",

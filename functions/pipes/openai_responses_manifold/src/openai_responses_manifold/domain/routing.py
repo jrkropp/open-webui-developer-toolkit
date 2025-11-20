@@ -46,7 +46,6 @@ async def route_auto_model(
                 "name": "gpt5_router",
                 "strict": True,
                 "schema": _ROUTER_SCHEMA,
-                "verbosity": "medium",
             },
         },
     }

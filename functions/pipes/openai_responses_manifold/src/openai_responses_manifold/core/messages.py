@@ -34,6 +34,17 @@ def user_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[st
     return responses
 
 
+def assistant_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenWebUI assistant blocks into Responses output items."""
+
+    responses: list[dict[str, Any]] = []
+    for block in blocks:
+        block_type = block.get("type")
+        if block_type in {"text", "input_text", "output_text"}:
+            responses.append({"type": "output_text", "text": block.get("text", "")})
+    return responses
+
+
 def assistant_text_item(text: str) -> dict[str, Any]:
     """Generate an assistant message item for plain text segments."""
 
@@ -41,7 +52,7 @@ def assistant_text_item(text: str) -> dict[str, Any]:
         "role": "assistant",
         "content": [
             {
-                "type": "input_text",
+                "type": "output_text",
                 "text": text,
             }
         ],
@@ -49,13 +60,17 @@ def assistant_text_item(text: str) -> dict[str, Any]:
 
 
 def developer_message(content: str) -> dict[str, Any]:
-    """Construct a developer-role message block."""
+    """Construct a developer-role message block.
+
+    For the Responses API, developer messages can carry plain string content; we use that simpler form.
+    """
 
     return {"role": "developer", "content": content}
 
 
 __all__ = [
     "assistant_text_item",
+    "assistant_blocks_to_responses_items",
     "developer_message",
     "normalize_user_blocks",
     "user_blocks_to_responses_items",

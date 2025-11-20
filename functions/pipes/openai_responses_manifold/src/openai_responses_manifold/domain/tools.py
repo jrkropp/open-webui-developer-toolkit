@@ -69,6 +69,7 @@ def build_tools(
     reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
     effort = reasoning.get("effort")
     effort_level = effort.lower() if isinstance(effort, str) else ""
+    # 2025-11-20: Web search is not available for gpt-5 with minimal reasoning and for gpt-4.1-nano.
     allow_web = (
         supports("web_search_tool", responses_body.model)
         and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))

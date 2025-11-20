@@ -34,6 +34,7 @@ from openai_responses_manifold.core.markers import (  # noqa: F401
     wrap_marker,
 )
 from openai_responses_manifold.core.messages import (  # noqa: F401
+    assistant_blocks_to_responses_items,
     assistant_text_item,
     developer_message,
     normalize_user_blocks,
@@ -65,6 +66,7 @@ __all__ = [
     "parse_marker",
     "split_text_by_markers",
     "wrap_marker",
+    "assistant_blocks_to_responses_items",
     "assistant_text_item",
     "developer_message",
     "normalize_user_blocks",
