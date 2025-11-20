@@ -63,10 +63,13 @@ def build_tools(
         )
     )
 
+    reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+    effort = reasoning.get("effort")
+    effort_level = effort.lower() if isinstance(effort, str) else ""
     allow_web = (
         supports("web_search_tool", responses_body.model)
         and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
-        and ((responses_body.reasoning or {}).get("effort", "").lower() != "minimal")
+        and effort_level != "minimal"
     )
     if allow_web:
         web_search_tool: dict[str, Any] = {"type": "web_search"}
@@ -82,6 +85,9 @@ def build_tools(
                     preview,
                     exc,
                 )
+        context_size = getattr(valves, "WEB_SEARCH_CONTEXT_SIZE", None)
+        if isinstance(context_size, str) and context_size:
+            web_search_tool["context"] = {"size": context_size}
         tools.append(web_search_tool)
 
     remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
@@ -290,6 +296,10 @@ def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
             name = tool.get("name")
             if isinstance(name, str):
                 identifier = name
+        elif tool_type == "mcp":
+            label = tool.get("server_label") or tool.get("server_url")
+            if isinstance(label, str):
+                identifier = label
         seen[(tool_type, identifier)] = tool
     return list(seen.values())
 
