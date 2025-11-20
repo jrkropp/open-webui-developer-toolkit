@@ -11,7 +11,11 @@ import logging
 from pydantic import BaseModel
 
 from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-from openai_responses_manifold.adapters.openai.events import StreamEvent, parse_event
+from openai_responses_manifold.adapters.openai.events import (
+    StreamEvent,
+    UnknownStreamEventType,
+    parse_event,
+)
 
 
 class OpenAIResponsesClient:
@@ -94,6 +98,16 @@ class OpenAIResponsesClient:
                     if typed:
                         try:
                             yield parse_event(evt)
+                            continue
+                        except UnknownStreamEventType:
+                            preview, truncated = truncate_for_log(json.dumps(evt, ensure_ascii=False), 400)
+                            self._logger.warning(
+                                "Unknown streaming event type=%s truncated=%s payload=%s; yielding raw event",
+                                evt.get("type"),
+                                truncated,
+                                preview,
+                            )
+                            yield evt
                             continue
                         except Exception as exc:
                             preview, truncated = truncate_for_log(json.dumps(evt, ensure_ascii=False), 400)

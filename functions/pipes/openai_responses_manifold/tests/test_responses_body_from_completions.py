@@ -30,8 +30,8 @@ async def test_responses_body_from_completions_maps_reasoning_and_tokens() -> No
     )
 
     assert responses.max_output_tokens == 128
-    assert responses.reasoning is not None
-    assert responses.reasoning.effort == "minimal"
+    assert isinstance(responses.reasoning, dict)
+    assert responses.reasoning.get("effort") == "minimal"
     assert responses.instructions == "Act helpful"
     assert responses.truncation == "auto"
     assert responses.include_obfuscation is False
@@ -76,7 +76,7 @@ async def test_responses_body_from_completions_converts_messages() -> None:
     assistant_block = responses.input[1]
     assert assistant_block["role"] == "assistant"
     content = assistant_block["content"][0]  # type: ignore[index]
-    assert content["type"] == "output_text"
+    assert content["type"] == "input_text"
     assert content["text"] == "intermediate result"
     assert responses.tools in (None, [])
 

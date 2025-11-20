@@ -28,8 +28,8 @@ class PipeValves(BaseModel):
         description="The base URL to use with the OpenAI SDK. Defaults to the official OpenAI API endpoint. Supports LiteLLM and other custom endpoints.",
     )
     API_KEY: str = Field(
-        default=(os.getenv("OPENAI_API_KEY") or "").strip() or "sk-xxxxx",
-        description="Your OpenAI API key. Defaults to the value of the OPENAI_API_KEY environment variable.",
+        default=(os.getenv("OPENAI_API_KEY") or "").strip(),
+        description="Your OpenAI API key. Defaults to the value of the OPENAI_API_KEY environment variable (blank if unset).",
     )
     MODEL_ID: str = Field(
         default="gpt-5-auto, gpt-5-chat-latest, gpt-5-thinking, gpt-5-thinking-high, gpt-5-thinking-minimal, gpt-4.1-nano, chatgpt-4o-latest, o3, gpt-4o",
@@ -44,7 +44,12 @@ class PipeValves(BaseModel):
     )
     PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"] = Field(
         default="disabled",
-        description="REQUIRES VERIFIED OPENAI ORG. If verified, highly recommend using 'response' or 'conversation' for best results. If `disabled` (default) = never request encrypted reasoning tokens; if `response` = request tokens so the model can carry reasoning across tool calls for the current response; If `conversation` = also persist tokens for future messages in this chat (higher token usage; quality may vary).",
+        description=(
+            "REQUIRES VERIFIED OPENAI ORG. If `disabled` (default) = never request encrypted "
+            "reasoning tokens; if `response` = request encrypted reasoning tokens for this response "
+            "only (not reused across turns); if `conversation` = also persist encrypted reasoning "
+            "items for future turns (reuse not yet wired in)."
+        ),
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=True,

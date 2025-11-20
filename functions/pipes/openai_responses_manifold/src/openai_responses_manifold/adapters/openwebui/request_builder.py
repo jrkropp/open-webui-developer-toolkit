@@ -26,7 +26,9 @@ async def build_responses_body(
 
     payload: dict[str, Any] = {"stream": True, "store": False}
 
-    model_id = owui_request.get("model") or getattr(valves, "MODEL_ID", None)
+    default_model = getattr(valves, "MODEL_ID", "") or ""
+    default_model = default_model.split(",")[0].strip() if default_model else ""
+    model_id = owui_request.get("model") or (default_model or None)
     if not model_id:
         raise ValueError("model is required for ResponsesBody")
     payload["model"] = model_id
@@ -68,6 +70,11 @@ async def build_responses_body(
         reasoning = payload.get("reasoning") or {}
         reasoning["effort"] = effort
         payload["reasoning"] = reasoning
+
+    if "max_tool_calls" in owui_request:
+        payload["max_tool_calls"] = owui_request.get("max_tool_calls")
+    elif getattr(valves, "MAX_TOOL_CALLS", None) is not None:
+        payload["max_tool_calls"] = valves.MAX_TOOL_CALLS
 
     if user_identifier:
         payload["user"] = user_identifier

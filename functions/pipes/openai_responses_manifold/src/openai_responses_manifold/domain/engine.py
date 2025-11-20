@@ -358,9 +358,29 @@ class ResponsesEngine:
                     break
 
                 response_output_items = await session.collect_output_items()
+                executed_before = session.state.tool_calls_executed
                 tool_calls = session.find_tool_calls(response_output_items)
                 if not tool_calls:
                     break
+
+                new_calls = session.state.tool_calls_executed - executed_before
+                if body.max_tool_calls is not None:
+                    remaining = max(body.max_tool_calls - executed_before, 0)
+                    if remaining <= 0:
+                        await session.emit_status(
+                            "Tool call limit reached; ignoring further tool requests.",
+                            require_previous=True,
+                        )
+                        break
+                    if new_calls > remaining:
+                        tool_calls = tool_calls[:remaining]
+                        session.state.tool_calls_executed = executed_before + len(tool_calls)
+                        if not tool_calls:
+                            await session.emit_status(
+                                "Tool call limit reached; ignoring further tool requests.",
+                                require_previous=True,
+                            )
+                            break
 
                 function_outputs = await session.execute_tool_calls(tool_calls)
                 if not function_outputs:

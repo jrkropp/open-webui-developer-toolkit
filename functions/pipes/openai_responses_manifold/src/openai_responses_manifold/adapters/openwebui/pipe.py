@@ -69,7 +69,7 @@ class Pipe:
             self.valves, self.UserValves.model_validate(__user__.get("valves", {}))
         )
         openwebui_model_id = __metadata__.get("model", {}).get("id", "")
-        user_identifier = __user__[valves.PROMPT_CACHE_KEY]
+        user_identifier = __user__.get(valves.PROMPT_CACHE_KEY) or __user__.get("id")
         features = __metadata__.get("features", {}).get("openai_responses", {})
 
         with logging_context(
@@ -102,24 +102,36 @@ class Pipe:
             )
             if tool_specs:
                 responses_body.tools = tool_specs
+            if (
+                isinstance(provided_tools, list)
+                and provided_tools
+                and not isinstance(provided_tools, dict)
+            ):
+                await self.engine.emit_notification(
+                    runtime_events,
+                    content=(
+                        "Tool specs were provided without an OpenWebUI tool registry; "
+                        "tool calls will be skipped locally."
+                    ),
+                    level="warning",
+                )
 
             if __task__:
                 self.logger.info("Detected task model: %s", __task__)
-                return await self.engine.run_task_model(responses_body.model_dump(), valves)
+                task_body = responses_body.model_dump()
+                if isinstance(__task_body__, dict):
+                    task_body = {**task_body, **__task_body__}
+                return await self.engine.run_task_model(task_body, valves)
 
-            responses_body = await self._ensure_native_function_calling_if_needed(
-                responses_body,
-                openwebui_model_id,
-                runtime_events,
-            )
-            responses_body = await self._ensure_routed_auto_model(
-                responses_body,
-                valves,
-                openwebui_model_id,
-                runtime_events,
-            )
-            self._apply_reasoning_options(responses_body, valves)
-            self._apply_parallel_tool_policy(responses_body, valves)
+            try:
+                responses_body = await self._apply_model_policies(
+                    responses_body,
+                    valves,
+                    openwebui_model_id,
+                    runtime_events,
+                )
+            except RuntimeError:
+                return None
 
             result = await self.engine.run_streaming_turn(
                 responses_body,
@@ -187,8 +199,8 @@ class Pipe:
         valves: PipeValves,
         openwebui_model_id: str,
         events: RuntimeEvents,
-    ):
-        await self._ensure_native_function_calling_if_needed(
+    ) -> Any:
+        responses_body = await self._ensure_native_function_calling_if_needed(
             responses_body, openwebui_model_id, events
         )
         responses_body = await self._ensure_routed_auto_model(
@@ -226,7 +238,12 @@ class Pipe:
         form_data = model.model_dump()
         form_data["params"] = params
         Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
-        return responses_body
+        await self.engine.emit_error(
+            events,
+            "Function calling enabled; please re-run your query.",
+            done=True,
+        )
+        raise RuntimeError("Function calling not yet enabled; user must retry")
 
     async def _ensure_routed_auto_model(
         self,
@@ -256,9 +273,10 @@ class Pipe:
 
     def _apply_reasoning_options(self, responses_body: Any, valves: PipeValves) -> None:
         if supports("reasoning_summary", responses_body.model) and valves.REASONING_SUMMARY != "disabled":
-            reasoning_params = dict(responses_body.reasoning or {})
-            reasoning_params["summary"] = valves.REASONING_SUMMARY
-            responses_body.reasoning = reasoning_params
+            existing_reasoning = (
+                responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+            )
+            responses_body.reasoning = {**existing_reasoning, "summary": valves.REASONING_SUMMARY}
 
         if (
             supports("reasoning", responses_body.model)

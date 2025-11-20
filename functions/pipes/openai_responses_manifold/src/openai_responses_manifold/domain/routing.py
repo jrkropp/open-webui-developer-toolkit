@@ -29,10 +29,15 @@ async def route_auto_model(
     The helper request mirrors the structure described in the Developer Guide v2.
     """
 
+    tool_context = _summarize_tools(tools)
+    instructions = _ROUTER_PROMPT
+    if tool_context:
+        instructions = f"{_ROUTER_PROMPT}\n\n# Tool Context\n{tool_context}"
+
     router_body = {
         "model": router_model,
         "reasoning": {"effort": "minimal"},
-        "instructions": _ROUTER_PROMPT,
+        "instructions": instructions,
         "input": responses_body.input,
         "prompt_cache_key": "openai_responses_gpt5-router",
         "text": {
@@ -76,9 +81,8 @@ async def route_auto_model(
         responses_body.model = model_choice
     effort = router_json.get("reasoning_effort")
     if isinstance(effort, str):
-        reasoning = dict(responses_body.reasoning or {})
-        reasoning["effort"] = effort
-        responses_body.reasoning = reasoning
+        current_reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+        responses_body.reasoning = {**current_reasoning, "effort": effort}
 
     responses_body.model_router_result = router_json
     explanation = router_json.get("explanation")
@@ -233,5 +237,23 @@ Respond only with a JSON object containing your model selection and a concise ex
   }
   ```
 """
+
+def _summarize_tools(tools: list[dict[str, Any]]) -> str:
+    if not tools:
+        return "No tools are provided for this request."
+
+    labels: list[str] = []
+    for tool in tools:
+        tool_type = tool.get("type")
+        if tool_type == "function":
+            name = tool.get("name")
+            if isinstance(name, str):
+                labels.append(f"function:{name}")
+        elif isinstance(tool_type, str):
+            labels.append(tool_type)
+
+    deduped = sorted({label for label in labels if label})
+    joined = ", ".join(deduped) if deduped else "unspecified tools"
+    return f"Tools available: {joined}. Prefer a tool-capable model when tools may be used."
 
 __all__ = ["route_auto_model"]

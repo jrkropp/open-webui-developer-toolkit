@@ -10,15 +10,6 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 from openai_responses_manifold.core.model_catalog import MODEL_ALIASES, alias_defaults, base_model
 
 
-class ReasoningParams(BaseModel):
-    """Reasoning configuration accepted by the Responses API."""
-
-    effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
-    summary: str | None = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
 class StreamOptions(BaseModel):
     """Streaming options for responses."""
 
@@ -46,7 +37,7 @@ class ResponseCreateParams(BaseModel):
     prompt: dict[str, Any] | None = None
     prompt_cache_key: str | None = None
     prompt_cache_retention: str | None = None
-    reasoning: ReasoningParams | None = None
+    reasoning: dict[str, Any] | None = None
     safety_identifier: str | None = None
     service_tier: Literal["auto", "default", "flex", "priority"] | None = None
     stream_options: StreamOptions | None = None
@@ -146,7 +137,6 @@ def dump_response_create_params(payload: ResponseCreateParams | Mapping[str, Any
 
 __all__ = [
     "CompletionCreateParams",
-    "ReasoningParams",
     "StreamOptions",
     "ResponseCreateParams",
     "validate_response_create_params",

@@ -76,8 +76,8 @@ class PipeValves(BaseModel):
         description="The base URL to use with the OpenAI SDK. Defaults to the official OpenAI API endpoint. Supports LiteLLM and other custom endpoints.",
     )
     API_KEY: str = Field(
-        default=(os.getenv("OPENAI_API_KEY") or "").strip() or "sk-xxxxx",
-        description="Your OpenAI API key. Defaults to the value of the OPENAI_API_KEY environment variable.",
+        default=(os.getenv("OPENAI_API_KEY") or "").strip(),
+        description="Your OpenAI API key. Defaults to the value of the OPENAI_API_KEY environment variable (blank if unset).",
     )
     MODEL_ID: str = Field(
         default="gpt-5-auto, gpt-5-chat-latest, gpt-5-thinking, gpt-5-thinking-high, gpt-5-thinking-minimal, gpt-4.1-nano, chatgpt-4o-latest, o3, gpt-4o",
@@ -92,7 +92,12 @@ class PipeValves(BaseModel):
     )
     PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"] = Field(
         default="disabled",
-        description="REQUIRES VERIFIED OPENAI ORG. If verified, highly recommend using 'response' or 'conversation' for best results. If `disabled` (default) = never request encrypted reasoning tokens; if `response` = request tokens so the model can carry reasoning across tool calls for the current response; If `conversation` = also persist tokens for future messages in this chat (higher token usage; quality may vary).",
+        description=(
+            "REQUIRES VERIFIED OPENAI ORG. If `disabled` (default) = never request encrypted "
+            "reasoning tokens; if `response` = request encrypted reasoning tokens for this response "
+            "only (not reused across turns); if `conversation` = also persist encrypted reasoning "
+            "items for future turns (reuse not yet wired in)."
+        ),
     )
     PERSIST_TOOL_RESULTS: bool = Field(
         default=True,
@@ -446,7 +451,7 @@ MODEL_FEATURES: dict[str, frozenset[str]] = {
     "o3-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
     "o4-mini-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
     "gpt-5.1-chat-latest": frozenset({"function_calling", "web_search_tool"}),
-    "gpt-5-chat-latest": frozenset({"function_calling", "web_search_tool"}),
+    "gpt-5-chat-latest": EMPTY_FEATURES,
     "chatgpt-4o-latest": EMPTY_FEATURES,
 }
 
@@ -576,13 +581,13 @@ def user_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[st
 
 
 def assistant_text_item(text: str) -> dict[str, Any]:
-    """Generate an assistant output item for plain text segments."""
+    """Generate an assistant message item for plain text segments."""
 
     return {
         "role": "assistant",
         "content": [
             {
-                "type": "output_text",
+                "type": "input_text",
                 "text": text,
             }
         ],
@@ -608,6 +613,7 @@ __all__ = [
 import re
 import secrets
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 ULID_LENGTH = 16
 _CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -625,11 +631,11 @@ def generate_item_id() -> str:
 
 
 def _qs(metadata: dict[str, str]) -> str:
-    return "&".join(f"{key}={value}" for key, value in metadata.items()) if metadata else ""
+    return urlencode(metadata) if metadata else ""
 
 
 def _parse_qs(query: str) -> dict[str, str]:
-    return dict(part.split("=", 1) for part in query.split("&")) if query else {}
+    return dict(parse_qsl(query)) if query else {}
 
 
 def create_marker(
@@ -715,15 +721,6 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 # from openai_responses_manifold.core.model_catalog import MODEL_ALIASES, alias_defaults, base_model
 
 
-class ReasoningParams(BaseModel):
-    """Reasoning configuration accepted by the Responses API."""
-
-    effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
-    summary: str | None = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
 class StreamOptions(BaseModel):
     """Streaming options for responses."""
 
@@ -751,7 +748,7 @@ class ResponseCreateParams(BaseModel):
     prompt: dict[str, Any] | None = None
     prompt_cache_key: str | None = None
     prompt_cache_retention: str | None = None
-    reasoning: ReasoningParams | None = None
+    reasoning: dict[str, Any] | None = None
     safety_identifier: str | None = None
     service_tier: Literal["auto", "default", "flex", "priority"] | None = None
     stream_options: StreamOptions | None = None
@@ -851,7 +848,6 @@ def dump_response_create_params(payload: ResponseCreateParams | Mapping[str, Any
 
 __all__ = [
     "CompletionCreateParams",
-    "ReasoningParams",
     "StreamOptions",
     "ResponseCreateParams",
     "validate_response_create_params",
@@ -1566,7 +1562,11 @@ from pydantic import BaseModel
 
 # [build.py] internal imports removed in monolith:
 # from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-# from openai_responses_manifold.adapters.openai.events import StreamEvent, parse_event
+# from openai_responses_manifold.adapters.openai.events import (
+#     StreamEvent,
+#     UnknownStreamEventType,
+#     parse_event,
+# )
 
 
 class OpenAIResponsesClient:
@@ -1649,6 +1649,16 @@ class OpenAIResponsesClient:
                     if typed:
                         try:
                             yield parse_event(evt)
+                            continue
+                        except UnknownStreamEventType:
+                            preview, truncated = truncate_for_log(json.dumps(evt, ensure_ascii=False), 400)
+                            self._logger.warning(
+                                "Unknown streaming event type=%s truncated=%s payload=%s; yielding raw event",
+                                evt.get("type"),
+                                truncated,
+                                preview,
+                            )
+                            yield evt
                             continue
                         except Exception as exc:
                             preview, truncated = truncate_for_log(json.dumps(evt, ensure_ascii=False), 400)
@@ -1819,6 +1829,7 @@ import json
 from typing import Any, Callable, Protocol
 
 # [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.logging import get_logger
 # from openai_responses_manifold.core.markers import (
 #     contains_marker,
 #     create_marker,
@@ -1835,6 +1846,7 @@ from typing import Any, Callable, Protocol
 # )
 
 Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
+logger = get_logger(__name__)
 
 
 class HistoryStore(Protocol):
@@ -1907,6 +1919,12 @@ class HistoryPersistence:
             return ""
 
         ulids = self.store.save_items(chat_id, message_id, cleaned, model_id)
+        if len(ulids) != len(cleaned):
+            logger.warning(
+                "Item store returned %d ids for %d items; some output markers will be missing.",
+                len(ulids),
+                len(cleaned),
+            )
         hidden_markers: list[str] = []
         for ulid, payload in zip(ulids, cleaned):
             marker = create_marker(payload.get("type", "unknown"), ulid=ulid, model_id=model_id)
@@ -2089,10 +2107,13 @@ def build_tools(
         )
     )
 
+    reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+    effort = reasoning.get("effort")
+    effort_level = effort.lower() if isinstance(effort, str) else ""
     allow_web = (
         supports("web_search_tool", responses_body.model)
         and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
-        and ((responses_body.reasoning or {}).get("effort", "").lower() != "minimal")
+        and effort_level != "minimal"
     )
     if allow_web:
         web_search_tool: dict[str, Any] = {"type": "web_search"}
@@ -2108,6 +2129,9 @@ def build_tools(
                     preview,
                     exc,
                 )
+        context_size = getattr(valves, "WEB_SEARCH_CONTEXT_SIZE", None)
+        if isinstance(context_size, str) and context_size:
+            web_search_tool["context"] = {"size": context_size}
         tools.append(web_search_tool)
 
     remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
@@ -2233,19 +2257,14 @@ def _strictify_schema(schema: Any) -> dict[str, Any]:
                 props = {}
                 node["properties"] = props
 
-            original_required = set(node.get("required") or [])
             node["additionalProperties"] = False
-            node["required"] = list(props.keys())
+            required_keys = node.get("required")
+            if isinstance(required_keys, list):
+                node["required"] = [key for key in required_keys if key in props]
 
             for name, prop in props.items():
                 if not isinstance(prop, dict):
                     continue
-                if name not in original_required:
-                    ptype = prop.get("type")
-                    if isinstance(ptype, str) and ptype != "null":
-                        prop["type"] = [ptype, "null"]
-                    elif isinstance(ptype, list) and "null" not in ptype:
-                        prop["type"] = [*ptype, "null"]
                 _enforce(prop)
 
         items = node.get("items")
@@ -2316,6 +2335,10 @@ def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
             name = tool.get("name")
             if isinstance(name, str):
                 identifier = name
+        elif tool_type == "mcp":
+            label = tool.get("server_label") or tool.get("server_url")
+            if isinstance(label, str):
+                identifier = label
         seen[(tool_type, identifier)] = tool
     return list(seen.values())
 
@@ -2398,10 +2421,15 @@ async def route_auto_model(
     The helper request mirrors the structure described in the Developer Guide v2.
     """
 
+    tool_context = _summarize_tools(tools)
+    instructions = _ROUTER_PROMPT
+    if tool_context:
+        instructions = f"{_ROUTER_PROMPT}\n\n# Tool Context\n{tool_context}"
+
     router_body = {
         "model": router_model,
         "reasoning": {"effort": "minimal"},
-        "instructions": _ROUTER_PROMPT,
+        "instructions": instructions,
         "input": responses_body.input,
         "prompt_cache_key": "openai_responses_gpt5-router",
         "text": {
@@ -2445,9 +2473,8 @@ async def route_auto_model(
         responses_body.model = model_choice
     effort = router_json.get("reasoning_effort")
     if isinstance(effort, str):
-        reasoning = dict(responses_body.reasoning or {})
-        reasoning["effort"] = effort
-        responses_body.reasoning = reasoning
+        current_reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+        responses_body.reasoning = {**current_reasoning, "effort": effort}
 
     responses_body.model_router_result = router_json
     explanation = router_json.get("explanation")
@@ -2602,6 +2629,24 @@ Respond only with a JSON object containing your model selection and a concise ex
   }
   ```
 """
+
+def _summarize_tools(tools: list[dict[str, Any]]) -> str:
+    if not tools:
+        return "No tools are provided for this request."
+
+    labels: list[str] = []
+    for tool in tools:
+        tool_type = tool.get("type")
+        if tool_type == "function":
+            name = tool.get("name")
+            if isinstance(name, str):
+                labels.append(f"function:{name}")
+        elif isinstance(tool_type, str):
+            labels.append(tool_type)
+
+    deduped = sorted({label for label in labels if label})
+    joined = ", ".join(deduped) if deduped else "unspecified tools"
+    return f"Tools available: {joined}. Prefer a tool-capable model when tools may be used."
 
 __all__ = ["route_auto_model"]
 
@@ -2965,9 +3010,29 @@ class ResponsesEngine:
                     break
 
                 response_output_items = await session.collect_output_items()
+                executed_before = session.state.tool_calls_executed
                 tool_calls = session.find_tool_calls(response_output_items)
                 if not tool_calls:
                     break
+
+                new_calls = session.state.tool_calls_executed - executed_before
+                if body.max_tool_calls is not None:
+                    remaining = max(body.max_tool_calls - executed_before, 0)
+                    if remaining <= 0:
+                        await session.emit_status(
+                            "Tool call limit reached; ignoring further tool requests.",
+                            require_previous=True,
+                        )
+                        break
+                    if new_calls > remaining:
+                        tool_calls = tool_calls[:remaining]
+                        session.state.tool_calls_executed = executed_before + len(tool_calls)
+                        if not tool_calls:
+                            await session.emit_status(
+                                "Tool call limit reached; ignoring further tool requests.",
+                                require_previous=True,
+                            )
+                            break
 
                 function_outputs = await session.execute_tool_calls(tool_calls)
                 if not function_outputs:
@@ -3712,7 +3777,9 @@ async def build_responses_body(
 
     payload: dict[str, Any] = {"stream": True, "store": False}
 
-    model_id = owui_request.get("model") or getattr(valves, "MODEL_ID", None)
+    default_model = getattr(valves, "MODEL_ID", "") or ""
+    default_model = default_model.split(",")[0].strip() if default_model else ""
+    model_id = owui_request.get("model") or (default_model or None)
     if not model_id:
         raise ValueError("model is required for ResponsesBody")
     payload["model"] = model_id
@@ -3754,6 +3821,11 @@ async def build_responses_body(
         reasoning = payload.get("reasoning") or {}
         reasoning["effort"] = effort
         payload["reasoning"] = reasoning
+
+    if "max_tool_calls" in owui_request:
+        payload["max_tool_calls"] = owui_request.get("max_tool_calls")
+    elif getattr(valves, "MAX_TOOL_CALLS", None) is not None:
+        payload["max_tool_calls"] = valves.MAX_TOOL_CALLS
 
     if user_identifier:
         payload["user"] = user_identifier
@@ -3890,7 +3962,7 @@ class Pipe:
             self.valves, self.UserValves.model_validate(__user__.get("valves", {}))
         )
         openwebui_model_id = __metadata__.get("model", {}).get("id", "")
-        user_identifier = __user__[valves.PROMPT_CACHE_KEY]
+        user_identifier = __user__.get(valves.PROMPT_CACHE_KEY) or __user__.get("id")
         features = __metadata__.get("features", {}).get("openai_responses", {})
 
         with logging_context(
@@ -3923,24 +3995,36 @@ class Pipe:
             )
             if tool_specs:
                 responses_body.tools = tool_specs
+            if (
+                isinstance(provided_tools, list)
+                and provided_tools
+                and not isinstance(provided_tools, dict)
+            ):
+                await self.engine.emit_notification(
+                    runtime_events,
+                    content=(
+                        "Tool specs were provided without an OpenWebUI tool registry; "
+                        "tool calls will be skipped locally."
+                    ),
+                    level="warning",
+                )
 
             if __task__:
                 self.logger.info("Detected task model: %s", __task__)
-                return await self.engine.run_task_model(responses_body.model_dump(), valves)
+                task_body = responses_body.model_dump()
+                if isinstance(__task_body__, dict):
+                    task_body = {**task_body, **__task_body__}
+                return await self.engine.run_task_model(task_body, valves)
 
-            responses_body = await self._ensure_native_function_calling_if_needed(
-                responses_body,
-                openwebui_model_id,
-                runtime_events,
-            )
-            responses_body = await self._ensure_routed_auto_model(
-                responses_body,
-                valves,
-                openwebui_model_id,
-                runtime_events,
-            )
-            self._apply_reasoning_options(responses_body, valves)
-            self._apply_parallel_tool_policy(responses_body, valves)
+            try:
+                responses_body = await self._apply_model_policies(
+                    responses_body,
+                    valves,
+                    openwebui_model_id,
+                    runtime_events,
+                )
+            except RuntimeError:
+                return None
 
             result = await self.engine.run_streaming_turn(
                 responses_body,
@@ -4008,8 +4092,8 @@ class Pipe:
         valves: PipeValves,
         openwebui_model_id: str,
         events: RuntimeEvents,
-    ):
-        await self._ensure_native_function_calling_if_needed(
+    ) -> Any:
+        responses_body = await self._ensure_native_function_calling_if_needed(
             responses_body, openwebui_model_id, events
         )
         responses_body = await self._ensure_routed_auto_model(
@@ -4047,7 +4131,12 @@ class Pipe:
         form_data = model.model_dump()
         form_data["params"] = params
         Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
-        return responses_body
+        await self.engine.emit_error(
+            events,
+            "Function calling enabled; please re-run your query.",
+            done=True,
+        )
+        raise RuntimeError("Function calling not yet enabled; user must retry")
 
     async def _ensure_routed_auto_model(
         self,
@@ -4077,9 +4166,10 @@ class Pipe:
 
     def _apply_reasoning_options(self, responses_body: Any, valves: PipeValves) -> None:
         if supports("reasoning_summary", responses_body.model) and valves.REASONING_SUMMARY != "disabled":
-            reasoning_params = dict(responses_body.reasoning or {})
-            reasoning_params["summary"] = valves.REASONING_SUMMARY
-            responses_body.reasoning = reasoning_params
+            existing_reasoning = (
+                responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+            )
+            responses_body.reasoning = {**existing_reasoning, "summary": valves.REASONING_SUMMARY}
 
         if (
             supports("reasoning", responses_body.model)

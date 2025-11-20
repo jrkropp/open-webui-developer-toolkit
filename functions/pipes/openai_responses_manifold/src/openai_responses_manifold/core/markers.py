@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import secrets
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 ULID_LENGTH = 16
 _CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -22,11 +23,11 @@ def generate_item_id() -> str:
 
 
 def _qs(metadata: dict[str, str]) -> str:
-    return "&".join(f"{key}={value}" for key, value in metadata.items()) if metadata else ""
+    return urlencode(metadata) if metadata else ""
 
 
 def _parse_qs(query: str) -> dict[str, str]:
-    return dict(part.split("=", 1) for part in query.split("&")) if query else {}
+    return dict(parse_qsl(query)) if query else {}
 
 
 def create_marker(

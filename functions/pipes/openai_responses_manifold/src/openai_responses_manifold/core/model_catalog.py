@@ -27,7 +27,7 @@ MODEL_FEATURES: dict[str, frozenset[str]] = {
     "o3-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
     "o4-mini-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
     "gpt-5.1-chat-latest": frozenset({"function_calling", "web_search_tool"}),
-    "gpt-5-chat-latest": frozenset({"function_calling", "web_search_tool"}),
+    "gpt-5-chat-latest": EMPTY_FEATURES,
     "chatgpt-4o-latest": EMPTY_FEATURES,
 }
 

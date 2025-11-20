@@ -35,13 +35,13 @@ def user_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[st
 
 
 def assistant_text_item(text: str) -> dict[str, Any]:
-    """Generate an assistant output item for plain text segments."""
+    """Generate an assistant message item for plain text segments."""
 
     return {
         "role": "assistant",
         "content": [
             {
-                "type": "output_text",
+                "type": "input_text",
                 "text": text,
             }
         ],

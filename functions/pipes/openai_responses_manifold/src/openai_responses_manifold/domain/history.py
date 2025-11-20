@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Protocol
 
+from openai_responses_manifold.core.logging import get_logger
 from openai_responses_manifold.core.markers import (
     contains_marker,
     create_marker,
@@ -21,6 +22,7 @@ from openai_responses_manifold.core.messages import (
 )
 
 Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
+logger = get_logger(__name__)
 
 
 class HistoryStore(Protocol):
@@ -93,6 +95,12 @@ class HistoryPersistence:
             return ""
 
         ulids = self.store.save_items(chat_id, message_id, cleaned, model_id)
+        if len(ulids) != len(cleaned):
+            logger.warning(
+                "Item store returned %d ids for %d items; some output markers will be missing.",
+                len(ulids),
+                len(cleaned),
+            )
         hidden_markers: list[str] = []
         for ulid, payload in zip(ulids, cleaned):
             marker = create_marker(payload.get("type", "unknown"), ulid=ulid, model_id=model_id)
