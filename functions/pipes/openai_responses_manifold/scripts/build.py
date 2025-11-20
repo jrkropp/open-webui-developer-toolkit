@@ -54,18 +54,20 @@ MODULE_ORDER: list[str] = [
     "core/model_catalog.py",
     "core/messages.py",
     "core/markers.py",
-    "openai_api/requests.py",
-    "openai_api/events.py",
-    "openai_api/client.py",
-    "openwebui/events.py",
-    "openwebui/store.py",
-    "services/history.py",
-    "services/request_builder.py",
-    "services/tools.py",
-    "services/tasks.py",
-    "services/routing.py",
-    "services/engine.py",
-    "interface/openwebui_pipe.py",
+    "adapters/openai/requests.py",
+    "adapters/openai/events.py",
+    "adapters/openai/client.py",
+    "domain/events.py",
+    "domain/history.py",
+    "domain/tools.py",
+    "domain/tasks.py",
+    "domain/routing.py",
+    "domain/engine.py",
+    "adapters/openwebui/events.py",
+    "adapters/openwebui/store.py",
+    "adapters/openwebui/request_builder.py",
+    "adapters/openwebui/runtime_events.py",
+    "adapters/openwebui/pipe.py",
 ]
 
 # Regex for stripping `from __future__ import ...` from individual modules.
@@ -73,7 +75,7 @@ FUTURE_IMPORT_RE = re.compile(r"^from\s+__future__\s+import\s+.*$", re.MULTILINE
 
 # Names considered "internal" to the package; imports from these are stripped.
 INTERNAL_MODULES = set()
-INTERNAL_PREFIXES = ("config", "core", "openai_api", "openwebui", "services", "interface")
+INTERNAL_PREFIXES = ("config", "core", "adapters", "domain")
 PACKAGE_PREFIX = f"{PACKAGE_NAME}."
 
 

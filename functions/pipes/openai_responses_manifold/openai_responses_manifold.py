@@ -21,24 +21,26 @@ Use the version in the alpha-preview or main branches instead.
 # For the development layout and more details, see README.md.
 #
 # Logical module layout (source → sections below):
-# - config/settings.py           Shared pipe settings and defaults.
-# - core/logging.py              Session-aware logging helpers in a single, readable module.
-# - core/errors.py               Typed exceptions referenced throughout the manifold.
-# - core/model_catalog.py        Single source of truth for OpenAI model IDs, aliases, and capabilities.
-# - core/messages.py             Helpers for converting OpenWebUI message blocks to Responses items.
-# - core/markers.py              Helpers for encoding/decoding hidden response markers.
-# - openai_api/requests.py       Request DTOs and helpers for OpenAI Responses and Chat Completions.
-# - openai_api/events.py         Typed schemas for documented OpenAI Responses streaming events.
-# - openai_api/client.py         aiohttp-backed client for the OpenAI Responses API.
-# - openwebui/events.py          Minimal Open WebUI event helpers matching the documented event catalog.
-# - openwebui/store.py           Persistence helpers for storing Responses items in OpenWebUI.
-# - services/history.py          Persistence and reconstruction services for Responses items.
-# - services/request_builder.py  Build ResponsesBody requests from OpenWebUI-style inputs.
-# - services/tools.py            Tool declaration and execution helpers.
-# - services/tasks.py            Helpers for running non-streamed task models.
-# - services/routing.py          Helper model routing for auto variants.
-# - services/engine.py           Streaming orchestration and tool loop for the Responses manifold.
-# - interface/openwebui_pipe.py  Open WebUI pipe implementation that delegates to the Responses engine.
+# - config/settings.py                     Shared pipe settings and defaults.
+# - core/logging.py                        Session-aware logging helpers in a single, readable module.
+# - core/errors.py                         Typed exceptions referenced throughout the manifold.
+# - core/model_catalog.py                  Single source of truth for OpenAI model IDs, aliases, and capabilities.
+# - core/messages.py                       Helpers for converting OpenWebUI message blocks to Responses items.
+# - core/markers.py                        Helpers for encoding/decoding hidden response markers.
+# - adapters/openai/requests.py            Request DTOs and helpers for OpenAI Responses and Chat Completions.
+# - adapters/openai/events.py              Typed schemas for documented OpenAI Responses streaming events.
+# - adapters/openai/client.py              aiohttp-backed client for the OpenAI Responses API.
+# - domain/events.py                       UI-agnostic interface for runtime events consumed by the engine.
+# - domain/history.py                      Persistence and reconstruction services for Responses items.
+# - domain/tools.py                        Tool declaration and execution helpers.
+# - domain/tasks.py                        Helpers for running non-streamed task models.
+# - domain/routing.py                      Helper model routing for auto variants.
+# - domain/engine.py                       Streaming orchestration and tool loop for the Responses manifold.
+# - adapters/openwebui/events.py           Minimal Open WebUI event helpers matching the documented event catalog.
+# - adapters/openwebui/store.py            Persistence helpers for storing Responses items in OpenWebUI.
+# - adapters/openwebui/request_builder.py  Build ResponseCreateParams from OpenWebUI-style inputs.
+# - adapters/openwebui/runtime_events.py   Adapter that maps the domain RuntimeEvents protocol to Open WebUI's emitter.
+# - adapters/openwebui/pipe.py             Open WebUI pipe implementation that delegates to the Responses engine.
 
 # fmt: off
 # Open WebUI runs Black on upload; disabling fmt keeps this bundle readable in that UI.
@@ -701,7 +703,7 @@ def split_text_by_markers(text: str) -> list[dict[str, str]]:
         segments.append({"type": "text", "text": text[last:]})
     return segments
 
-# === openai_api/requests.py ===
+# === adapters/openai/requests.py ===
 """Request DTOs and helpers for OpenAI Responses and Chat Completions."""
 
 import json
@@ -856,7 +858,7 @@ __all__ = [
     "dump_response_create_params",
 ]
 
-# === openai_api/events.py ===
+# === adapters/openai/events.py ===
 """Typed schemas for documented OpenAI Responses streaming events."""
 
 from enum import Enum
@@ -1551,7 +1553,7 @@ __all__ = [
     "parse_event",
 ]
 
-# === openai_api/client.py ===
+# === adapters/openai/client.py ===
 """aiohttp-backed client for the OpenAI Responses API."""
 
 import json
@@ -1564,7 +1566,7 @@ from pydantic import BaseModel
 
 # [build.py] internal imports removed in monolith:
 # from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-# from openai_responses_manifold.openai_api.events import StreamEvent, parse_event
+# from openai_responses_manifold.adapters.openai.events import StreamEvent, parse_event
 
 
 class OpenAIResponsesClient:
@@ -1756,7 +1758,1492 @@ class OpenAIResponsesClient:
 
 __all__ = ["OpenAIResponsesClient"]
 
-# === openwebui/events.py ===
+# === domain/events.py ===
+"""UI-agnostic interface for runtime events consumed by the engine."""
+
+from typing import Any, Literal, Protocol
+
+
+class RuntimeEvents(Protocol):
+    async def status(self, description: str, *, done: bool = False, hidden: bool = False) -> None: ...
+
+    async def delta(self, content: str) -> None: ...
+
+    async def replace(self, content: str) -> None: ...
+
+    async def citation(self, data: dict[str, Any]) -> None: ...
+
+    async def chat_completion(self, data: dict[str, Any]) -> None: ...
+
+    async def notification(
+        self,
+        content: str,
+        *,
+        level: Literal["info", "success", "error", "warning"] = "info",
+    ) -> None: ...
+
+
+class NullRuntimeEvents:
+    """No-op implementation useful for tests or non-UI contexts."""
+
+    async def status(self, description: str, *, done: bool = False, hidden: bool = False) -> None:
+        return None
+
+    async def delta(self, content: str) -> None:
+        return None
+
+    async def replace(self, content: str) -> None:
+        return None
+
+    async def citation(self, data: dict[str, Any]) -> None:
+        return None
+
+    async def chat_completion(self, data: dict[str, Any]) -> None:
+        return None
+
+    async def notification(
+        self,
+        content: str,
+        *,
+        level: Literal["info", "success", "error", "warning"] = "info",
+    ) -> None:
+        return None
+
+
+__all__ = ["RuntimeEvents", "NullRuntimeEvents"]
+
+# === domain/history.py ===
+"""Persistence and reconstruction services for Responses items."""
+
+import json
+from typing import Any, Callable, Protocol
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.markers import (
+#     contains_marker,
+#     create_marker,
+#     extract_markers,
+#     parse_marker,
+#     split_text_by_markers,
+#     wrap_marker,
+# )
+# from openai_responses_manifold.core.messages import (
+#     assistant_text_item,
+#     developer_message,
+#     normalize_user_blocks,
+#     user_blocks_to_responses_items,
+# )
+
+Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
+
+
+class HistoryStore(Protocol):
+    def save_items(
+        self,
+        chat_id: str,
+        message_id: str,
+        items: list[dict[str, Any]],
+        model_id: str,
+    ) -> list[str]: ...
+
+    def load_items(
+        self,
+        chat_id: str,
+        item_ids: list[str],
+        *,
+        model_id: str | None = None,
+    ) -> dict[str, dict[str, Any]]: ...
+
+
+class NullHistoryStore:
+    """Null object used when no backing store is provided."""
+
+    def save_items(
+        self,
+        chat_id: str,
+        message_id: str,
+        items: list[dict[str, Any]],
+        model_id: str,
+    ) -> list[str]:
+        return []
+
+    def load_items(
+        self,
+        chat_id: str,
+        item_ids: list[str],
+        *,
+        model_id: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        return {}
+
+
+class HistoryPersistence:
+    """Persist structured output items and emit hidden markers."""
+
+    def __init__(self, store: HistoryStore | None = None) -> None:
+        self.store = store or NullHistoryStore()
+
+    def persist_items_for_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        items: list[dict[str, Any]],
+        *,
+        model_id: str,
+    ) -> str:
+        if not items:
+            return ""
+
+        cleaned: list[dict[str, Any]] = []
+        for payload in items:
+            if not isinstance(payload, dict):
+                continue
+            clone = json.loads(json.dumps(payload))
+            # Drop server-side IDs so we never depend on OpenAI-side persistence when store=False.
+            clone.pop("id", None)
+            cleaned.append(clone)
+
+        if not cleaned:
+            return ""
+
+        ulids = self.store.save_items(chat_id, message_id, cleaned, model_id)
+        hidden_markers: list[str] = []
+        for ulid, payload in zip(ulids, cleaned):
+            marker = create_marker(payload.get("type", "unknown"), ulid=ulid, model_id=model_id)
+            hidden_markers.append(wrap_marker(marker))
+        return "".join(hidden_markers)
+
+
+class HistoryBuilder:
+    """Rebuild Responses input items from OpenWebUI messages."""
+
+    def __init__(self, resolve_items: Resolver | None = None) -> None:
+        self._resolve_items = resolve_items
+
+    def build_input_from_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        chat_id: str | None = None,
+        openwebui_model_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        required_item_ids: list[str] = []
+        for message in messages:
+            content = message.get("content")
+            if message.get("role") == "assistant" and isinstance(content, str) and contains_marker(content):
+                for marker in extract_markers(content, parsed=True):
+                    required_item_ids.append(marker["ulid"])
+
+        resolved: dict[str, dict[str, Any]] = {}
+        if required_item_ids and self._resolve_items:
+            resolved = self._resolve_items(required_item_ids, chat_id, openwebui_model_id)
+
+        openai_input: list[dict[str, Any]] = []
+        for message in messages:
+            role = message.get("role")
+            content = message.get("content")
+
+            if role == "system":
+                continue
+            if role == "user":
+                blocks = user_blocks_to_responses_items(normalize_user_blocks(content))
+                if blocks:
+                    openai_input.append({"role": "user", "content": blocks})
+                continue
+            if role == "developer":
+                if isinstance(content, str) and content:
+                    openai_input.append(developer_message(content))
+                continue
+            if role == "assistant" and isinstance(content, str):
+                if not contains_marker(content):
+                    if content.strip():
+                        openai_input.append(assistant_text_item(content.strip()))
+                    continue
+                for segment in split_text_by_markers(content):
+                    if segment["type"] == "marker":
+                        marker = parse_marker(segment["marker"])
+                        payload = resolved.get(marker["ulid"])
+                        if payload:
+                            openai_input.append(payload)
+                    elif segment["type"] == "text":
+                        text_segment = segment.get("text", "").strip()
+                        if text_segment:
+                            openai_input.append(assistant_text_item(text_segment))
+
+        return openai_input
+
+
+class HistoryService:
+    """Facade for reconstructing Responses input items and instructions from stored chat history."""
+
+    def __init__(self, store: HistoryStore | None = None) -> None:
+        self.store = store or NullHistoryStore()
+
+    def build_input_and_instructions(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        metadata: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        resolver = self._resolver(metadata)
+        builder = HistoryBuilder(resolve_items=resolver)
+        input_items = builder.build_input_from_messages(
+            messages,
+            chat_id=metadata.get("chat_id"),
+            openwebui_model_id=metadata.get("model", {}).get("id"),
+        )
+        instructions = self._extract_system_instructions(messages)
+        return input_items, instructions
+
+    def _resolver(self, metadata: dict[str, Any]) -> Resolver:
+        chat_id = metadata.get("chat_id")
+        openwebui_model_id = metadata.get("model", {}).get("id")
+
+        def _resolve(
+            item_ids: list[str],
+            resolver_chat: str | None,
+            model_id: str | None,
+        ) -> dict[str, dict[str, Any]]:
+            target_chat = resolver_chat or chat_id or ""
+            target_model = model_id or openwebui_model_id
+            return self.store.load_items(target_chat, item_ids, model_id=target_model)
+
+        return _resolve
+
+    @staticmethod
+    def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
+        """Return the most recent system message content, if present."""
+
+        for message in reversed(messages):
+            if message.get("role") == "system":
+                content = message.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+        return None
+
+
+__all__ = ["HistoryBuilder", "HistoryPersistence", "HistoryService", "HistoryStore", "NullHistoryStore"]
+
+# === domain/tools.py ===
+"""Tool declaration and execution helpers."""
+
+import asyncio
+import inspect
+import json
+import logging
+from typing import Any
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.logging import get_logger, truncate_for_log
+# from openai_responses_manifold.core.errors import ToolExecutionError
+# from openai_responses_manifold.core.model_catalog import supports
+# from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+
+logger = get_logger(__name__)
+
+
+async def resolve_tools(
+    responses_body: ResponseCreateParams,
+    valves: Any,
+    provided_tools: list[dict[str, Any]] | dict[str, Any] | asyncio.Future | None,
+    *,
+    features: dict[str, Any] | None = None,
+    extra_tools: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """
+    Normalize OpenWebUI tool inputs and build the Responses tool spec list.
+
+    Returns (tools, tool_registry) where tool_registry is an executable mapping for ResultsEngine.
+    """
+
+    resolved = await provided_tools if inspect.isawaitable(provided_tools) else provided_tools
+    tool_registry: dict[str, dict[str, Any]] | None = resolved if isinstance(resolved, dict) else None
+    tools = build_tools(
+        responses_body,
+        valves,
+        openwebui_tools=tool_registry,
+        features=features,
+        extra_tools=extra_tools,
+    )
+    return tools, tool_registry or {}
+
+
+def build_tools(
+    responses_body: ResponseCreateParams,
+    valves: Any,
+    openwebui_tools: dict[str, Any] | None = None,
+    *,
+    features: dict[str, Any] | None = None,
+    extra_tools: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build the OpenAI Responses-API tool spec list for this request."""
+
+    features = features or {}
+    if not supports("function_calling", responses_body.model):
+        return []
+
+    tools: list[dict[str, Any]] = []
+    tools.extend(
+        _transform_owui_tools(
+            openwebui_tools, strict=getattr(valves, "ENABLE_STRICT_TOOL_CALLING", False)
+        )
+    )
+
+    allow_web = (
+        supports("web_search_tool", responses_body.model)
+        and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
+        and ((responses_body.reasoning or {}).get("effort", "").lower() != "minimal")
+    )
+    if allow_web:
+        web_search_tool: dict[str, Any] = {"type": "web_search"}
+        user_location = getattr(valves, "WEB_SEARCH_USER_LOCATION", None)
+        if user_location:
+            try:
+                web_search_tool["user_location"] = json.loads(user_location)
+            except Exception as exc:
+                preview, truncated = truncate_for_log(user_location, limit=300)
+                logger.warning(
+                    "WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring. truncated=%s value=%s error=%s",
+                    truncated,
+                    preview,
+                    exc,
+                )
+        tools.append(web_search_tool)
+
+    remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
+    if remote_mcp:
+        tools.extend(_build_mcp_tools(remote_mcp))
+
+    if isinstance(extra_tools, list) and extra_tools:
+        tools.extend(extra_tools)
+
+    return _dedupe_tools(tools)
+
+
+async def execute_tool_calls(
+    calls: list[dict[str, Any]],
+    registry: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Execute tool calls and return Responses-ready outputs."""
+
+    if logger.isEnabledFor(logging.INFO):
+        logger.info("tool.calls_started count=%d", len(calls))
+
+    async def _invoke(call: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        name = call.get("name")
+        arguments_json = call.get("arguments", "{}")
+        try:
+            args = json.loads(arguments_json)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ToolExecutionError(f"Invalid JSON arguments for tool {name}: {exc}") from exc
+
+        if logger.isEnabledFor(logging.DEBUG):
+            args_preview, args_truncated = truncate_for_log(
+                json.dumps(args, ensure_ascii=False), limit=400
+            )
+            logger.debug(
+                "tool.call name=%s args_truncated=%s args=%s",
+                name,
+                args_truncated,
+                args_preview,
+            )
+
+        tool_cfg = registry.get(name)
+        if not tool_cfg:
+            return call, f"Tool '{name}' not found"
+
+        fn = tool_cfg.get("callable")
+        if not callable(fn):
+            return call, f"Tool '{name}' is not callable"
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("tool.call name=%s status=started", name)
+
+        try:
+            if inspect.iscoroutinefunction(fn):
+                result = await fn(**args)
+            else:
+                result = await asyncio.to_thread(fn, **args)
+        except Exception as exc:
+            logger.warning("Tool %s raised an exception: %s", name, exc)
+            return call, f"{type(exc).__name__}: {exc}"
+
+        output_str = str(result)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("tool.call name=%s status=completed output_len=%d", name, len(output_str))
+        return call, output_str
+
+    results = await asyncio.gather(*(_invoke(call) for call in calls))
+    outputs: list[dict[str, Any]] = []
+    for call, output in results:
+        outputs.append(
+            {
+                "type": "function_call_output",
+                "call_id": call.get("call_id"),
+                "output": output,
+            }
+        )
+    return outputs
+
+
+def _transform_owui_tools(
+    openwebui_tools: dict[str, dict[str, Any]] | None,
+    *,
+    strict: bool = False,
+) -> list[dict[str, Any]]:
+    if not openwebui_tools:
+        return []
+
+    tools: list[dict[str, Any]] = []
+    for item in openwebui_tools.values():
+        spec = item.get("spec") or {}
+        name = spec.get("name")
+        if not name:
+            continue
+
+        params = spec.get("parameters") or {"type": "object", "properties": {}}
+        tool = {
+            "type": "function",
+            "name": name,
+            "description": spec.get("description") or name,
+            "parameters": _strictify_schema(params) if strict else params,
+        }
+        if strict:
+            tool["strict"] = True
+        tools.append(tool)
+    return tools
+
+
+def _strictify_schema(schema: Any) -> dict[str, Any]:
+    if not isinstance(schema, dict):
+        return {}
+
+    data = json.loads(json.dumps(schema))
+
+    def _enforce(node: dict[str, Any]) -> None:
+        node_type = node.get("type")
+        is_object = (
+            node_type == "object"
+            or (isinstance(node_type, list) and "object" in node_type)
+            or "properties" in node
+        )
+        if is_object:
+            props = node.setdefault("properties", {})
+            if not isinstance(props, dict):
+                props = {}
+                node["properties"] = props
+
+            original_required = set(node.get("required") or [])
+            node["additionalProperties"] = False
+            node["required"] = list(props.keys())
+
+            for name, prop in props.items():
+                if not isinstance(prop, dict):
+                    continue
+                if name not in original_required:
+                    ptype = prop.get("type")
+                    if isinstance(ptype, str) and ptype != "null":
+                        prop["type"] = [ptype, "null"]
+                    elif isinstance(ptype, list) and "null" not in ptype:
+                        prop["type"] = [*ptype, "null"]
+                _enforce(prop)
+
+        items = node.get("items")
+        if isinstance(items, dict):
+            _enforce(items)
+        elif isinstance(items, list):
+            for entry in items:
+                if isinstance(entry, dict):
+                    _enforce(entry)
+
+        for key in ("anyOf", "oneOf"):
+            branches = node.get(key)
+            if isinstance(branches, list):
+                for branch in branches:
+                    if isinstance(branch, dict):
+                        _enforce(branch)
+
+    _enforce(data)
+    return data
+
+
+def _build_mcp_tools(mcp_json: str) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(mcp_json)
+    except Exception as exc:  # pragma: no cover - valved bug
+        preview, truncated = truncate_for_log(mcp_json, limit=300)
+        logger.warning(
+            "REMOTE_MCP_SERVERS_JSON is not valid JSON. truncated=%s value=%s error=%s",
+            truncated,
+            preview,
+            exc,
+        )
+        return []
+
+    entries = parsed if isinstance(parsed, list) else [parsed]
+    tools: list[dict[str, Any]] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        tool = {
+            "type": "mcp",
+            "server_label": item.get("server_label"),
+            "server_url": item.get("server_url"),
+        }
+        for key in (
+            "model_preference",
+            "client_capabilities",
+            "require_approval",
+            "allowed_tools",
+        ):
+            if key in item:
+                tool[key] = item[key]
+        tools.append(tool)
+    return tools
+
+
+def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    if not tools:
+        return []
+
+    seen: dict[tuple[str, str | None], dict[str, Any]] = {}
+    for tool in tools:
+        tool_type = tool.get("type")
+        if not isinstance(tool_type, str):
+            continue
+        identifier: str | None = None
+        if tool_type == "function":
+            name = tool.get("name")
+            if isinstance(name, str):
+                identifier = name
+        seen[(tool_type, identifier)] = tool
+    return list(seen.values())
+
+
+__all__ = [
+    "build_tools",
+    "execute_tool_calls",
+    "resolve_tools",
+]
+
+# === domain/tasks.py ===
+"""Helpers for running non-streamed task models."""
+
+from typing import Any
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+
+
+async def run_task_model(
+    client: OpenAIResponsesClient,
+    body: dict[str, Any],
+    valves: Any,
+) -> str:
+    """
+    Execute a task-style request (non-streamed) and return concatenated assistant text.
+
+    This mirrors client.responses.create for simple “task” invocations where we
+    want the final text output without streaming.
+    """
+
+    task_body = {
+        "model": body.get("model"),
+        "instructions": body.get("instructions", ""),
+        "input": body.get("input", ""),
+        "stream": False,
+        "store": False,
+    }
+    response = await client.create(task_body, api_key=valves.API_KEY, base_url=valves.BASE_URL)
+    text_parts: list[str] = []
+    for item in response.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if content.get("type") == "output_text":
+                text_parts.append(content.get("text", ""))
+    return "".join(text_parts)
+
+
+__all__ = ["run_task_model"]
+
+# === domain/routing.py ===
+"""Helper model routing for auto variants."""
+
+import json
+import logging
+from typing import Any
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+# from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+# from openai_responses_manifold.core.logging import get_logger, truncate_for_log
+# from openai_responses_manifold.domain.events import RuntimeEvents
+
+logger = get_logger(__name__)
+
+
+async def route_auto_model(
+    client: OpenAIResponsesClient,
+    *,
+    router_model: str,
+    responses_body: ResponseCreateParams,
+    valves: Any,
+    tools: list[dict[str, Any]],
+    events: RuntimeEvents | None = None,
+) -> ResponseCreateParams:
+    """
+    Use a small helper model to choose the final GPT-5 variant and reasoning effort.
+
+    The helper request mirrors the structure described in the Developer Guide v2.
+    """
+
+    router_body = {
+        "model": router_model,
+        "reasoning": {"effort": "minimal"},
+        "instructions": _ROUTER_PROMPT,
+        "input": responses_body.input,
+        "prompt_cache_key": "openai_responses_gpt5-router",
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "gpt5_router",
+                "strict": True,
+                "schema": _ROUTER_SCHEMA,
+                "verbosity": "medium",
+            },
+        },
+    }
+
+    try:
+        response = await client.create(
+            router_body,
+            api_key=valves.API_KEY,
+            base_url=valves.BASE_URL,
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Model router request failed: %s", exc)
+        return responses_body
+
+    text = _extract_router_text(response)
+    if not text:
+        return responses_body
+
+    try:
+        router_json: dict[str, Any] = json.loads(text)
+    except Exception:
+        start, end = text.find("{"), text.rfind("}")
+        router_json = (
+            json.loads(text[start : end + 1]) if start != -1 and end != -1 and end > start else {}
+        )
+
+    if not router_json:
+        return responses_body
+
+    model_choice = router_json.get("model")
+    if isinstance(model_choice, str):
+        responses_body.model = model_choice
+    effort = router_json.get("reasoning_effort")
+    if isinstance(effort, str):
+        reasoning = dict(responses_body.reasoning or {})
+        reasoning["effort"] = effort
+        responses_body.reasoning = reasoning
+
+    responses_body.model_router_result = router_json
+    explanation = router_json.get("explanation")
+    if isinstance(explanation, str) and events:
+        await events.status(
+            f"Routing to {router_json.get('model')} (effort: {router_json.get('reasoning_effort')})\nExplanation: {explanation}"
+        )
+    return responses_body
+
+
+def _extract_router_text(response: dict[str, Any]) -> str:
+    try:
+        return next(
+            (
+                block["text"]
+                for output in reversed(response["output"])
+                if output["type"] == "message"
+                for block in output["content"]
+                if block["type"] == "output_text"
+            ),
+            "",
+        )
+    except Exception as exc:  # pragma: no cover
+        payload_preview, truncated = truncate_for_log(
+            json.dumps(response, ensure_ascii=False), limit=800
+        )
+        logger.warning(
+            "Router response missing expected fields: %s payload_keys=%s truncated=%s payload=%s",
+            exc,
+            list(response.keys()),
+            truncated,
+            payload_preview,
+        )
+        return ""
+
+
+_ROUTER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "model": {
+            "type": "string",
+            "enum": ["gpt-5-chat-latest", "gpt-5", "gpt-5-mini"],
+        },
+        "reasoning_effort": {
+            "type": "string",
+            "enum": ["minimal", "low", "medium", "high"],
+        },
+        "explanation": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 500,
+        },
+    },
+    "required": ["model", "explanation", "reasoning_effort"],
+    "additionalProperties": False,
+}
+
+_ROUTER_PROMPT = """# Role and Objective
+Serve as a **routing helper** for selecting the most appropriate GPT-5 model for user messages, evaluating tool necessity and task complexity.
+
+---
+
+# Instructions
+- If a message may require the use of **any available tool**, select a model with **function calling** capabilities. If **web search** is required, you may only choose **low, medium or high** reasoning, not minimal.
+- When tools are not necessary, favor the **fastest** or **most capable** model according to the complexity of the request.
+
+---
+
+# Available Models and Capabilities
+## Models
+
+- **gpt-5-chat-latest**
+  - Fast, general-purpose, and creative.
+  - Best for writing, drafting, and chat-based interactions.
+  - ⚠️ Does **not** support tool calling—select only when tools are not required.
+
+- **gpt-5-mini**
+  - Lightweight, supports tool usage, and is rapidly responsive.
+  - Suited for **simple tasks that may use tools** but don't demand extensive reasoning.
+  - ✅ Function calling supported—offers a strong balance between speed and utility.
+
+- **gpt-5**
+  - Strong at reasoning and complex, multi-step analysis.
+  - Designed for **complex or deeply analytical tasks**.
+  - ✅ Supports function calling and advanced operations—choose for tool-reliant or high-complexity reasoning needs.
+
+---
+
+# Routing Checklist
+- Assess whether tool integration could improve the response.
+- Evaluate how much reasoning or problem-solving is required.
+- Match model to requirements:
+  - No tool usage required → use `gpt-5-chat-latest`
+  - Tools required, simple task → use `gpt-5-mini`
+  - Tools required, complex task → use `gpt-5`
+- When in doubt, prioritize a tool-capable model (prefer `gpt-5`).
+- Ask for more information if requirements are ambiguous.
+
+---
+
+# Output Format
+Respond only with a JSON object containing your model selection and a concise explanation. If the requirements are unclear, include an appropriate error message in the JSON response.
+
+---
+
+# Examples
+- **What's the weather in Vancouver right now?**
+  ```json
+  {
+    "model": "gpt-5-mini",
+    "explanation": "Quick tool lookup; simple enough for a fast model."
+  }
+  ```
+
+- **Compare the newest M3 laptops and cite sources.**
+  ```json
+  {
+    "model": "gpt-5",
+    "explanation": "Research and synthesis with tools requires reasoning depth."
+  }
+  ```
+
+- **Summarize this email draft and make it more formal.**
+  ```json
+  {
+    "model": "gpt-5-chat-latest",
+    "explanation": "Polishing text only; no tools needed."
+  }
+  ```
+
+- **Summarize this uploaded PDF into bullet points.**
+  ```json
+  {
+    "model": "gpt-5",
+    "explanation": "Document parsing may require tools; complex enough for gpt-5."
+  }
+  ```
+
+- **Translate this paragraph into Spanish.**
+  ```json
+  {
+    "model": "gpt-5-chat-latest",
+    "explanation": "Simple translation; tools not required."
+  }
+  ```
+
+- **List my upcoming meetings tomorrow.**
+  ```json
+  {
+    "model": "gpt-5-mini",
+    "explanation": "Calendar tool lookup is simple; mini is efficient."
+  }
+  ```
+"""
+
+__all__ = ["route_auto_model"]
+
+# === domain/engine.py ===
+"""Streaming orchestration and tool loop for the Responses manifold.
+
+The flow is deliberately linear and explicit:
+1) Stream a response from OpenAI Responses API.
+2) Emit deltas, statuses, and persist structured items as they arrive.
+3) If the model requested tool calls, run local tools, append outputs, and loop.
+"""
+
+import asyncio
+import json
+import logging
+import random
+from dataclasses import dataclass, field
+from time import perf_counter
+from typing import Any, Awaitable, Callable, Literal
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+# from openai_responses_manifold.adapters.openai.events import (
+#     ErrorEvent,
+#     ResponseCompletedEvent,
+#     ResponseCreatedEvent,
+#     ResponseFailedEvent,
+#     ResponseIncompleteEvent,
+#     ResponseInProgressEvent,
+#     ResponseOutputItemAddedEvent,
+#     ResponseOutputItemDoneEvent,
+#     ResponseOutputTextDeltaEvent,
+#     ResponseOutputTextDoneEvent,
+#     ResponseQueuedEvent,
+#     ResponseReasoningSummaryTextDoneEvent,
+# )
+# from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+# from openai_responses_manifold.core.errors import ToolExecutionError
+# from openai_responses_manifold.core.logging import (
+#     OWUI_SESSION_ID,
+#     clear_session_logs,
+#     get_logger,
+#     get_session_logs,
+#     truncate_for_log,
+# )
+# from openai_responses_manifold.core.model_catalog import supports
+# from openai_responses_manifold.domain.events import NullRuntimeEvents, RuntimeEvents
+# from openai_responses_manifold.domain.history import HistoryPersistence, HistoryStore
+# from openai_responses_manifold.domain.tasks import run_task_model
+# from openai_responses_manifold.domain.tools import execute_tool_calls
+
+
+@dataclass
+class _StreamState:
+    """Streaming scratch space for a single turn."""
+
+    response_text: str = ""
+    usage_summary: dict[str, Any] | None = None
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls_executed: int = 0
+    completed_response: dict[str, Any] | None = None
+    error_message: str | None = None
+    has_error: bool = False
+    last_tool_result: str | None = None
+    has_sent_status: bool = False
+    thinking_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
+
+    def reset_for_next_response(self) -> None:
+        self.completed_response = None
+        self.usage_summary = None
+        self.has_sent_status = False
+
+
+@dataclass
+class TurnResult:
+    """Result of a streaming turn, reusable outside Open WebUI."""
+
+    text: str
+    usage: dict[str, Any] | None
+    citations: list[dict[str, Any]]
+    error_message: str | None = None
+
+
+class _StreamSession:
+    """Consumes stream events while coordinating a single turn."""
+
+    def __init__(
+        self,
+        engine: ResponsesEngine,
+        body: ResponseCreateParams,
+        valves: Any,
+        metadata: dict[str, Any],
+        events: RuntimeEvents,
+        *,
+        openwebui_tools: dict[str, dict[str, Any]] | None,
+    ) -> None:
+        self.engine = engine
+        self.body = body
+        self.valves = valves
+        self.metadata = metadata
+        self.events = events or NullRuntimeEvents()
+        self.openwebui_tools = openwebui_tools
+        self.state = _StreamState()
+        self.debug_enabled = engine.logger.isEnabledFor(logging.DEBUG)
+        self.state.thinking_tasks = self.engine._schedule_reasoning_statuses(body, self.emit_status)
+
+    async def emit_status(
+        self,
+        description: str,
+        *,
+        done: bool = False,
+        hidden: bool = False,
+        require_previous: bool = False,
+    ) -> None:
+        if require_previous and not self.state.has_sent_status:
+            return
+        self.state.has_sent_status = True
+        await self.events.status(description, done=done, hidden=hidden)
+
+    async def handle_event(self, event: Any) -> bool:
+        """Process a single stream event. Returns True when the stream should stop."""
+
+        if isinstance(event, ResponseOutputTextDeltaEvent):
+            await self._handle_text_delta(event)
+            return False
+
+        if isinstance(event, ResponseOutputItemAddedEvent):
+            await self._handle_item_added(event)
+            return False
+
+        if isinstance(event, ResponseOutputItemDoneEvent):
+            await self._handle_item_done(event)
+            return False
+
+        if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
+            await self._handle_reasoning_summary(event)
+            return False
+
+        if isinstance(event, ResponseOutputTextDoneEvent):
+            await self._handle_text_done(event)
+            return False
+
+        if isinstance(event, ResponseCompletedEvent):
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            self.state.completed_response = event.response
+            self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
+            if self.debug_enabled:
+                usage_keys = sorted((self.state.usage_summary or {}).keys())
+                self.engine.logger.debug("event=response.completed usage_keys=%s", usage_keys)
+            return True
+
+        if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            self.state.has_error = True
+            if isinstance(event, ErrorEvent):
+                self.state.error_message = event.message
+            else:
+                response_payload = event.response
+                self.state.error_message = (response_payload.get("error") or {}).get(
+                    "message", "OpenAI returned an error."
+                )
+            self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
+            await self.engine._handle_stream_error(self.events, self.state.error_message or "")
+            return True
+
+        if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
+            if self.debug_enabled:
+                self.engine.logger.debug(
+                    "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
+                )
+            return False
+
+        return False
+
+    async def collect_output_items(self) -> list[dict[str, Any]]:
+        if not self.state.completed_response:
+            return []
+
+        output_items = self.engine._sanitize_output_items(
+            (self.state.completed_response or {}).get("output") or [], store=self.body.store
+        )
+
+        if output_items:
+            if isinstance(self.body.input, list):
+                self.body.input.extend(output_items)
+            else:
+                self.body.input = output_items
+
+        return output_items
+
+    def find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        call_items = output_items or (self.state.completed_response or {}).get("output", [])
+        tool_calls = [item for item in call_items if item.get("type") == "function_call"]
+        if tool_calls:
+            self.state.tool_calls_executed += len(tool_calls)
+        return tool_calls
+
+    async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not tool_calls:
+            return []
+
+        if not self.openwebui_tools:
+            self.engine.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
+            await self.emit_status("Tool execution skipped: no tool registry available.")
+            return []
+
+        try:
+            function_outputs = await execute_tool_calls(tool_calls, self.openwebui_tools)
+        except ToolExecutionError as exc:
+            self.engine.logger.warning("Skipping malformed tool arguments: %s", exc)
+            await self.emit_status("Skipping malformed tool arguments.")
+            return []
+
+        return function_outputs
+
+    async def append_tool_outputs(self, function_outputs: list[dict[str, Any]]) -> bool:
+        if not function_outputs:
+            return False
+
+        self.state.last_tool_result = str(function_outputs[-1].get("output", ""))
+        if getattr(self.valves, "PERSIST_TOOL_RESULTS", True):
+            await self._persist_items(function_outputs)
+
+        for output in function_outputs:
+            output_str = output.get("output", "")
+            if output_str:
+                await self.emit_status(f"Received tool result\n{output_str}")
+
+        if isinstance(self.body.input, list):
+            self.body.input.extend(function_outputs)
+        else:
+            self.body.input = list(function_outputs)
+        return True
+
+    async def _handle_text_delta(self, event: ResponseOutputTextDeltaEvent) -> None:
+        delta_val = event.delta
+        if delta_val:
+            self.state.response_text += delta_val
+            await self.events.delta(delta_val)
+
+    async def _handle_item_added(self, event: ResponseOutputItemAddedEvent) -> None:
+        item = event.item or {}
+        if item.get("type") == "message" and item.get("status") == "in_progress":
+            await self.emit_status("Responding to the user…", require_previous=True)
+
+    async def _handle_item_done(self, event: ResponseOutputItemDoneEvent) -> None:
+        item = event.item or {}
+        item_type = item.get("type") or ""
+
+        should_persist = False
+        if item_type == "reasoning":
+            should_persist = getattr(self.valves, "PERSIST_REASONING_TOKENS", "disabled") == "conversation"
+        elif item_type in ("message", "web_search_call"):
+            should_persist = False
+        else:
+            should_persist = getattr(self.valves, "PERSIST_TOOL_RESULTS", True)
+
+        if should_persist:
+            await self._persist_items([item])
+
+        status_desc = self.engine._status_from_output_item(item)
+        if status_desc:
+            await self.emit_status(status_desc)
+
+    async def _handle_reasoning_summary(self, event: ResponseReasoningSummaryTextDoneEvent) -> None:
+        text_val = (event.text or "").strip()
+        if text_val:
+            title, content = self.engine._parse_reasoning_summary(text_val)
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            await self.emit_status(f"{title}\n{content}")
+
+    async def _handle_text_done(self, event: ResponseOutputTextDoneEvent) -> None:
+        text_val = event.text
+        if self.debug_enabled:
+            self.engine.logger.debug("event=response.output_text.done text_len=%d", len(text_val or ""))
+        await self.engine._cancel_tasks(self.state.thinking_tasks)
+        if text_val and not self.state.response_text:
+            self.state.response_text = text_val
+        await self.events.replace(self.state.response_text or text_val)
+
+    async def _persist_items(self, items: list[dict[str, Any]]) -> None:
+        chat_id = self.metadata.get("chat_id")
+        message_id = self.metadata.get("message_id")
+        model_id = (self.metadata.get("model") or {}).get("id")
+        if chat_id and message_id and model_id:
+            try:
+                hidden_markers = self.engine.history_persistence.persist_items_for_message(
+                    chat_id,
+                    message_id,
+                    items,
+                    model_id=model_id,
+                )
+            except Exception as exc:  # pragma: no cover
+                self.engine.logger.warning("Failed to persist output items: %s", exc)
+                hidden_markers = ""
+            if hidden_markers:
+                self.state.response_text += hidden_markers
+                await self.events.replace(self.state.response_text)
+
+class ResponsesEngine:
+    """Encapsulates streaming and tool orchestration."""
+
+    def __init__(
+        self,
+        *,
+        client: OpenAIResponsesClient | None = None,
+        item_store: HistoryStore | None = None,
+        history_persistence: HistoryPersistence | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.client = client or OpenAIResponsesClient()
+        self.history_persistence = history_persistence or HistoryPersistence(item_store)
+        self.logger = logger or get_logger(__name__)
+
+    async def run_streaming_turn(
+        self,
+        body: ResponseCreateParams,
+        *,
+        valves: Any,
+        metadata: dict[str, Any],
+        events: RuntimeEvents | None,
+        openwebui_tools: dict[str, dict[str, Any]] | None = None,
+    ) -> TurnResult:
+        runtime_events = events or NullRuntimeEvents()
+        session = _StreamSession(
+            self,
+            body,
+            valves,
+            metadata,
+            runtime_events,
+            openwebui_tools=openwebui_tools,
+        )
+
+        model_router_result = body.model_router_result
+        if model_router_result:
+            body.model_router_result = None
+            explanation = model_router_result.get('explanation', '')
+            await session.emit_status(
+                description=(
+                    f"Routing to {model_router_result.get('model')} "
+                    f"(effort: {model_router_result.get('reasoning_effort')})\n"
+                    f"Explanation: {explanation}"
+                )
+            )
+
+        self.logger.info('turn.start model=%s task=chat', body.model)
+        start_time = perf_counter()
+        function_calls_supported = supports('function_calling', body.model)
+
+        try:
+            max_loops = getattr(valves, 'MAX_FUNCTION_CALL_LOOPS', 10)
+            for _ in range(max_loops):
+                session.state.reset_for_next_response()
+
+                await self._stream_response(session, body, valves)
+
+                if session.state.has_error or not session.state.completed_response:
+                    break
+
+                if not function_calls_supported:
+                    break
+
+                response_output_items = await session.collect_output_items()
+                tool_calls = session.find_tool_calls(response_output_items)
+                if not tool_calls:
+                    break
+
+                function_outputs = await session.execute_tool_calls(tool_calls)
+                if not function_outputs:
+                    break
+
+                if not await session.append_tool_outputs(function_outputs):
+                    break
+
+            if session.debug_enabled and session.state.completed_response:
+                try:
+                    payload_str = json.dumps(session.state.completed_response, ensure_ascii=False)
+                    preview, truncated = truncate_for_log(payload_str, limit=1000)
+                    self.logger.debug(
+                        'response.payload_preview enabled=true truncated=%s len=%d payload=%s',
+                        truncated,
+                        len(payload_str),
+                        preview,
+                    )
+                except Exception:
+                    pass
+
+            usage_summary = session.state.usage_summary or {}
+            tokens_in = usage_summary.get('input_tokens')
+            tokens_out = usage_summary.get('output_tokens')
+            respond_time = perf_counter() - start_time
+            summary_kwargs = {
+                'status': 'error' if session.state.has_error else 'ok',
+                'model': body.model,
+                'duration_sec': respond_time,
+                'tool_calls': session.state.tool_calls_executed,
+                'citations': len(session.state.citations),
+                'input_tokens': tokens_in,
+                'output_tokens': tokens_out,
+            }
+            if session.state.error_message:
+                summary_kwargs['last_error'] = session.state.error_message
+            self.logger.info(
+                'Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f '
+                'tool_calls=%(tool_calls)d citations=%(citations)d '
+                'input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s'
+                + (' last_error=%(last_error)s' if session.state.error_message else ''),
+                summary_kwargs,
+            )
+
+        except Exception as exc:  # pragma: no cover
+            await self._cancel_tasks(session.state.thinking_tasks)
+            session.state.has_error = True
+            session.state.error_message = str(exc)
+            self.logger.error('turn.error type=%s message=%s', type(exc).__name__, session.state.error_message)
+            await self._handle_stream_error(runtime_events, session.state.error_message)
+
+        finally:
+            await self._emit_log_citation(runtime_events, session.state.citations)
+            if not session.state.response_text and not session.state.has_error and session.state.last_tool_result:
+                session.state.response_text = session.state.last_tool_result
+            usage_for_completion = (
+                session.state.usage_summary
+                or self._extract_usage_from_final_response(session.state.completed_response or {})
+                or None
+            )
+            await session.emit_status('Done', done=True, hidden=False, require_previous=True)
+            await runtime_events.chat_completion(
+                {'content': session.state.response_text, 'usage': usage_for_completion, 'done': True}
+            )
+
+        return TurnResult(
+            text=session.state.response_text,
+            usage=usage_for_completion,
+            citations=session.state.citations if session.state.citations else [],
+            error_message=session.state.error_message,
+        )
+
+    async def run_task_model(
+        self,
+        body: dict[str, Any],
+        valves: Any,
+    ) -> str:
+        return await run_task_model(self.client, body, valves)
+
+    async def emit_notification(
+        self,
+        events: RuntimeEvents | None,
+        content: str,
+        *,
+        level: Literal["info", "success", "warning", "error"] = "info",
+    ) -> None:
+        if not events:
+            return
+        await events.notification(content, level=level)
+
+    async def emit_error(
+        self,
+        events: RuntimeEvents | None,
+        error_obj: Exception | str,
+        *,
+        show_error_message: bool = True,
+        done: bool = False,
+    ) -> None:
+        if not show_error_message:
+            return
+        if not events:
+            return
+        await events.chat_completion({"error": {"message": str(error_obj)}, "done": done})
+
+    def _schedule_reasoning_statuses(
+        self, body: ResponseCreateParams, status_fn: Callable[[str], Awaitable[Any]]
+    ) -> list[asyncio.Task[Any]]:
+        if not supports("reasoning", body.model):
+            return []
+
+        async def _later(delay: float, msg: str) -> None:
+            await asyncio.sleep(delay)
+            await status_fn(msg)
+
+        tasks: list[asyncio.Task[Any]] = []
+        for delay, msg in [
+            (0, "Thinking…"),
+            (1.5, "Reading the user's question…"),
+            (4.0, "Gathering my thoughts…"),
+            (6.0, "Exploring possible responses…"),
+            (7.0, "Building a plan…"),
+        ]:
+            tasks.append(asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg)))
+        return tasks
+
+    async def _cancel_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
+        if not tasks:
+            return
+        to_cancel = list(tasks)
+        tasks.clear()
+        for task in to_cancel:
+            task.cancel()
+        await asyncio.gather(*to_cancel, return_exceptions=True)
+
+    async def _emit_log_citation(
+        self,
+        events: RuntimeEvents | None,
+        emitted_citations: list[dict[str, Any]],
+    ) -> None:
+        session_id = OWUI_SESSION_ID.get()
+        if not session_id or not events or isinstance(events, NullRuntimeEvents):
+            return
+        logs = get_session_logs(session_id)
+        if not logs:
+            return
+        log_text = "\n".join(logs)
+        truncated = len(log_text) > 4000
+        self.logger.debug("Emitting log citation lines=%d truncated=%s", len(logs), truncated)
+        await events.citation(
+            {
+                "document": [log_text],
+                "metadata": [{"source": "Logs"}],
+                "source": {"name": "Logs"},
+            }
+        )
+        snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
+        emitted_citations.append(
+            {
+                "provider": "openai:logs",
+                "id": str(len(emitted_citations) + 1),
+                "title": "Logs",
+                "snippet": snippet,
+                "metadata": {
+                    "source": "Logs",
+                    "total_lines": len(logs),
+                    "truncated": len(snippet) < len(log_text),
+                },
+            }
+        )
+        clear_session_logs(session_id)
+
+    def _sanitize_output_items(self, items: list[dict[str, Any]], *, store: bool | None) -> list[dict[str, Any]]:
+        """Strip server-side IDs when store=False to avoid lookups on replay."""
+
+        if store is not False:
+            return [item for item in items if isinstance(item, dict)]
+
+        cleaned: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, dict):
+                clone = dict(item)
+                clone.pop("id", None)
+                cleaned.append(clone)
+        return cleaned
+
+    def _extract_usage_from_final_response(self, final_response: dict[str, Any]) -> dict[str, Any]:
+        if "usage" in final_response:
+            usage = final_response.get("usage")
+            return usage if isinstance(usage, dict) else {}
+
+        response_payload = final_response.get("response")
+        if isinstance(response_payload, dict):
+            usage = response_payload.get("usage")
+            if isinstance(usage, dict):
+                return usage
+
+        return {}
+
+    async def _handle_stream_error(
+        self,
+        events: RuntimeEvents | None,
+        message: str,
+    ) -> None:
+        self.logger.error("Streaming error: %s", message)
+        if events:
+            await events.chat_completion({"error": {"message": message}, "done": False})
+
+    async def _stream_response(
+        self,
+        session: _StreamSession,
+        body: ResponseCreateParams,
+        valves: Any,
+    ) -> None:
+        async for event in self.client.stream(
+            body.model_dump(exclude_none=True),
+            api_key=valves.API_KEY,
+            base_url=valves.BASE_URL,
+            typed=True,
+        ):
+            if await session.handle_event(event):
+                break
+
+    def _status_from_output_item(self, item: dict[str, Any]) -> str | None:
+        """Return a user-facing status string for a completed output item."""
+
+        item_type = item.get("type")
+        if not item_type:
+            return None
+
+        if item_type == "function_call":
+            name = item.get("name", "tool")
+            try:
+                arguments = json.loads(item.get("arguments") or "{}")
+                args_formatted = ", ".join(f"{k}={json.dumps(v)}" for k, v in arguments.items())
+                return f"Running the {name} tool…\n{name}({args_formatted})"
+            except Exception:
+                return f"Running the {name} tool…"
+
+        if item_type == "web_search_call":
+            action = item.get("action") or {}
+            if action.get("type") == "search":
+                query = action.get("query")
+                return f"Searching\n{query}" if query else "Searching the web…"
+            return "Web search in progress…"
+
+        if item_type == "file_search_call":
+            return "Let me skim those files…"
+        if item_type == "image_generation_call":
+            return "Let me create that image…"
+        if item_type == "mcp_call":
+            return "Querying the MCP server…"
+        if item_type == "code_interpreter_call":
+            return "Running code interpreter…"
+
+        return None
+
+    def _parse_reasoning_summary(self, text_val: str) -> tuple[str, str]:
+        """Extract a title/content pair from reasoning summary text."""
+
+        title = "Thinking…"
+        content = text_val
+        if "**" in text_val:
+            try:
+                parts = text_val.split("**")
+                bold_segments = [parts[i] for i in range(1, len(parts), 2)]
+                if bold_segments:
+                    title = bold_segments[-1].strip()
+                    content = text_val.replace(f"**{bold_segments[-1]}**", "").strip()
+            except Exception:
+                pass
+        return title, content
+
+
+__all__ = ["ResponsesEngine", "TurnResult"]
+
+# === adapters/openwebui/events.py ===
 """Minimal Open WebUI event helpers matching the documented event catalog."""
 
 import asyncio
@@ -2104,7 +3591,7 @@ __all__ = [
     "RequestChatCompletionEventData",
 ]
 
-# === openwebui/store.py ===
+# === adapters/openwebui/store.py ===
 """Persistence helpers for storing Responses items in OpenWebUI."""
 
 import datetime
@@ -2197,189 +3684,16 @@ def _generate_item_id(length: int = 16) -> str:
 
 __all__ = ["ItemStore"]
 
-# === services/history.py ===
-"""Persistence and reconstruction services for Responses items."""
-
-from typing import Any, Callable
-import json
-
-# [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.markers import (
-#     contains_marker,
-#     create_marker,
-#     extract_markers,
-#     parse_marker,
-#     split_text_by_markers,
-#     wrap_marker,
-# )
-# from openai_responses_manifold.core.messages import (
-#     assistant_text_item,
-#     developer_message,
-#     normalize_user_blocks,
-#     user_blocks_to_responses_items,
-# )
-# from openai_responses_manifold.openwebui.store import ItemStore
-
-Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
-
-
-class HistoryPersistence:
-    """Persist structured output items and emit hidden markers."""
-
-    def __init__(self, store: ItemStore) -> None:
-        self.store = store
-
-    def persist_items_for_message(
-        self,
-        chat_id: str,
-        message_id: str,
-        items: list[dict[str, Any]],
-        *,
-        model_id: str,
-    ) -> str:
-        if not items:
-            return ""
-
-        cleaned: list[dict[str, Any]] = []
-        for payload in items:
-            if not isinstance(payload, dict):
-                continue
-            clone = json.loads(json.dumps(payload))
-            # Drop server-side IDs so we never depend on OpenAI-side persistence when store=False.
-            clone.pop("id", None)
-            cleaned.append(clone)
-
-        if not cleaned:
-            return ""
-
-        ulids = self.store.save_items(chat_id, message_id, cleaned, model_id)
-        hidden_markers: list[str] = []
-        for ulid, payload in zip(ulids, cleaned):
-            marker = create_marker(payload.get("type", "unknown"), ulid=ulid, model_id=model_id)
-            hidden_markers.append(wrap_marker(marker))
-        return "".join(hidden_markers)
-
-
-class HistoryBuilder:
-    """Rebuild Responses input items from OpenWebUI messages."""
-
-    def __init__(self, resolve_items: Resolver | None = None) -> None:
-        self._resolve_items = resolve_items
-
-    def build_input_from_messages(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        chat_id: str | None = None,
-        openwebui_model_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        required_item_ids: list[str] = []
-        for message in messages:
-            content = message.get("content")
-            if message.get("role") == "assistant" and isinstance(content, str) and contains_marker(content):
-                for marker in extract_markers(content, parsed=True):
-                    required_item_ids.append(marker["ulid"])
-
-        resolved: dict[str, dict[str, Any]] = {}
-        if required_item_ids and self._resolve_items:
-            resolved = self._resolve_items(required_item_ids, chat_id, openwebui_model_id)
-
-        openai_input: list[dict[str, Any]] = []
-        for message in messages:
-            role = message.get("role")
-            content = message.get("content")
-
-            if role == "system":
-                continue
-            if role == "user":
-                blocks = user_blocks_to_responses_items(normalize_user_blocks(content))
-                if blocks:
-                    openai_input.append({"role": "user", "content": blocks})
-                continue
-            if role == "developer":
-                if isinstance(content, str) and content:
-                    openai_input.append(developer_message(content))
-                continue
-            if role == "assistant" and isinstance(content, str):
-                if not contains_marker(content):
-                    if content.strip():
-                        openai_input.append(assistant_text_item(content.strip()))
-                    continue
-                for segment in split_text_by_markers(content):
-                    if segment["type"] == "marker":
-                        marker = parse_marker(segment["marker"])
-                        payload = resolved.get(marker["ulid"])
-                        if payload:
-                            openai_input.append(payload)
-                    elif segment["type"] == "text":
-                        text_segment = segment.get("text", "").strip()
-                        if text_segment:
-                            openai_input.append(assistant_text_item(text_segment))
-
-        return openai_input
-
-
-class HistoryService:
-    """Facade for reconstructing Responses input items and instructions from stored chat history."""
-
-    def __init__(self, store: ItemStore) -> None:
-        self.store = store
-
-    def build_input_and_instructions(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        metadata: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], str | None]:
-        resolver = self._resolver(metadata)
-        builder = HistoryBuilder(resolve_items=resolver)
-        input_items = builder.build_input_from_messages(
-            messages,
-            chat_id=metadata.get("chat_id"),
-            openwebui_model_id=metadata.get("model", {}).get("id"),
-        )
-        instructions = self._extract_system_instructions(messages)
-        return input_items, instructions
-
-    def _resolver(self, metadata: dict[str, Any]) -> Resolver:
-        chat_id = metadata.get("chat_id")
-        openwebui_model_id = metadata.get("model", {}).get("id")
-
-        def _resolve(
-            item_ids: list[str],
-            resolver_chat: str | None,
-            model_id: str | None,
-        ) -> dict[str, dict[str, Any]]:
-            target_chat = resolver_chat or chat_id or ""
-            target_model = model_id or openwebui_model_id
-            return self.store.load_items(target_chat, item_ids, model_id=target_model)
-
-        return _resolve
-
-    @staticmethod
-    def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
-        """Return the most recent system message content, if present."""
-
-        for message in reversed(messages):
-            if message.get("role") == "system":
-                content = message.get("content")
-                if isinstance(content, str) and content.strip():
-                    return content
-        return None
-
-
-__all__ = ["HistoryBuilder", "HistoryPersistence", "HistoryService"]
-
-# === services/request_builder.py ===
-"""Build ResponsesBody requests from OpenWebUI-style inputs."""
+# === adapters/openwebui/request_builder.py ===
+"""Build ResponseCreateParams from OpenWebUI-style inputs."""
 
 from typing import Any
 
 # [build.py] internal imports removed in monolith:
 # from openai_responses_manifold.core.logging import get_logger
-# from openai_responses_manifold.openai_api.requests import ResponseCreateParams
-# from openai_responses_manifold.openwebui.store import ItemStore
-# from openai_responses_manifold.services.history import HistoryService
+# from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+# from openai_responses_manifold.adapters.openwebui.store import ItemStore
+# from openai_responses_manifold.domain.history import HistoryService
 
 logger = get_logger(__name__)
 
@@ -2468,1226 +3782,44 @@ def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
 
 __all__ = ["build_responses_body"]
 
-# === services/tools.py ===
-"""Tool declaration and execution helpers."""
-
-import asyncio
-import inspect
-import json
-import logging
-from typing import Any
-
-# [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.errors import ToolExecutionError
-# from openai_responses_manifold.core.model_catalog import supports
-# from openai_responses_manifold.openai_api.requests import ResponseCreateParams
-# from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-
-logger = get_logger(__name__)
-
-
-async def resolve_tools(
-    responses_body: ResponseCreateParams,
-    valves: Any,
-    provided_tools: list[dict[str, Any]] | dict[str, Any] | asyncio.Future | None,
-    *,
-    features: dict[str, Any] | None = None,
-    extra_tools: list[dict[str, Any]] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    """
-    Normalize OpenWebUI tool inputs and build the Responses tool spec list.
-
-    Returns (tools, tool_registry) where tool_registry is an executable mapping for ResultsEngine.
-    """
-
-    resolved = await provided_tools if inspect.isawaitable(provided_tools) else provided_tools
-    tool_registry: dict[str, dict[str, Any]] | None = resolved if isinstance(resolved, dict) else None
-    tools = build_tools(
-        responses_body,
-        valves,
-        openwebui_tools=tool_registry,
-        features=features,
-        extra_tools=extra_tools,
-    )
-    return tools, tool_registry or {}
-
-
-def build_tools(
-    responses_body: ResponseCreateParams,
-    valves: Any,
-    openwebui_tools: dict[str, Any] | None = None,
-    *,
-    features: dict[str, Any] | None = None,
-    extra_tools: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Build the OpenAI Responses-API tool spec list for this request."""
-
-    features = features or {}
-    if not supports("function_calling", responses_body.model):
-        return []
-
-    tools: list[dict[str, Any]] = []
-    tools.extend(
-        _transform_owui_tools(
-            openwebui_tools, strict=getattr(valves, "ENABLE_STRICT_TOOL_CALLING", False)
-        )
-    )
-
-    allow_web = (
-        supports("web_search_tool", responses_body.model)
-        and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
-        and ((responses_body.reasoning or {}).get("effort", "").lower() != "minimal")
-    )
-    if allow_web:
-        web_search_tool: dict[str, Any] = {"type": "web_search"}
-        user_location = getattr(valves, "WEB_SEARCH_USER_LOCATION", None)
-        if user_location:
-            try:
-                web_search_tool["user_location"] = json.loads(user_location)
-            except Exception as exc:
-                preview, truncated = truncate_for_log(user_location, limit=300)
-                logger.warning(
-                    "WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring. truncated=%s value=%s error=%s",
-                    truncated,
-                    preview,
-                    exc,
-                )
-        tools.append(web_search_tool)
-
-    remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
-    if remote_mcp:
-        tools.extend(_build_mcp_tools(remote_mcp))
-
-    if isinstance(extra_tools, list) and extra_tools:
-        tools.extend(extra_tools)
-
-    return _dedupe_tools(tools)
-
-
-async def execute_tool_calls(
-    calls: list[dict[str, Any]],
-    registry: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Execute tool calls and return Responses-ready outputs."""
-
-    if logger.isEnabledFor(logging.INFO):
-        logger.info("tool.calls_started count=%d", len(calls))
-
-    async def _invoke(call: dict[str, Any]) -> tuple[dict[str, Any], str]:
-        name = call.get("name")
-        arguments_json = call.get("arguments", "{}")
-        try:
-            args = json.loads(arguments_json)
-        except Exception as exc:  # pragma: no cover - defensive
-            raise ToolExecutionError(f"Invalid JSON arguments for tool {name}: {exc}") from exc
-
-        if logger.isEnabledFor(logging.DEBUG):
-            args_preview, args_truncated = truncate_for_log(
-                json.dumps(args, ensure_ascii=False), limit=400
-            )
-            logger.debug(
-                "tool.call name=%s args_truncated=%s args=%s",
-                name,
-                args_truncated,
-                args_preview,
-            )
-
-        tool_cfg = registry.get(name)
-        if not tool_cfg:
-            return call, f"Tool '{name}' not found"
-
-        fn = tool_cfg.get("callable")
-        if not callable(fn):
-            return call, f"Tool '{name}' is not callable"
-
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("tool.call name=%s status=started", name)
-
-        try:
-            if inspect.iscoroutinefunction(fn):
-                result = await fn(**args)
-            else:
-                result = await asyncio.to_thread(fn, **args)
-        except Exception as exc:
-            logger.warning("Tool %s raised an exception: %s", name, exc)
-            return call, f"{type(exc).__name__}: {exc}"
-
-        output_str = str(result)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("tool.call name=%s status=completed output_len=%d", name, len(output_str))
-        return call, output_str
-
-    results = await asyncio.gather(*(_invoke(call) for call in calls))
-    outputs: list[dict[str, Any]] = []
-    for call, output in results:
-        outputs.append(
-            {
-                "type": "function_call_output",
-                "call_id": call.get("call_id"),
-                "output": output,
-            }
-        )
-    return outputs
-
-
-def _transform_owui_tools(
-    openwebui_tools: dict[str, dict[str, Any]] | None,
-    *,
-    strict: bool = False,
-) -> list[dict[str, Any]]:
-    if not openwebui_tools:
-        return []
-
-    tools: list[dict[str, Any]] = []
-    for item in openwebui_tools.values():
-        spec = item.get("spec") or {}
-        name = spec.get("name")
-        if not name:
-            continue
-
-        params = spec.get("parameters") or {"type": "object", "properties": {}}
-        tool = {
-            "type": "function",
-            "name": name,
-            "description": spec.get("description") or name,
-            "parameters": _strictify_schema(params) if strict else params,
-        }
-        if strict:
-            tool["strict"] = True
-        tools.append(tool)
-    return tools
-
-
-def _strictify_schema(schema: Any) -> dict[str, Any]:
-    if not isinstance(schema, dict):
-        return {}
-
-    data = json.loads(json.dumps(schema))
-
-    def _enforce(node: dict[str, Any]) -> None:
-        node_type = node.get("type")
-        is_object = (
-            node_type == "object"
-            or (isinstance(node_type, list) and "object" in node_type)
-            or "properties" in node
-        )
-        if is_object:
-            props = node.setdefault("properties", {})
-            if not isinstance(props, dict):
-                props = {}
-                node["properties"] = props
-
-            original_required = set(node.get("required") or [])
-            node["additionalProperties"] = False
-            node["required"] = list(props.keys())
-
-            for name, prop in props.items():
-                if not isinstance(prop, dict):
-                    continue
-                if name not in original_required:
-                    ptype = prop.get("type")
-                    if isinstance(ptype, str) and ptype != "null":
-                        prop["type"] = [ptype, "null"]
-                    elif isinstance(ptype, list) and "null" not in ptype:
-                        prop["type"] = [*ptype, "null"]
-                _enforce(prop)
-
-        items = node.get("items")
-        if isinstance(items, dict):
-            _enforce(items)
-        elif isinstance(items, list):
-            for entry in items:
-                if isinstance(entry, dict):
-                    _enforce(entry)
-
-        for key in ("anyOf", "oneOf"):
-            branches = node.get(key)
-            if isinstance(branches, list):
-                for branch in branches:
-                    if isinstance(branch, dict):
-                        _enforce(branch)
-
-    _enforce(data)
-    return data
-
-
-def _build_mcp_tools(mcp_json: str) -> list[dict[str, Any]]:
-    try:
-        parsed = json.loads(mcp_json)
-    except Exception as exc:  # pragma: no cover - valved bug
-        preview, truncated = truncate_for_log(mcp_json, limit=300)
-        logger.warning(
-            "REMOTE_MCP_SERVERS_JSON is not valid JSON. truncated=%s value=%s error=%s",
-            truncated,
-            preview,
-            exc,
-        )
-        return []
-
-    entries = parsed if isinstance(parsed, list) else [parsed]
-    tools: list[dict[str, Any]] = []
-    for item in entries:
-        if not isinstance(item, dict):
-            continue
-        tool = {
-            "type": "mcp",
-            "server_label": item.get("server_label"),
-            "server_url": item.get("server_url"),
-        }
-        for key in (
-            "model_preference",
-            "client_capabilities",
-            "require_approval",
-            "allowed_tools",
-        ):
-            if key in item:
-                tool[key] = item[key]
-        tools.append(tool)
-    return tools
-
-
-def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    if not tools:
-        return []
-
-    seen: dict[tuple[str, str | None], dict[str, Any]] = {}
-    for tool in tools:
-        tool_type = tool.get("type")
-        if not isinstance(tool_type, str):
-            continue
-        identifier: str | None = None
-        if tool_type == "function":
-            name = tool.get("name")
-            if isinstance(name, str):
-                identifier = name
-        seen[(tool_type, identifier)] = tool
-    return list(seen.values())
-
-
-__all__ = [
-    "build_tools",
-    "execute_tool_calls",
-    "resolve_tools",
-]
-
-# === services/tasks.py ===
-"""Helpers for running non-streamed task models."""
+# === adapters/openwebui/runtime_events.py ===
+"""Adapter that maps the domain RuntimeEvents protocol to Open WebUI's emitter."""
 
 from typing import Any
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
-
-
-async def run_task_model(
-    client: OpenAIResponsesClient,
-    body: dict[str, Any],
-    valves: Any,
-) -> str:
-    """
-    Execute a task-style request (non-streamed) and return concatenated assistant text.
-
-    This mirrors client.responses.create for simple “task” invocations where we
-    want the final text output without streaming.
-    """
-
-    task_body = {
-        "model": body.get("model"),
-        "instructions": body.get("instructions", ""),
-        "input": body.get("input", ""),
-        "stream": False,
-        "store": False,
-    }
-    response = await client.create(task_body, api_key=valves.API_KEY, base_url=valves.BASE_URL)
-    text_parts: list[str] = []
-    for item in response.get("output", []):
-        if item.get("type") != "message":
-            continue
-        for content in item.get("content", []):
-            if content.get("type") == "output_text":
-                text_parts.append(content.get("text", ""))
-    return "".join(text_parts)
-
-
-__all__ = ["run_task_model"]
-
-# === services/routing.py ===
-"""Helper model routing for auto variants."""
-
-import json
-import logging
-from typing import Any
+# from openai_responses_manifold.domain.events import RuntimeEvents
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-# from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
-# from openai_responses_manifold.openai_api.requests import ResponseCreateParams
-# from openai_responses_manifold.openwebui.events import EventEmitter, EventEmitterFn
+# from .events import EventEmitter
 
-logger = get_logger(__name__)
 
+class OpenWebUIRuntimeEvents(RuntimeEvents):
+    def __init__(self, emitter: EventEmitter) -> None:
+        self._emitter = emitter
 
-async def route_auto_model(
-    client: OpenAIResponsesClient,
-    *,
-    router_model: str,
-    responses_body: ResponsesBody,
-    valves: Any,
-    tools: list[dict[str, Any]],
-    event_emitter: EventEmitterFn | None = None,
-) -> ResponsesBody:
-    """
-    Use a small helper model to choose the final GPT-5 variant and reasoning effort.
+    async def status(self, description: str, *, done: bool = False, hidden: bool = False) -> None:
+        await self._emitter.status(description, done=done, hidden=hidden)
 
-    The helper request mirrors the structure described in the Developer Guide v2.
-    """
+    async def delta(self, content: str) -> None:
+        await self._emitter.delta(content)
 
-    router_body = {
-        "model": router_model,
-        "reasoning": {"effort": "minimal"},
-        "instructions": _ROUTER_PROMPT,
-        "input": responses_body.input,
-        "prompt_cache_key": "openai_responses_gpt5-router",
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "gpt5_router",
-                "strict": True,
-                "schema": _ROUTER_SCHEMA,
-                "verbosity": "medium",
-            },
-        },
-    }
+    async def replace(self, content: str) -> None:
+        await self._emitter.replace(content)
 
-    try:
-        response = await client.create(
-            router_body,
-            api_key=valves.API_KEY,
-            base_url=valves.BASE_URL,
-        )
-    except Exception as exc:  # pragma: no cover
-        logger.warning("Model router request failed: %s", exc)
-        return responses_body
+    async def citation(self, data: dict[str, Any]) -> None:
+        await self._emitter.citation(data)
 
-    text = _extract_router_text(response)
-    if not text:
-        return responses_body
+    async def chat_completion(self, data: dict[str, Any]) -> None:
+        await self._emitter.chat_completion(data)
 
-    try:
-        router_json: dict[str, Any] = json.loads(text)
-    except Exception:
-        start, end = text.find("{"), text.rfind("}")
-        router_json = (
-            json.loads(text[start : end + 1]) if start != -1 and end != -1 and end > start else {}
-        )
+    async def notification(self, content: str, *, level: str = "info") -> None:
+        await self._emitter.notification(content, level=level)
 
-    if not router_json:
-        return responses_body
 
-    model_choice = router_json.get("model")
-    if isinstance(model_choice, str):
-        responses_body.model = model_choice
-    effort = router_json.get("reasoning_effort")
-    if isinstance(effort, str):
-        reasoning = dict(responses_body.reasoning or {})
-        reasoning["effort"] = effort
-        responses_body.reasoning = reasoning
+__all__ = ["OpenWebUIRuntimeEvents"]
 
-    responses_body.model_router_result = router_json
-    explanation = router_json.get("explanation")
-    if isinstance(explanation, str):
-        emitter = EventEmitter(event_emitter)
-        await emitter.status(
-            f"Routing to {router_json.get('model')} (effort: {router_json.get('reasoning_effort')})\nExplanation: {explanation}"
-        )
-    return responses_body
-
-
-def _extract_router_text(response: dict[str, Any]) -> str:
-    try:
-        return next(
-            (
-                block["text"]
-                for output in reversed(response["output"])
-                if output["type"] == "message"
-                for block in output["content"]
-                if block["type"] == "output_text"
-            ),
-            "",
-        )
-    except Exception as exc:  # pragma: no cover
-        payload_preview, truncated = truncate_for_log(
-            json.dumps(response, ensure_ascii=False), limit=800
-        )
-        logger.warning(
-            "Router response missing expected fields: %s payload_keys=%s truncated=%s payload=%s",
-            exc,
-            list(response.keys()),
-            truncated,
-            payload_preview,
-        )
-        return ""
-
-
-_ROUTER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "model": {
-            "type": "string",
-            "enum": ["gpt-5-chat-latest", "gpt-5", "gpt-5-mini"],
-        },
-        "reasoning_effort": {
-            "type": "string",
-            "enum": ["minimal", "low", "medium", "high"],
-        },
-        "explanation": {
-            "type": "string",
-            "minLength": 3,
-            "maxLength": 500,
-        },
-    },
-    "required": ["model", "explanation", "reasoning_effort"],
-    "additionalProperties": False,
-}
-
-_ROUTER_PROMPT = """# Role and Objective
-Serve as a **routing helper** for selecting the most appropriate GPT-5 model for user messages, evaluating tool necessity and task complexity.
-
----
-
-# Instructions
-- If a message may require the use of **any available tool**, select a model with **function calling** capabilities. If **web search** is required, you may only choose **low, medium or high** reasoning, not minimal.
-- When tools are not necessary, favor the **fastest** or **most capable** model according to the complexity of the request.
-
----
-
-# Available Models and Capabilities
-## Models
-
-- **gpt-5-chat-latest**
-  - Fast, general-purpose, and creative.
-  - Best for writing, drafting, and chat-based interactions.
-  - ⚠️ Does **not** support tool calling—select only when tools are not required.
-
-- **gpt-5-mini**
-  - Lightweight, supports tool usage, and is rapidly responsive.
-  - Suited for **simple tasks that may use tools** but don't demand extensive reasoning.
-  - ✅ Function calling supported—offers a strong balance between speed and utility.
-
-- **gpt-5**
-  - Strong at reasoning and complex, multi-step analysis.
-  - Designed for **complex or deeply analytical tasks**.
-  - ✅ Supports function calling and advanced operations—choose for tool-reliant or high-complexity reasoning needs.
-
----
-
-# Routing Checklist
-- Assess whether tool integration could improve the response.
-- Evaluate how much reasoning or problem-solving is required.
-- Match model to requirements:
-  - No tool usage required → use `gpt-5-chat-latest`
-  - Tools required, simple task → use `gpt-5-mini`
-  - Tools required, complex task → use `gpt-5`
-- When in doubt, prioritize a tool-capable model (prefer `gpt-5`).
-- Ask for more information if requirements are ambiguous.
-
----
-
-# Output Format
-Respond only with a JSON object containing your model selection and a concise explanation. If the requirements are unclear, include an appropriate error message in the JSON response.
-
----
-
-# Examples
-- **What's the weather in Vancouver right now?**
-  ```json
-  {
-    "model": "gpt-5-mini",
-    "explanation": "Quick tool lookup; simple enough for a fast model."
-  }
-  ```
-
-- **Compare the newest M3 laptops and cite sources.**
-  ```json
-  {
-    "model": "gpt-5",
-    "explanation": "Research and synthesis with tools requires reasoning depth."
-  }
-  ```
-
-- **Summarize this email draft and make it more formal.**
-  ```json
-  {
-    "model": "gpt-5-chat-latest",
-    "explanation": "Polishing text only; no tools needed."
-  }
-  ```
-
-- **Summarize this uploaded PDF into bullet points.**
-  ```json
-  {
-    "model": "gpt-5",
-    "explanation": "Document parsing may require tools; complex enough for gpt-5."
-  }
-  ```
-
-- **Translate this paragraph into Spanish.**
-  ```json
-  {
-    "model": "gpt-5-chat-latest",
-    "explanation": "Simple translation; tools not required."
-  }
-  ```
-
-- **List my upcoming meetings tomorrow.**
-  ```json
-  {
-    "model": "gpt-5-mini",
-    "explanation": "Calendar tool lookup is simple; mini is efficient."
-  }
-  ```
-"""
-
-__all__ = ["route_auto_model"]
-
-# === services/engine.py ===
-"""Streaming orchestration and tool loop for the Responses manifold.
-
-The flow is deliberately linear and explicit:
-1) Stream a response from OpenAI Responses API.
-2) Emit deltas, statuses, and persist structured items as they arrive.
-3) If the model requested tool calls, run local tools, append outputs, and loop.
-"""
-
-import asyncio
-import json
-import logging
-import random
-from dataclasses import dataclass, field
-from time import perf_counter
-from typing import Any, Awaitable, Callable, Literal
-
-# [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.errors import ToolExecutionError
-# from openai_responses_manifold.core.model_catalog import supports
-# from openai_responses_manifold.openai_api.events import (
-#     ErrorEvent,
-#     ResponseCompletedEvent,
-#     ResponseCreatedEvent,
-#     ResponseFailedEvent,
-#     ResponseIncompleteEvent,
-#     ResponseInProgressEvent,
-#     ResponseOutputItemAddedEvent,
-#     ResponseOutputItemDoneEvent,
-#     ResponseOutputTextDeltaEvent,
-#     ResponseOutputTextDoneEvent,
-#     ResponseQueuedEvent,
-#     ResponseReasoningSummaryTextDoneEvent,
-# )
-# from openai_responses_manifold.openai_api.requests import ResponseCreateParams
-# from openai_responses_manifold.core.logging import (
-#     OWUI_SESSION_ID,
-#     clear_session_logs,
-#     get_logger,
-#     get_session_logs,
-#     truncate_for_log,
-# )
-# from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
-# from openai_responses_manifold.openwebui.events import EventEmitter, EventEmitterFn
-# from openai_responses_manifold.openwebui.store import ItemStore
-# from openai_responses_manifold.services.history import HistoryPersistence
-# from openai_responses_manifold.services.tasks import run_task_model
-# from openai_responses_manifold.services.tools import execute_tool_calls
-
-
-@dataclass
-class _StreamState:
-    """Streaming scratch space for a single turn."""
-
-    response_text: str = ""
-    usage_summary: dict[str, Any] | None = None
-    citations: list[dict[str, Any]] = field(default_factory=list)
-    tool_calls_executed: int = 0
-    completed_response: dict[str, Any] | None = None
-    error_message: str | None = None
-    has_error: bool = False
-    last_tool_result: str | None = None
-    has_sent_status: bool = False
-    thinking_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
-
-    def reset_for_next_response(self) -> None:
-        self.completed_response = None
-        self.usage_summary = None
-        self.has_sent_status = False
-
-
-@dataclass
-class TurnResult:
-    """Result of a streaming turn, reusable outside Open WebUI."""
-
-    text: str
-    usage: dict[str, Any] | None
-    citations: list[dict[str, Any]]
-    error_message: str | None = None
-
-
-class _StreamSession:
-    """Consumes stream events while coordinating a single turn."""
-
-    def __init__(
-        self,
-        engine: ResponsesEngine,
-        body: ResponseCreateParams,
-        valves: Any,
-        metadata: dict[str, Any],
-        event_emitter: EventEmitterFn,
-        *,
-        openwebui_tools: dict[str, dict[str, Any]] | None,
-    ) -> None:
-        self.engine = engine
-        self.body = body
-        self.valves = valves
-        self.metadata = metadata
-        self.emitter = EventEmitter(event_emitter)
-        self.openwebui_tools = openwebui_tools
-        self.state = _StreamState()
-        self.debug_enabled = engine.logger.isEnabledFor(logging.DEBUG)
-        self.state.thinking_tasks = self.engine._schedule_reasoning_statuses(body, self.emit_status)
-
-    async def emit_status(
-        self,
-        description: str,
-        *,
-        done: bool = False,
-        hidden: bool = False,
-        require_previous: bool = False,
-    ) -> None:
-        if require_previous and not self.state.has_sent_status:
-            return
-        self.state.has_sent_status = True
-        await self.emitter.status(description, done=done, hidden=hidden)
-
-    async def handle_event(self, event: Any) -> bool:
-        """Process a single stream event. Returns True when the stream should stop."""
-
-        if isinstance(event, ResponseOutputTextDeltaEvent):
-            await self._handle_text_delta(event)
-            return False
-
-        if isinstance(event, ResponseOutputItemAddedEvent):
-            await self._handle_item_added(event)
-            return False
-
-        if isinstance(event, ResponseOutputItemDoneEvent):
-            await self._handle_item_done(event)
-            return False
-
-        if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
-            await self._handle_reasoning_summary(event)
-            return False
-
-        if isinstance(event, ResponseOutputTextDoneEvent):
-            await self._handle_text_done(event)
-            return False
-
-        if isinstance(event, ResponseCompletedEvent):
-            await self.engine._cancel_tasks(self.state.thinking_tasks)
-            self.state.completed_response = event.response
-            self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
-            if self.debug_enabled:
-                usage_keys = sorted((self.state.usage_summary or {}).keys())
-                self.engine.logger.debug("event=response.completed usage_keys=%s", usage_keys)
-            return True
-
-        if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
-            await self.engine._cancel_tasks(self.state.thinking_tasks)
-            self.state.has_error = True
-            if isinstance(event, ErrorEvent):
-                self.state.error_message = event.message
-            else:
-                response_payload = event.response
-                self.state.error_message = (response_payload.get("error") or {}).get(
-                    "message", "OpenAI returned an error."
-                )
-            self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
-            await self.engine._handle_stream_error(self.emitter, self.state.error_message or "")
-            return True
-
-        if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
-            if self.debug_enabled:
-                self.engine.logger.debug(
-                    "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
-                )
-            return False
-
-        return False
-
-    async def collect_output_items(self) -> list[dict[str, Any]]:
-        if not self.state.completed_response:
-            return []
-
-        output_items = self.engine._sanitize_output_items(
-            (self.state.completed_response or {}).get("output") or [], store=self.body.store
-        )
-
-        if output_items:
-            if isinstance(self.body.input, list):
-                self.body.input.extend(output_items)
-            else:
-                self.body.input = output_items
-
-        return output_items
-
-    def find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        call_items = output_items or (self.state.completed_response or {}).get("output", [])
-        tool_calls = [item for item in call_items if item.get("type") == "function_call"]
-        if tool_calls:
-            self.state.tool_calls_executed += len(tool_calls)
-        return tool_calls
-
-    async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not tool_calls:
-            return []
-
-        if not self.openwebui_tools:
-            self.engine.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
-            await self.emit_status("Tool execution skipped: no tool registry available.")
-            return []
-
-        try:
-            function_outputs = await execute_tool_calls(tool_calls, self.openwebui_tools)
-        except ToolExecutionError as exc:
-            self.engine.logger.warning("Skipping malformed tool arguments: %s", exc)
-            await self.emit_status("Skipping malformed tool arguments.")
-            return []
-
-        return function_outputs
-
-    async def append_tool_outputs(self, function_outputs: list[dict[str, Any]]) -> bool:
-        if not function_outputs:
-            return False
-
-        self.state.last_tool_result = str(function_outputs[-1].get("output", ""))
-        if getattr(self.valves, "PERSIST_TOOL_RESULTS", True):
-            await self._persist_items(function_outputs)
-
-        for output in function_outputs:
-            output_str = output.get("output", "")
-            if output_str:
-                await self.emit_status(f"Received tool result\n{output_str}")
-
-        if isinstance(self.body.input, list):
-            self.body.input.extend(function_outputs)
-        else:
-            self.body.input = list(function_outputs)
-        return True
-
-    async def _handle_text_delta(self, event: ResponseOutputTextDeltaEvent) -> None:
-        delta_val = event.delta
-        if delta_val:
-            self.state.response_text += delta_val
-            await self.emitter.delta(delta_val)
-
-    async def _handle_item_added(self, event: ResponseOutputItemAddedEvent) -> None:
-        item = event.item or {}
-        if item.get("type") == "message" and item.get("status") == "in_progress":
-            await self.emit_status("Responding to the user…", require_previous=True)
-
-    async def _handle_item_done(self, event: ResponseOutputItemDoneEvent) -> None:
-        item = event.item or {}
-        item_type = item.get("type") or ""
-
-        should_persist = False
-        if item_type == "reasoning":
-            should_persist = getattr(self.valves, "PERSIST_REASONING_TOKENS", "disabled") == "conversation"
-        elif item_type in ("message", "web_search_call"):
-            should_persist = False
-        else:
-            should_persist = getattr(self.valves, "PERSIST_TOOL_RESULTS", True)
-
-        if should_persist:
-            await self._persist_items([item])
-
-        status_desc = self.engine._status_from_output_item(item)
-        if status_desc:
-            await self.emit_status(status_desc)
-
-    async def _handle_reasoning_summary(self, event: ResponseReasoningSummaryTextDoneEvent) -> None:
-        text_val = (event.text or "").strip()
-        if text_val:
-            title, content = self.engine._parse_reasoning_summary(text_val)
-            await self.engine._cancel_tasks(self.state.thinking_tasks)
-            await self.emit_status(f"{title}\n{content}")
-
-    async def _handle_text_done(self, event: ResponseOutputTextDoneEvent) -> None:
-        text_val = event.text
-        if self.debug_enabled:
-            self.engine.logger.debug("event=response.output_text.done text_len=%d", len(text_val or ""))
-        await self.engine._cancel_tasks(self.state.thinking_tasks)
-        if text_val and not self.state.response_text:
-            self.state.response_text = text_val
-        await self.emitter.replace(self.state.response_text or text_val)
-
-    async def _persist_items(self, items: list[dict[str, Any]]) -> None:
-        chat_id = self.metadata.get("chat_id")
-        message_id = self.metadata.get("message_id")
-        model_id = (self.metadata.get("model") or {}).get("id")
-        if chat_id and message_id and model_id:
-            try:
-                hidden_markers = self.engine.history_persistence.persist_items_for_message(
-                    chat_id,
-                    message_id,
-                    items,
-                    model_id=model_id,
-                )
-            except Exception as exc:  # pragma: no cover
-                self.engine.logger.warning("Failed to persist output items: %s", exc)
-                hidden_markers = ""
-            if hidden_markers:
-                self.state.response_text += hidden_markers
-                await self.emitter.replace(self.state.response_text)
-
-class ResponsesEngine:
-    """Encapsulates streaming and tool orchestration."""
-
-    def __init__(
-        self,
-        *,
-        client: OpenAIResponsesClient | None = None,
-        item_store: ItemStore | None = None,
-        history_persistence: HistoryPersistence | None = None,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        self.client = client or OpenAIResponsesClient()
-        self.store = item_store or ItemStore()
-        self.history_persistence = history_persistence or HistoryPersistence(self.store)
-        self.logger = logger or get_logger(__name__)
-
-    async def run_streaming_turn(
-        self,
-        body: ResponseCreateParams,
-        *,
-        valves: Any,
-        metadata: dict[str, Any],
-        event_emitter: EventEmitterFn,
-        openwebui_tools: dict[str, dict[str, Any]] | None = None,
-    ) -> TurnResult:
-        session = _StreamSession(
-            self,
-            body,
-            valves,
-            metadata,
-            event_emitter,
-            openwebui_tools=openwebui_tools,
-        )
-
-        model_router_result = body.model_router_result
-        if model_router_result:
-            body.model_router_result = None
-            explanation = model_router_result.get('explanation', '')
-            await session.emit_status(
-                description=(
-                    f"Routing to {model_router_result.get('model')} "
-                    f"(effort: {model_router_result.get('reasoning_effort')})\n"
-                    f"Explanation: {explanation}"
-                )
-            )
-
-        self.logger.info('turn.start model=%s task=chat', body.model)
-        start_time = perf_counter()
-        function_calls_supported = supports('function_calling', body.model)
-
-        try:
-            max_loops = getattr(valves, 'MAX_FUNCTION_CALL_LOOPS', 10)
-            for _ in range(max_loops):
-                session.state.reset_for_next_response()
-
-                await self._stream_response(session, body, valves)
-
-                if session.state.has_error or not session.state.completed_response:
-                    break
-
-                if not function_calls_supported:
-                    break
-
-                response_output_items = await session.collect_output_items()
-                tool_calls = session.find_tool_calls(response_output_items)
-                if not tool_calls:
-                    break
-
-                function_outputs = await session.execute_tool_calls(tool_calls)
-                if not function_outputs:
-                    break
-
-                if not await session.append_tool_outputs(function_outputs):
-                    break
-
-            if session.debug_enabled and session.state.completed_response:
-                try:
-                    payload_str = json.dumps(session.state.completed_response, ensure_ascii=False)
-                    preview, truncated = truncate_for_log(payload_str, limit=1000)
-                    self.logger.debug(
-                        'response.payload_preview enabled=true truncated=%s len=%d payload=%s',
-                        truncated,
-                        len(payload_str),
-                        preview,
-                    )
-                except Exception:
-                    pass
-
-            usage_summary = session.state.usage_summary or {}
-            tokens_in = usage_summary.get('input_tokens')
-            tokens_out = usage_summary.get('output_tokens')
-            respond_time = perf_counter() - start_time
-            summary_kwargs = {
-                'status': 'error' if session.state.has_error else 'ok',
-                'model': body.model,
-                'duration_sec': respond_time,
-                'tool_calls': session.state.tool_calls_executed,
-                'citations': len(session.state.citations),
-                'input_tokens': tokens_in,
-                'output_tokens': tokens_out,
-            }
-            if session.state.error_message:
-                summary_kwargs['last_error'] = session.state.error_message
-            self.logger.info(
-                'Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f '
-                'tool_calls=%(tool_calls)d citations=%(citations)d '
-                'input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s'
-                + (' last_error=%(last_error)s' if session.state.error_message else ''),
-                summary_kwargs,
-            )
-
-        except Exception as exc:  # pragma: no cover
-            await self._cancel_tasks(session.state.thinking_tasks)
-            session.state.has_error = True
-            session.state.error_message = str(exc)
-            self.logger.error('turn.error type=%s message=%s', type(exc).__name__, session.state.error_message)
-            await self._handle_stream_error(session.emitter, session.state.error_message)
-
-        finally:
-            await self._emit_log_citation(session.emitter, session.state.citations)
-            if not session.state.response_text and not session.state.has_error and session.state.last_tool_result:
-                session.state.response_text = session.state.last_tool_result
-            usage_for_completion = (
-                session.state.usage_summary
-                or self._extract_usage_from_final_response(session.state.completed_response or {})
-                or None
-            )
-            await session.emit_status('Done', done=True, hidden=False, require_previous=True)
-            await session.emitter.chat_completion(
-                {'content': session.state.response_text, 'usage': usage_for_completion, 'done': True}
-            )
-
-        return TurnResult(
-            text=session.state.response_text,
-            usage=usage_for_completion,
-            citations=session.state.citations if session.state.citations else [],
-            error_message=session.state.error_message,
-        )
-
-    async def run_task_model(
-        self,
-        body: dict[str, Any],
-        valves: Any,
-    ) -> str:
-        return await run_task_model(self.client, body, valves)
-
-    async def emit_notification(
-        self,
-        event_emitter: EventEmitterFn | None,
-        content: str,
-        *,
-        level: Literal["info", "success", "warning", "error"] = "info",
-    ) -> None:
-        await EventEmitter(event_emitter).notification(content, level=level)
-
-    async def emit_error(
-        self,
-        event_emitter: EventEmitterFn | None,
-        error_obj: Exception | str,
-        *,
-        show_error_message: bool = True,
-        done: bool = False,
-    ) -> None:
-        if not show_error_message:
-            return
-        await EventEmitter(event_emitter).chat_completion(
-            {"error": {"message": str(error_obj)}, "done": done}
-        )
-
-    def _schedule_reasoning_statuses(
-        self, body: ResponseCreateParams, status_fn: Callable[[str], Awaitable[Any]]
-    ) -> list[asyncio.Task[Any]]:
-        if not supports("reasoning", body.model):
-            return []
-
-        async def _later(delay: float, msg: str) -> None:
-            await asyncio.sleep(delay)
-            await status_fn(msg)
-
-        tasks: list[asyncio.Task[Any]] = []
-        for delay, msg in [
-            (0, "Thinking…"),
-            (1.5, "Reading the user's question…"),
-            (4.0, "Gathering my thoughts…"),
-            (6.0, "Exploring possible responses…"),
-            (7.0, "Building a plan…"),
-        ]:
-            tasks.append(asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg)))
-        return tasks
-
-    async def _cancel_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
-        if not tasks:
-            return
-        to_cancel = list(tasks)
-        tasks.clear()
-        for task in to_cancel:
-            task.cancel()
-        await asyncio.gather(*to_cancel, return_exceptions=True)
-
-    async def _emit_log_citation(
-        self,
-        emitter: EventEmitter,
-        emitted_citations: list[dict[str, Any]],
-    ) -> None:
-        session_id = OWUI_SESSION_ID.get()
-        if not session_id:
-            return
-        logs = get_session_logs(session_id)
-        if not logs:
-            return
-        log_text = "\n".join(logs)
-        truncated = len(log_text) > 4000
-        self.logger.debug("Emitting log citation lines=%d truncated=%s", len(logs), truncated)
-        await emitter.citation(
-            {
-                "document": [log_text],
-                "metadata": [{"source": "Logs"}],
-                "source": {"name": "Logs"},
-            }
-        )
-        snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
-        emitted_citations.append(
-            {
-                "provider": "openai:logs",
-                "id": str(len(emitted_citations) + 1),
-                "title": "Logs",
-                "snippet": snippet,
-                "metadata": {
-                    "source": "Logs",
-                    "total_lines": len(logs),
-                    "truncated": len(snippet) < len(log_text),
-                },
-            }
-        )
-        clear_session_logs(session_id)
-
-    def _sanitize_output_items(self, items: list[dict[str, Any]], *, store: bool | None) -> list[dict[str, Any]]:
-        """Strip server-side IDs when store=False to avoid lookups on replay."""
-
-        if store is not False:
-            return [item for item in items if isinstance(item, dict)]
-
-        cleaned: list[dict[str, Any]] = []
-        for item in items:
-            if isinstance(item, dict):
-                clone = dict(item)
-                clone.pop("id", None)
-                cleaned.append(clone)
-        return cleaned
-
-    def _extract_usage_from_final_response(self, final_response: dict[str, Any]) -> dict[str, Any]:
-        if "usage" in final_response:
-            usage = final_response.get("usage")
-            return usage if isinstance(usage, dict) else {}
-
-        response_payload = final_response.get("response")
-        if isinstance(response_payload, dict):
-            usage = response_payload.get("usage")
-            if isinstance(usage, dict):
-                return usage
-
-        return {}
-
-    async def _handle_stream_error(
-        self,
-        emitter: EventEmitter | None,
-        message: str,
-    ) -> None:
-        self.logger.error("Streaming error: %s", message)
-        if emitter:
-            await emitter.chat_completion({"error": {"message": message}, "done": False})
-
-    async def _stream_response(
-        self,
-        session: _StreamSession,
-        body: ResponseCreateParams,
-        valves: Any,
-    ) -> None:
-        async for event in self.client.stream(
-            body.model_dump(exclude_none=True),
-            api_key=valves.API_KEY,
-            base_url=valves.BASE_URL,
-            typed=True,
-        ):
-            if await session.handle_event(event):
-                break
-
-    def _status_from_output_item(self, item: dict[str, Any]) -> str | None:
-        """Return a user-facing status string for a completed output item."""
-
-        item_type = item.get("type")
-        if not item_type:
-            return None
-
-        if item_type == "function_call":
-            name = item.get("name", "tool")
-            try:
-                arguments = json.loads(item.get("arguments") or "{}")
-                args_formatted = ", ".join(f"{k}={json.dumps(v)}" for k, v in arguments.items())
-                return f"Running the {name} tool…\n{name}({args_formatted})"
-            except Exception:
-                return f"Running the {name} tool…"
-
-        if item_type == "web_search_call":
-            action = item.get("action") or {}
-            if action.get("type") == "search":
-                query = action.get("query")
-                return f"Searching\n{query}" if query else "Searching the web…"
-            return "Web search in progress…"
-
-        if item_type == "file_search_call":
-            return "Let me skim those files…"
-        if item_type == "image_generation_call":
-            return "Let me create that image…"
-        if item_type == "mcp_call":
-            return "Querying the MCP server…"
-        if item_type == "code_interpreter_call":
-            return "Running code interpreter…"
-
-        return None
-
-    def _parse_reasoning_summary(self, text_val: str) -> tuple[str, str]:
-        """Extract a title/content pair from reasoning summary text."""
-
-        title = "Thinking…"
-        content = text_val
-        if "**" in text_val:
-            try:
-                parts = text_val.split("**")
-                bold_segments = [parts[i] for i in range(1, len(parts), 2)]
-                if bold_segments:
-                    title = bold_segments[-1].strip()
-                    content = text_val.replace(f"**{bold_segments[-1]}**", "").strip()
-            except Exception:
-                pass
-        return title, content
-
-
-__all__ = ["EventEmitterFn", "ResponsesEngine"]
-
-# === interface/openwebui_pipe.py ===
+# === adapters/openwebui/pipe.py ===
 """Open WebUI pipe implementation that delegates to the Responses engine."""
 
 import logging
@@ -3701,18 +3833,21 @@ from open_webui.models.models import ModelForm, Models
 # from openai_responses_manifold.config.settings import PipeValves, UserValves
 # from openai_responses_manifold.core.logging import get_logger, logging_context
 # from openai_responses_manifold.core.model_catalog import supports
-# from openai_responses_manifold.openai_api.requests import CompletionCreateParams
-# from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
-# from openai_responses_manifold.openwebui.events import (
+# from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+# from openai_responses_manifold.adapters.openai.requests import CompletionCreateParams
+# from openai_responses_manifold.adapters.openwebui.events import (
 #     EventCall,
 #     EventCallerFn,
+#     EventEmitter,
 #     EventEmitterFn,
 # )
-# from openai_responses_manifold.openwebui.store import ItemStore
-# from openai_responses_manifold.services.engine import ResponsesEngine
-# from openai_responses_manifold.services.request_builder import build_responses_body
-# from openai_responses_manifold.services.routing import route_auto_model
-# from openai_responses_manifold.services.tools import build_tools
+# from openai_responses_manifold.adapters.openwebui.request_builder import build_responses_body
+# from openai_responses_manifold.adapters.openwebui.runtime_events import OpenWebUIRuntimeEvents
+# from openai_responses_manifold.adapters.openwebui.store import ItemStore
+# from openai_responses_manifold.domain.engine import ResponsesEngine
+# from openai_responses_manifold.domain.events import RuntimeEvents
+# from openai_responses_manifold.domain.routing import route_auto_model
+# from openai_responses_manifold.domain.tools import build_tools
 
 
 class Pipe:
@@ -3766,6 +3901,8 @@ class Pipe:
             user_id=__metadata__.get("user_id"),
         ):
             await self._maybe_unclamp_status(__event_call__)
+            emitter = EventEmitter(__event_emitter__)
+            runtime_events: RuntimeEvents = OpenWebUIRuntimeEvents(emitter)
 
             completions_body = CompletionCreateParams.model_validate(body)
             responses_body = await build_responses_body(
@@ -3792,10 +3929,15 @@ class Pipe:
                 return await self.engine.run_task_model(responses_body.model_dump(), valves)
 
             responses_body = await self._ensure_native_function_calling_if_needed(
-                responses_body, openwebui_model_id, __event_emitter__
+                responses_body,
+                openwebui_model_id,
+                runtime_events,
             )
             responses_body = await self._ensure_routed_auto_model(
-                responses_body, valves, openwebui_model_id, __event_emitter__
+                responses_body,
+                valves,
+                openwebui_model_id,
+                runtime_events,
             )
             self._apply_reasoning_options(responses_body, valves)
             self._apply_parallel_tool_policy(responses_body, valves)
@@ -3804,7 +3946,7 @@ class Pipe:
                 responses_body,
                 valves=valves,
                 metadata=__metadata__,
-                event_emitter=__event_emitter__,
+                events=runtime_events,
                 openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
             )
 
@@ -3865,13 +4007,13 @@ class Pipe:
         responses_body: Any,
         valves: PipeValves,
         openwebui_model_id: str,
-        event_emitter: EventEmitterFn,
+        events: RuntimeEvents,
     ):
         await self._ensure_native_function_calling_if_needed(
-            responses_body, openwebui_model_id, event_emitter
+            responses_body, openwebui_model_id, events
         )
         responses_body = await self._ensure_routed_auto_model(
-            responses_body, valves, openwebui_model_id, event_emitter
+            responses_body, valves, openwebui_model_id, events
         )
         self._apply_reasoning_options(responses_body, valves)
         self._apply_parallel_tool_policy(responses_body, valves)
@@ -3881,7 +4023,7 @@ class Pipe:
         self,
         responses_body: Any,
         openwebui_model_id: str,
-        event_emitter: EventEmitterFn,
+        events: RuntimeEvents,
     ) -> Any:
         tools = responses_body.tools or []
         if not (tools and supports("function_calling", responses_body.model)):
@@ -3894,7 +4036,7 @@ class Pipe:
             return responses_body
 
         await self.engine.emit_notification(
-            event_emitter,
+            events,
             content=(
                 f"Enabling native function calling for model: {openwebui_model_id}. "
                 "Please re-run your query."
@@ -3912,7 +4054,7 @@ class Pipe:
         responses_body: Any,
         valves: PipeValves,
         openwebui_model_id: str,
-        event_emitter: EventEmitterFn,
+        events: RuntimeEvents,
     ):
         if openwebui_model_id.endswith(".gpt-5-auto-dev"):
             return await route_auto_model(
@@ -3921,13 +4063,13 @@ class Pipe:
                 responses_body=responses_body,
                 valves=valves,
                 tools=responses_body.tools or [],
-                event_emitter=event_emitter,
+                events=events,
             )
 
         if openwebui_model_id.endswith(".gpt-5-auto"):
             responses_body.model = "gpt-5-chat-latest"
             await self.engine.emit_notification(
-                event_emitter,
+                events,
                 content="Model router coming soon — using gpt-5-chat-latest (GPT-5 Fast).",
                 level="warning",
             )

@@ -12,6 +12,10 @@ import openai_responses_manifold as orm
 from .fakes import FakeResponsesClient, InMemoryChats, SpyEventEmitter
 
 
+def runtime_events(emitter: SpyEventEmitter) -> orm.RuntimeEvents:
+    return orm.OpenWebUIRuntimeEvents(orm.EventEmitter(emitter))
+
+
 @pytest.mark.asyncio()
 async def test_streaming_flow_emits_single_completion(
     fake_responses_client: FakeResponsesClient,
@@ -56,7 +60,7 @@ async def test_streaming_flow_emits_single_completion(
         responses_body_factory(),
         valves=valves,
         metadata=metadata,
-        event_emitter=spy_event_emitter,
+        events=runtime_events(spy_event_emitter),
         openwebui_tools={},
     )
 
@@ -139,7 +143,7 @@ async def test_function_call_loop_executes_local_tools(
         responses_body_factory(model="gpt-4o", store=False),
         valves=valves,
         metadata=metadata,
-        event_emitter=spy_event_emitter,
+        events=runtime_events(spy_event_emitter),
         openwebui_tools={"echo": {"callable": echo}},
     )
 
@@ -191,7 +195,7 @@ async def test_errors_emit_log_citation(
             responses_body_factory(),
             valves=valves,
             metadata=metadata,
-            event_emitter=spy_event_emitter,
+            events=runtime_events(spy_event_emitter),
             openwebui_tools={},
         )
     finally:
@@ -246,7 +250,7 @@ async def test_usage_backfills_from_final_response(
         responses_body_factory(),
         valves=valves,
         metadata=metadata_factory(),
-        event_emitter=spy_event_emitter,
+        events=runtime_events(spy_event_emitter),
         openwebui_tools={},
     )
 
@@ -307,7 +311,7 @@ async def test_function_call_arguments_delta_handles_bad_json(
         responses_body_factory(),
         valves=valves,
         metadata=metadata_factory(),
-        event_emitter=spy_event_emitter,
+        events=runtime_events(spy_event_emitter),
         openwebui_tools={"broken_tool": {"callable": lambda **_: None}},
     )
 

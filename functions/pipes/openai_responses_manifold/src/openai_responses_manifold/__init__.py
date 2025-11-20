@@ -46,8 +46,8 @@ from openai_responses_manifold.core.model_catalog import (
     normalize,
     supports,
 )
-from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
-from openai_responses_manifold.openai_api.events import (
+from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+from openai_responses_manifold.adapters.openai.events import (
     BaseStreamEvent,
     ErrorEvent,
     EventType,
@@ -55,20 +55,27 @@ from openai_responses_manifold.openai_api.events import (
     UnknownStreamEventType,
     parse_event,
 )
-from openai_responses_manifold.openai_api.requests import (
+from openai_responses_manifold.adapters.openai.requests import (
     CompletionCreateParams,
     ResponseCreateParams,
 )
-from openai_responses_manifold.openwebui.events import EventEmitter, EventEmitterFn
-from openai_responses_manifold.openwebui.store import ItemStore
-from openai_responses_manifold.services.engine import ResponsesEngine, TurnResult
-from openai_responses_manifold.services.routing import route_auto_model
-from openai_responses_manifold.services.tools import (
+from openai_responses_manifold.adapters.openwebui import (
+    EventCall,
+    EventCallerFn,
+    EventEmitter,
+    EventEmitterFn,
+    ItemStore,
+    OpenWebUIRuntimeEvents,
+)
+from openai_responses_manifold.adapters.openwebui.pipe import Pipe
+from openai_responses_manifold.domain.engine import ResponsesEngine, TurnResult
+from openai_responses_manifold.domain.events import NullRuntimeEvents, RuntimeEvents
+from openai_responses_manifold.domain.routing import route_auto_model
+from openai_responses_manifold.domain.tools import (
     build_tools,
     execute_tool_calls,
     resolve_tools,
 )
-from openai_responses_manifold.interface.openwebui_pipe import Pipe
 
 __all__ = [
     "EMPTY_FEATURES",
@@ -105,9 +112,14 @@ __all__ = [
     "UserValves",
     "ResponsesEngine",
     "TurnResult",
+    "RuntimeEvents",
+    "NullRuntimeEvents",
     "EventEmitter",
     "EventEmitterFn",
+    "EventCall",
+    "EventCallerFn",
     "ItemStore",
+    "OpenWebUIRuntimeEvents",
     "build_tools",
     "execute_tool_calls",
     "resolve_tools",

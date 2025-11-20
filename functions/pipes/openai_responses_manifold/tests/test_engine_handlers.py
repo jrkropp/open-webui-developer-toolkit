@@ -1,8 +1,8 @@
 import pytest
 
 import openai_responses_manifold as orm
-import openai_responses_manifold.services.engine as orm_engine
-from openai_responses_manifold.openai_api.events import (
+import openai_responses_manifold.domain.engine as orm_engine
+from openai_responses_manifold.adapters.openai.events import (
     ResponseOutputTextDeltaEvent,
     ResponseOutputTextDoneEvent,
 )
@@ -19,12 +19,13 @@ async def test_event_handler_tracks_text_and_completion(
     engine = orm.ResponsesEngine()
     monkeypatch.setattr(engine, "_schedule_reasoning_statuses", lambda *_, **__: [])
 
+    runtime_events = orm.OpenWebUIRuntimeEvents(orm.EventEmitter(spy_event_emitter))
     handler = orm_engine._StreamSession(
         engine,
         body,
         valves,
         {"chat_id": "chat-1", "message_id": "msg-1", "model": {"id": "gpt-4o"}},
-        spy_event_emitter,
+        runtime_events,
         openwebui_tools=None,
     )
 
@@ -47,12 +48,13 @@ async def test_event_handler_executes_tools_with_registry(
     monkeypatch.setattr(engine, "_schedule_reasoning_statuses", lambda *_, **__: [])
     monkeypatch.setattr(engine.history_persistence, "persist_items_for_message", lambda *_, **__: "[hidden]")
 
+    runtime_events = orm.OpenWebUIRuntimeEvents(orm.EventEmitter(spy_event_emitter))
     handler = orm_engine._StreamSession(
         engine,
         body,
         valves,
         {"chat_id": "chat-1", "message_id": "msg-1", "model": {"id": "gpt-4o"}},
-        spy_event_emitter,
+        runtime_events,
         openwebui_tools={},
     )
 

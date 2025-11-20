@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import openai_responses_manifold as orm
-from openai_responses_manifold.openwebui.store import ItemStore
-from openai_responses_manifold.services.history import HistoryBuilder, HistoryPersistence
+from openai_responses_manifold.adapters.openwebui.store import ItemStore
+from openai_responses_manifold.domain.history import HistoryBuilder, HistoryPersistence
 
 from .fakes import InMemoryChats
 

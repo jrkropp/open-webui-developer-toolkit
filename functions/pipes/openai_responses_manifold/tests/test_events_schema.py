@@ -1,4 +1,4 @@
-from openai_responses_manifold.openai_api.events import (
+from openai_responses_manifold.adapters.openai.events import (
     EventType,
     ResponseFunctionCallArgumentsDeltaEvent,
     ResponseOutputTextDeltaEvent,

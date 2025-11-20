@@ -12,18 +12,21 @@ from open_webui.models.models import ModelForm, Models
 from openai_responses_manifold.config.settings import PipeValves, UserValves
 from openai_responses_manifold.core.logging import get_logger, logging_context
 from openai_responses_manifold.core.model_catalog import supports
-from openai_responses_manifold.openai_api.requests import CompletionCreateParams
-from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
-from openai_responses_manifold.openwebui.events import (
+from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+from openai_responses_manifold.adapters.openai.requests import CompletionCreateParams
+from openai_responses_manifold.adapters.openwebui.events import (
     EventCall,
     EventCallerFn,
+    EventEmitter,
     EventEmitterFn,
 )
-from openai_responses_manifold.openwebui.store import ItemStore
-from openai_responses_manifold.services.engine import ResponsesEngine
-from openai_responses_manifold.services.request_builder import build_responses_body
-from openai_responses_manifold.services.routing import route_auto_model
-from openai_responses_manifold.services.tools import build_tools
+from openai_responses_manifold.adapters.openwebui.request_builder import build_responses_body
+from openai_responses_manifold.adapters.openwebui.runtime_events import OpenWebUIRuntimeEvents
+from openai_responses_manifold.adapters.openwebui.store import ItemStore
+from openai_responses_manifold.domain.engine import ResponsesEngine
+from openai_responses_manifold.domain.events import RuntimeEvents
+from openai_responses_manifold.domain.routing import route_auto_model
+from openai_responses_manifold.domain.tools import build_tools
 
 
 class Pipe:
@@ -77,6 +80,8 @@ class Pipe:
             user_id=__metadata__.get("user_id"),
         ):
             await self._maybe_unclamp_status(__event_call__)
+            emitter = EventEmitter(__event_emitter__)
+            runtime_events: RuntimeEvents = OpenWebUIRuntimeEvents(emitter)
 
             completions_body = CompletionCreateParams.model_validate(body)
             responses_body = await build_responses_body(
@@ -103,10 +108,15 @@ class Pipe:
                 return await self.engine.run_task_model(responses_body.model_dump(), valves)
 
             responses_body = await self._ensure_native_function_calling_if_needed(
-                responses_body, openwebui_model_id, __event_emitter__
+                responses_body,
+                openwebui_model_id,
+                runtime_events,
             )
             responses_body = await self._ensure_routed_auto_model(
-                responses_body, valves, openwebui_model_id, __event_emitter__
+                responses_body,
+                valves,
+                openwebui_model_id,
+                runtime_events,
             )
             self._apply_reasoning_options(responses_body, valves)
             self._apply_parallel_tool_policy(responses_body, valves)
@@ -115,7 +125,7 @@ class Pipe:
                 responses_body,
                 valves=valves,
                 metadata=__metadata__,
-                event_emitter=__event_emitter__,
+                events=runtime_events,
                 openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
             )
 
@@ -176,13 +186,13 @@ class Pipe:
         responses_body: Any,
         valves: PipeValves,
         openwebui_model_id: str,
-        event_emitter: EventEmitterFn,
+        events: RuntimeEvents,
     ):
         await self._ensure_native_function_calling_if_needed(
-            responses_body, openwebui_model_id, event_emitter
+            responses_body, openwebui_model_id, events
         )
         responses_body = await self._ensure_routed_auto_model(
-            responses_body, valves, openwebui_model_id, event_emitter
+            responses_body, valves, openwebui_model_id, events
         )
         self._apply_reasoning_options(responses_body, valves)
         self._apply_parallel_tool_policy(responses_body, valves)
@@ -192,7 +202,7 @@ class Pipe:
         self,
         responses_body: Any,
         openwebui_model_id: str,
-        event_emitter: EventEmitterFn,
+        events: RuntimeEvents,
     ) -> Any:
         tools = responses_body.tools or []
         if not (tools and supports("function_calling", responses_body.model)):
@@ -205,7 +215,7 @@ class Pipe:
             return responses_body
 
         await self.engine.emit_notification(
-            event_emitter,
+            events,
             content=(
                 f"Enabling native function calling for model: {openwebui_model_id}. "
                 "Please re-run your query."
@@ -223,7 +233,7 @@ class Pipe:
         responses_body: Any,
         valves: PipeValves,
         openwebui_model_id: str,
-        event_emitter: EventEmitterFn,
+        events: RuntimeEvents,
     ):
         if openwebui_model_id.endswith(".gpt-5-auto-dev"):
             return await route_auto_model(
@@ -232,13 +242,13 @@ class Pipe:
                 responses_body=responses_body,
                 valves=valves,
                 tools=responses_body.tools or [],
-                event_emitter=event_emitter,
+                events=events,
             )
 
         if openwebui_model_id.endswith(".gpt-5-auto"):
             responses_body.model = "gpt-5-chat-latest"
             await self.engine.emit_notification(
-                event_emitter,
+                events,
                 content="Model router coming soon — using gpt-5-chat-latest (GPT-5 Fast).",
                 level="warning",
             )

@@ -52,16 +52,16 @@ This project started as an internal tool (200+ hours of optimization and testing
 
 ## Local Development
 
-Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything lives under `src/openai_responses_manifold/` in clear layers: `config/` (valves/defaults), `core/` (model catalog, markers/messages/errors, logging), `openai_api/` (OpenAI DTOs + streaming events + client), `openwebui/` (Open WebUI events + store), `services/` (engine, history, request builder, tools, tasks, routing), and `interface/` (Open WebUI `Pipe`). Run `make build` when you’re ready to regenerate the monolithic `openai_responses_manifold.py` that Open WebUI imports.
+Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything lives under `src/openai_responses_manifold/` in clear layers: `config/` (valves/defaults), `core/` (model catalog, markers/messages/errors, logging), `adapters/openai/` (OpenAI DTOs + streaming events + client), `adapters/openwebui/` (Open WebUI events/store, request builder, runtime event bridge, `Pipe`), and `domain/` (runtime events protocol plus engine, history, tools, tasks, routing). Run `make build` when you’re ready to regenerate the monolithic `openai_responses_manifold.py` that Open WebUI imports.
 
 ### Project layout
 
-- `src/openai_responses_manifold/interface/openwebui_pipe.py` – Open WebUI adapter (`Pipe`) and valve nesting.
+- `src/openai_responses_manifold/adapters/openwebui/pipe.py` – Open WebUI adapter (`Pipe`) and valve nesting.
 - `src/openai_responses_manifold/config/settings.py` – pipe and user valve defaults.
 - `src/openai_responses_manifold/core/` – model catalog/aliases + ID normalization, markers, messages, errors, context-aware logging.
-- `src/openai_responses_manifold/openai_api/` – OpenAI DTOs (requests/events) and the `OpenAIResponsesClient`.
-- `src/openai_responses_manifold/openwebui/` – Open WebUI event helpers and chat-backed `ItemStore`.
-- `src/openai_responses_manifold/services/` – engine orchestration plus history, request builder, tools, tasks, and routing.
+- `src/openai_responses_manifold/adapters/openai/` – OpenAI DTOs (requests/events) and the `OpenAIResponsesClient`.
+- `src/openai_responses_manifold/adapters/openwebui/` – Open WebUI event helpers, `ItemStore`, request builder, runtime events bridge.
+- `src/openai_responses_manifold/domain/` – runtime events protocol, engine orchestration plus history, tools, tasks, and routing.
 - `docs/DEVELOPER_GUIDE.md` – deep dive into the layered architecture (mirrors the Work Package design).
 
 **Clone and bootstrap**
@@ -301,7 +301,7 @@ To bridge this gap, the manifold includes an experimental **`gpt-5-auto`** model
 
 ### Requests vs events (schema split)
 
-- **Outbound requests** use `core/requests.py` (`ResponsesBody`) with `extra="forbid"`; the pipe uses `services/request_builder.py` to adapt OpenWebUI chat payloads into the strict Responses API shape (and hardcodes `include_obfuscation=false` to save bandwidth—see OpenAI docs).
+- **Outbound requests** use `adapters/openai/requests.py` (`ResponseCreateParams`) with `extra="forbid"`; the pipe uses `adapters/openwebui/request_builder.py` to adapt OpenWebUI chat payloads into the strict Responses API shape (and hardcodes `include_obfuscation=false` to save bandwidth—see OpenAI docs).
 - **Inbound streaming events** use `core/events.py`, a discriminated union keyed by `type`; `OpenAIResponsesClient.stream(typed=True)` yields validated models instead of raw dicts.
 - Tests/fakes run through the same schemas to catch drift early.
 

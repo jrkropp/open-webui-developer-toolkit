@@ -1,5 +1,5 @@
-from openai_responses_manifold.openwebui.store import ItemStore
-from openai_responses_manifold.services.request_builder import build_responses_body
+from openai_responses_manifold.adapters.openwebui.store import ItemStore
+from openai_responses_manifold.adapters.openwebui.request_builder import build_responses_body
 import pytest
 
 

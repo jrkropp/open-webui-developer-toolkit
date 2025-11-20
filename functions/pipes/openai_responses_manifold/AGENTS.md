@@ -14,14 +14,11 @@ At runtime there are a few clear layers:
   - Valve defaults (`settings.py`).
 - **Core** (`src/openai_responses_manifold/core/`)
   - Model catalog/aliases + ID normalization, markers/messages/errors, context-aware logging.
-- **OpenAI API** (`src/openai_responses_manifold/openai_api/`)
-  - Request/response DTOs, streaming event types + parser, `OpenAIResponsesClient`.
-- **Open WebUI** (`src/openai_responses_manifold/openwebui/`)
-  - Event helpers and chat-backed `ItemStore`.
-- **Services** (`src/openai_responses_manifold/services/`)
-  - `ResponsesEngine` plus history, request builder, tools, tasks, and routing.
-- **Interface** (`src/openai_responses_manifold/interface/openwebui_pipe.py`)
-  - `Pipe` with nested `Valves` / `UserValves`; builds `ResponsesBody`, routes auto models, and delegates to the engine.
+- **Adapters** (`src/openai_responses_manifold/adapters/`)
+  - `openai/`: Request/response DTOs, streaming event types + parser, `OpenAIResponsesClient`.
+  - `openwebui/`: Event helpers, chat-backed `ItemStore`, request builder, runtime-event bridge, and `Pipe`.
+- **Domain** (`src/openai_responses_manifold/domain/`)
+  - Manifold orchestration: runtime events protocol, history helpers, tool execution, tasks/routing, and `ResponsesEngine`.
 
 Other important pieces:
 
@@ -42,10 +39,10 @@ functions/pipes/openai_responses_manifold/
 │     ├─ __init__.py       # re-exports Pipe, ResponsesEngine, helpers
 │     ├─ config/settings.py          # shared Pipe valve definitions/defaults
 │     ├─ core/                       # model catalog, markers/messages/errors, logging
-│     ├─ openai_api/                 # OpenAI DTOs, streaming event types, client
-│     ├─ openwebui/                  # Open WebUI event helpers and store adapter
-│     ├─ services/                   # engine, history, request builder, tools, tasks, routing
-│     └─ interface/openwebui_pipe.py # Pipe + nested Valves/UserValves (Open WebUI adapter)
+│     ├─ adapters/
+│     │  ├─ openai/                  # OpenAI DTOs, streaming event types, client
+│     │  └─ openwebui/               # Open WebUI events/store, request builder, runtime events, Pipe
+│     └─ domain/                     # runtime events protocol, history/tools/tasks/routing, engine
 ├─ tests/                  # pytest suite (imports package modules via conftest)
 └─ openai_responses_manifold.py   # generated artifact (never hand-edit)
 ```
@@ -82,7 +79,7 @@ Key implications for agents:
   ```
 
 - In this manifold:
-  - `Pipe.Valves` and `Pipe.UserValves` live in `interface/openwebui_pipe.py` and **must remain nested** inside `Pipe`.
+  - `Pipe.Valves` and `Pipe.UserValves` live in `adapters/openwebui/pipe.py` and **must remain nested** inside `Pipe`.
   - Admin defaults come from `self.valves = self.Valves()`.
   - Per‑user overrides come from `__user__["valves"]`, validated into `Pipe.UserValves`.
   - The merge logic lives in `Pipe._merge_valves(...)`, which produces the effective `valves` object used by `ResponsesEngine` and helpers.
@@ -100,7 +97,7 @@ Key implications for agents:
 
 When modifying engine behavior:
 
-- Prefer changing `src/openai_responses_manifold/services/engine.py`, then run:
+- Prefer changing `src/openai_responses_manifold/domain/engine.py`, then run:
 
   ```bash
   cd functions/pipes/openai_responses_manifold
@@ -108,7 +105,7 @@ When modifying engine behavior:
   make build
   ```
 
-- The bundler will pick up `services/engine.py` (via `MODULE_ORDER`) and regenerate the monolith after tests pass so Open WebUI sees the same behavior.
+- The bundler will pick up `domain/engine.py` (via `MODULE_ORDER`) and regenerate the monolith after tests pass so Open WebUI sees the same behavior.
 
 ## Key commands (recap)
 
@@ -126,6 +123,6 @@ When modifying engine behavior:
 
 - Always treat `openai_responses_manifold.py` as generated; edit the package under `src/openai_responses_manifold/` instead.
 - When adding new features:
-- Prefer to put pure logic in `core/`, orchestration in `services/`, OpenAI/HTTP in `openai_api/`, Open WebUI glue in `openwebui/`, and keep the interface `Pipe` thin.
+  - Prefer to put pure logic in `core/`, orchestration in `domain/`, OpenAI/HTTP in `adapters/openai/`, Open WebUI glue in `adapters/openwebui/`, and keep the `Pipe` thin.
   - Update `scripts/build.py` if you introduce new top‑level modules in the package so the bundler stays in sync.
 - Keep this guide in sync with structural changes so future agents don’t have to rediscover how the manifold and bundler work. 

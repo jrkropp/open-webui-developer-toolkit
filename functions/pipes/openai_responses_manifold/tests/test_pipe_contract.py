@@ -20,11 +20,11 @@ async def test_pipes_listing_and_pipe_smoke(monkeypatch: pytest.MonkeyPatch) -> 
         *,
         valves: orm.Pipe.Valves,
         metadata: dict[str, Any],
-        event_emitter,
+        events: orm.RuntimeEvents,
         openwebui_tools=None,
         **_: Any,
     ) -> orm.TurnResult:
-        await event_emitter({"type": "chat:message", "data": {"content": "stub"}})
+        await events.replace("stub")
         return orm.TurnResult(text="final-output", usage=None, citations=[])
 
     monkeypatch.setattr(orm.ResponsesEngine, "run_streaming_turn", fake_streaming_loop, raising=False)

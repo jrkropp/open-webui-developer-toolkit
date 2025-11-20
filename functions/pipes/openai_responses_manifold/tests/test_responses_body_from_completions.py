@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from openai_responses_manifold import CompletionCreateParams
-from openai_responses_manifold.openwebui.store import ItemStore
-from openai_responses_manifold.services.request_builder import build_responses_body
+from openai_responses_manifold.adapters.openwebui.store import ItemStore
+from openai_responses_manifold.adapters.openwebui.request_builder import build_responses_body
 
 
 @pytest.mark.asyncio()

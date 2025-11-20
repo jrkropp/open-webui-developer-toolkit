@@ -7,9 +7,9 @@ from collections import deque
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
-from openai_responses_manifold.openai_api.events import UnknownStreamEventType, parse_event
-from openai_responses_manifold.openai_api.requests import ResponseCreateParams
-from openai_responses_manifold.openwebui.events import EventEmitterFn
+from openai_responses_manifold.adapters.openai.events import UnknownStreamEventType, parse_event
+from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+from openai_responses_manifold.adapters.openwebui.events import EventEmitterFn
 
 
 class InMemoryChats:

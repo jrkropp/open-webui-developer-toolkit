@@ -1,13 +1,13 @@
-"""Build ResponsesBody requests from OpenWebUI-style inputs."""
+"""Build ResponseCreateParams from OpenWebUI-style inputs."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from openai_responses_manifold.core.logging import get_logger
-from openai_responses_manifold.openai_api.requests import ResponseCreateParams
-from openai_responses_manifold.openwebui.store import ItemStore
-from openai_responses_manifold.services.history import HistoryService
+from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+from openai_responses_manifold.adapters.openwebui.store import ItemStore
+from openai_responses_manifold.domain.history import HistoryService
 
 logger = get_logger(__name__)
 

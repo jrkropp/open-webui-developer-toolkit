@@ -6,10 +6,10 @@ import json
 import logging
 from typing import Any
 
+from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
 from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
-from openai_responses_manifold.openai_api.requests import ResponseCreateParams
-from openai_responses_manifold.openwebui.events import EventEmitter, EventEmitterFn
+from openai_responses_manifold.domain.events import RuntimeEvents
 
 logger = get_logger(__name__)
 
@@ -18,11 +18,11 @@ async def route_auto_model(
     client: OpenAIResponsesClient,
     *,
     router_model: str,
-    responses_body: ResponsesBody,
+    responses_body: ResponseCreateParams,
     valves: Any,
     tools: list[dict[str, Any]],
-    event_emitter: EventEmitterFn | None = None,
-) -> ResponsesBody:
+    events: RuntimeEvents | None = None,
+) -> ResponseCreateParams:
     """
     Use a small helper model to choose the final GPT-5 variant and reasoning effort.
 
@@ -82,9 +82,8 @@ async def route_auto_model(
 
     responses_body.model_router_result = router_json
     explanation = router_json.get("explanation")
-    if isinstance(explanation, str):
-        emitter = EventEmitter(event_emitter)
-        await emitter.status(
+    if isinstance(explanation, str) and events:
+        await events.status(
             f"Routing to {router_json.get('model')} (effort: {router_json.get('reasoning_effort')})\nExplanation: {explanation}"
         )
     return responses_body

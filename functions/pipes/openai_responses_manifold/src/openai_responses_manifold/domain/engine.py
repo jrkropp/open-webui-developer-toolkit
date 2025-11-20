@@ -16,9 +16,8 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Awaitable, Callable, Literal
 
-from openai_responses_manifold.core.errors import ToolExecutionError
-from openai_responses_manifold.core.model_catalog import supports
-from openai_responses_manifold.openai_api.events import (
+from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+from openai_responses_manifold.adapters.openai.events import (
     ErrorEvent,
     ResponseCompletedEvent,
     ResponseCreatedEvent,
@@ -32,7 +31,8 @@ from openai_responses_manifold.openai_api.events import (
     ResponseQueuedEvent,
     ResponseReasoningSummaryTextDoneEvent,
 )
-from openai_responses_manifold.openai_api.requests import ResponseCreateParams
+from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+from openai_responses_manifold.core.errors import ToolExecutionError
 from openai_responses_manifold.core.logging import (
     OWUI_SESSION_ID,
     clear_session_logs,
@@ -40,12 +40,11 @@ from openai_responses_manifold.core.logging import (
     get_session_logs,
     truncate_for_log,
 )
-from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
-from openai_responses_manifold.openwebui.events import EventEmitter, EventEmitterFn
-from openai_responses_manifold.openwebui.store import ItemStore
-from openai_responses_manifold.services.history import HistoryPersistence
-from openai_responses_manifold.services.tasks import run_task_model
-from openai_responses_manifold.services.tools import execute_tool_calls
+from openai_responses_manifold.core.model_catalog import supports
+from openai_responses_manifold.domain.events import NullRuntimeEvents, RuntimeEvents
+from openai_responses_manifold.domain.history import HistoryPersistence, HistoryStore
+from openai_responses_manifold.domain.tasks import run_task_model
+from openai_responses_manifold.domain.tools import execute_tool_calls
 
 
 @dataclass
@@ -88,7 +87,7 @@ class _StreamSession:
         body: ResponseCreateParams,
         valves: Any,
         metadata: dict[str, Any],
-        event_emitter: EventEmitterFn,
+        events: RuntimeEvents,
         *,
         openwebui_tools: dict[str, dict[str, Any]] | None,
     ) -> None:
@@ -96,7 +95,7 @@ class _StreamSession:
         self.body = body
         self.valves = valves
         self.metadata = metadata
-        self.emitter = EventEmitter(event_emitter)
+        self.events = events or NullRuntimeEvents()
         self.openwebui_tools = openwebui_tools
         self.state = _StreamState()
         self.debug_enabled = engine.logger.isEnabledFor(logging.DEBUG)
@@ -113,7 +112,7 @@ class _StreamSession:
         if require_previous and not self.state.has_sent_status:
             return
         self.state.has_sent_status = True
-        await self.emitter.status(description, done=done, hidden=hidden)
+        await self.events.status(description, done=done, hidden=hidden)
 
     async def handle_event(self, event: Any) -> bool:
         """Process a single stream event. Returns True when the stream should stop."""
@@ -158,7 +157,7 @@ class _StreamSession:
                     "message", "OpenAI returned an error."
                 )
             self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
-            await self.engine._handle_stream_error(self.emitter, self.state.error_message or "")
+            await self.engine._handle_stream_error(self.events, self.state.error_message or "")
             return True
 
         if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
@@ -234,7 +233,7 @@ class _StreamSession:
         delta_val = event.delta
         if delta_val:
             self.state.response_text += delta_val
-            await self.emitter.delta(delta_val)
+            await self.events.delta(delta_val)
 
     async def _handle_item_added(self, event: ResponseOutputItemAddedEvent) -> None:
         item = event.item or {}
@@ -274,7 +273,7 @@ class _StreamSession:
         await self.engine._cancel_tasks(self.state.thinking_tasks)
         if text_val and not self.state.response_text:
             self.state.response_text = text_val
-        await self.emitter.replace(self.state.response_text or text_val)
+        await self.events.replace(self.state.response_text or text_val)
 
     async def _persist_items(self, items: list[dict[str, Any]]) -> None:
         chat_id = self.metadata.get("chat_id")
@@ -293,7 +292,7 @@ class _StreamSession:
                 hidden_markers = ""
             if hidden_markers:
                 self.state.response_text += hidden_markers
-                await self.emitter.replace(self.state.response_text)
+                await self.events.replace(self.state.response_text)
 
 class ResponsesEngine:
     """Encapsulates streaming and tool orchestration."""
@@ -302,13 +301,12 @@ class ResponsesEngine:
         self,
         *,
         client: OpenAIResponsesClient | None = None,
-        item_store: ItemStore | None = None,
+        item_store: HistoryStore | None = None,
         history_persistence: HistoryPersistence | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.client = client or OpenAIResponsesClient()
-        self.store = item_store or ItemStore()
-        self.history_persistence = history_persistence or HistoryPersistence(self.store)
+        self.history_persistence = history_persistence or HistoryPersistence(item_store)
         self.logger = logger or get_logger(__name__)
 
     async def run_streaming_turn(
@@ -317,15 +315,16 @@ class ResponsesEngine:
         *,
         valves: Any,
         metadata: dict[str, Any],
-        event_emitter: EventEmitterFn,
+        events: RuntimeEvents | None,
         openwebui_tools: dict[str, dict[str, Any]] | None = None,
     ) -> TurnResult:
+        runtime_events = events or NullRuntimeEvents()
         session = _StreamSession(
             self,
             body,
             valves,
             metadata,
-            event_emitter,
+            runtime_events,
             openwebui_tools=openwebui_tools,
         )
 
@@ -411,10 +410,10 @@ class ResponsesEngine:
             session.state.has_error = True
             session.state.error_message = str(exc)
             self.logger.error('turn.error type=%s message=%s', type(exc).__name__, session.state.error_message)
-            await self._handle_stream_error(session.emitter, session.state.error_message)
+            await self._handle_stream_error(runtime_events, session.state.error_message)
 
         finally:
-            await self._emit_log_citation(session.emitter, session.state.citations)
+            await self._emit_log_citation(runtime_events, session.state.citations)
             if not session.state.response_text and not session.state.has_error and session.state.last_tool_result:
                 session.state.response_text = session.state.last_tool_result
             usage_for_completion = (
@@ -423,7 +422,7 @@ class ResponsesEngine:
                 or None
             )
             await session.emit_status('Done', done=True, hidden=False, require_previous=True)
-            await session.emitter.chat_completion(
+            await runtime_events.chat_completion(
                 {'content': session.state.response_text, 'usage': usage_for_completion, 'done': True}
             )
 
@@ -443,16 +442,18 @@ class ResponsesEngine:
 
     async def emit_notification(
         self,
-        event_emitter: EventEmitterFn | None,
+        events: RuntimeEvents | None,
         content: str,
         *,
         level: Literal["info", "success", "warning", "error"] = "info",
     ) -> None:
-        await EventEmitter(event_emitter).notification(content, level=level)
+        if not events:
+            return
+        await events.notification(content, level=level)
 
     async def emit_error(
         self,
-        event_emitter: EventEmitterFn | None,
+        events: RuntimeEvents | None,
         error_obj: Exception | str,
         *,
         show_error_message: bool = True,
@@ -460,9 +461,9 @@ class ResponsesEngine:
     ) -> None:
         if not show_error_message:
             return
-        await EventEmitter(event_emitter).chat_completion(
-            {"error": {"message": str(error_obj)}, "done": done}
-        )
+        if not events:
+            return
+        await events.chat_completion({"error": {"message": str(error_obj)}, "done": done})
 
     def _schedule_reasoning_statuses(
         self, body: ResponseCreateParams, status_fn: Callable[[str], Awaitable[Any]]
@@ -496,11 +497,11 @@ class ResponsesEngine:
 
     async def _emit_log_citation(
         self,
-        emitter: EventEmitter,
+        events: RuntimeEvents | None,
         emitted_citations: list[dict[str, Any]],
     ) -> None:
         session_id = OWUI_SESSION_ID.get()
-        if not session_id:
+        if not session_id or not events or isinstance(events, NullRuntimeEvents):
             return
         logs = get_session_logs(session_id)
         if not logs:
@@ -508,7 +509,7 @@ class ResponsesEngine:
         log_text = "\n".join(logs)
         truncated = len(log_text) > 4000
         self.logger.debug("Emitting log citation lines=%d truncated=%s", len(logs), truncated)
-        await emitter.citation(
+        await events.citation(
             {
                 "document": [log_text],
                 "metadata": [{"source": "Logs"}],
@@ -560,12 +561,12 @@ class ResponsesEngine:
 
     async def _handle_stream_error(
         self,
-        emitter: EventEmitter | None,
+        events: RuntimeEvents | None,
         message: str,
     ) -> None:
         self.logger.error("Streaming error: %s", message)
-        if emitter:
-            await emitter.chat_completion({"error": {"message": message}, "done": False})
+        if events:
+            await events.chat_completion({"error": {"message": message}, "done": False})
 
     async def _stream_response(
         self,
@@ -633,4 +634,4 @@ class ResponsesEngine:
         return title, content
 
 
-__all__ = ["EventEmitterFn", "ResponsesEngine"]
+__all__ = ["ResponsesEngine", "TurnResult"]

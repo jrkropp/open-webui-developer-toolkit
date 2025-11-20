@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
 import json
+from typing import Any, Callable, Protocol
 
 from openai_responses_manifold.core.markers import (
     contains_marker,
@@ -19,16 +19,55 @@ from openai_responses_manifold.core.messages import (
     normalize_user_blocks,
     user_blocks_to_responses_items,
 )
-from openai_responses_manifold.openwebui.store import ItemStore
 
 Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
+
+
+class HistoryStore(Protocol):
+    def save_items(
+        self,
+        chat_id: str,
+        message_id: str,
+        items: list[dict[str, Any]],
+        model_id: str,
+    ) -> list[str]: ...
+
+    def load_items(
+        self,
+        chat_id: str,
+        item_ids: list[str],
+        *,
+        model_id: str | None = None,
+    ) -> dict[str, dict[str, Any]]: ...
+
+
+class NullHistoryStore:
+    """Null object used when no backing store is provided."""
+
+    def save_items(
+        self,
+        chat_id: str,
+        message_id: str,
+        items: list[dict[str, Any]],
+        model_id: str,
+    ) -> list[str]:
+        return []
+
+    def load_items(
+        self,
+        chat_id: str,
+        item_ids: list[str],
+        *,
+        model_id: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        return {}
 
 
 class HistoryPersistence:
     """Persist structured output items and emit hidden markers."""
 
-    def __init__(self, store: ItemStore) -> None:
-        self.store = store
+    def __init__(self, store: HistoryStore | None = None) -> None:
+        self.store = store or NullHistoryStore()
 
     def persist_items_for_message(
         self,
@@ -123,8 +162,8 @@ class HistoryBuilder:
 class HistoryService:
     """Facade for reconstructing Responses input items and instructions from stored chat history."""
 
-    def __init__(self, store: ItemStore) -> None:
-        self.store = store
+    def __init__(self, store: HistoryStore | None = None) -> None:
+        self.store = store or NullHistoryStore()
 
     def build_input_and_instructions(
         self,
@@ -169,4 +208,4 @@ class HistoryService:
         return None
 
 
-__all__ = ["HistoryBuilder", "HistoryPersistence", "HistoryService"]
+__all__ = ["HistoryBuilder", "HistoryPersistence", "HistoryService", "HistoryStore", "NullHistoryStore"]
