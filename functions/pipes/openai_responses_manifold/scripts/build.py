@@ -49,22 +49,22 @@ PYPROJECT_FILE = PIPE_ROOT / "pyproject.toml"
 # Logical order modules will appear in the monolith.
 MODULE_ORDER: list[str] = [
     "config/settings.py",
-    "domain/model_catalog.py",
-    "domain/messages.py",
-    "domain/markers.py",
-    "domain/errors.py",
-    "domain/openai_requests.py",
-    "domain/openai_events.py",
-    "infrastructure/logging.py",
-    "infrastructure/openwebui_events.py",
-    "infrastructure/openwebui_store.py",
-    "infrastructure/openai_client.py",
-    "application/history.py",
-    "application/request_builder.py",
-    "application/tools.py",
-    "application/tasks.py",
-    "application/routing.py",
-    "application/engine.py",
+    "core/logging.py",
+    "core/errors.py",
+    "core/model_catalog.py",
+    "core/messages.py",
+    "core/markers.py",
+    "openai_api/requests.py",
+    "openai_api/events.py",
+    "openai_api/client.py",
+    "openwebui/events.py",
+    "openwebui/store.py",
+    "services/history.py",
+    "services/request_builder.py",
+    "services/tools.py",
+    "services/tasks.py",
+    "services/routing.py",
+    "services/engine.py",
     "interface/openwebui_pipe.py",
 ]
 
@@ -73,7 +73,7 @@ FUTURE_IMPORT_RE = re.compile(r"^from\s+__future__\s+import\s+.*$", re.MULTILINE
 
 # Names considered "internal" to the package; imports from these are stripped.
 INTERNAL_MODULES = set()
-INTERNAL_PREFIXES = ("config", "domain", "application", "infrastructure", "interface")
+INTERNAL_PREFIXES = ("config", "core", "openai_api", "openwebui", "services", "interface")
 PACKAGE_PREFIX = f"{PACKAGE_NAME}."
 
 

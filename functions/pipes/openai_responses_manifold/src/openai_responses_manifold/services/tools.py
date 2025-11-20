@@ -8,10 +8,10 @@ import json
 import logging
 from typing import Any
 
-from openai_responses_manifold.domain.errors import ToolExecutionError
-from openai_responses_manifold.domain.model_catalog import supports
-from openai_responses_manifold.domain.openai_requests import ResponseCreateParams
-from openai_responses_manifold.infrastructure.logging import get_logger, truncate_for_log
+from openai_responses_manifold.core.errors import ToolExecutionError
+from openai_responses_manifold.core.model_catalog import supports
+from openai_responses_manifold.openai_api.requests import ResponseCreateParams
+from openai_responses_manifold.core.logging import get_logger, truncate_for_log
 
 logger = get_logger(__name__)
 

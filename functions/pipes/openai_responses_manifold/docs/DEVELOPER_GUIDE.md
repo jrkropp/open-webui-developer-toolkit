@@ -4,12 +4,12 @@
 >
 > * This repo is a **modular OpenWebUI manifold** that adapts OpenWebUI chat requests to the **OpenAI Responses API** with streaming, tools, routing, and persisted rich items.
 > * The codebase is split into layers:
->   **Interface** (`interface/openwebui_pipe.py`) → **Application** (`application/engine.py` + helpers) → **Domain** (`domain/` schemas + capabilities) → **Infrastructure** (logging/events/store/OpenAI client) → **Config** (`config/settings.py`).
+>   **Interface** (`interface/openwebui_pipe.py`) → **Services** (`services/engine.py` + helpers) → **Core** (model catalog, markers/messages/errors, logging) → **OpenAI API** (DTOs + client) → **OpenWebUI** (events + store) → **Config** (`config/settings.py`).
 > * **Sacred concepts:** Conversation/Turn, Messages vs Context Items, Model Capabilities, Markers + Persistence, Single‑turn Engine Run, Valves (settings).
 > * **Model IDs:** We never hard‑code the OpenWebUI Function ID. We **normalize** incoming model IDs (prefix/dot/date safe) before checking capabilities.
 > * **Persistence pattern:** Store structured items (tool results, reasoning) in the chat DB, **embed invisible markers** in assistant text, and **resolve them later** to rebuild context.
 
-> **Refactor note:** Older references to `core/`, `services/`, and `infra/` now map to `domain/`, `application/`, and `infrastructure/` respectively.
+> **Refactor note:** Older references to `domain/`, `application/`, and `infrastructure/` now map to `core/`, `services/`, `openai_api/`, and `openwebui/`.
 
 ---
 
@@ -19,20 +19,21 @@
 openai_responses_manifold/
 ├─ interface/openwebui_pipe.py  # OpenWebUI Pipe (adapter/entrypoint)
 ├─ config/settings.py           # Valves: pipe & per-user settings (OpenWebUI-facing)
-├─ domain/                      # Pure domain logic (no I/O)
+├─ core/                        # Pure domain logic (no external I/O)
 │  ├─ model_catalog.py          # Canonical model/capability table + ID normalization
 │  ├─ messages.py               # Message block helpers (text/image/file → items)
 │  ├─ markers.py                # Hidden marker format & parsing (no DB)
 │  ├─ errors.py                 # Manifold exceptions (Tool, Routing, Stream)
-│  ├─ openai_requests.py        # Pydantic: CompletionCreateParams, ResponseCreateParams
-│  └─ openai_events.py          # Typed SSE schemas and parser
-├─ infrastructure/              # I/O implementations
-│  ├─ logging.py                # Context-aware logging + per-session buffer for citations
-│  ├─ openwebui_events.py       # Event helpers (status/usage/completion/citation)
-│  ├─ openwebui_store.py        # ItemStore for OpenWebUI Chats (persist/fetch items)
-│  └─ openai_client.py          # aiohttp client for OpenAI Responses API
-└─ application/                 # Light business logic composed with infra
-   ├─ engine.py                 # ResponsesEngine – orchestrates one “turn”
+│  └─ logging.py                # Context-aware logging + per-session buffer for citations
+├─ openai_api/                  # OpenAI DTOs and client
+│  ├─ requests.py               # Pydantic: CompletionCreateParams, ResponseCreateParams
+│  ├─ events.py                 # Typed SSE schemas and parser
+│  └─ client.py                 # aiohttp client for OpenAI Responses API
+├─ openwebui/                   # Open WebUI adapters
+│  ├─ events.py                 # Event helpers (status/usage/completion/citation)
+│  └─ store.py                  # ItemStore for OpenWebUI Chats (persist/fetch items)
+└─ services/                    # Application orchestration
+   ├─ engine.py                 # ResponsesEngine – orchestrates one “turn” (Open WebUI agnostic)
    ├─ history.py                # HistoryPersistence (items→markers), HistoryBuilder (markers→items)
    ├─ request_builder.py        # OpenWebUI payload → strict ResponseCreateParams
    ├─ tools.py                  # Build OpenAI `tools` & execute tool calls
@@ -115,9 +116,9 @@ openai_responses_manifold/
 
 ### SDK type mapping (requests + streaming)
 
-* **Responses request**: `openai.types.responses.ResponseCreateParams` ↔ `domain.openai_requests.ResponseCreateParams`
-* **Chat Completions request**: `openai.types.chat.CompletionCreateParams` ↔ `domain.openai_requests.CompletionCreateParams` (validated OpenWebUI payload)
-* **Streaming events**: `openai.types.responses.StreamEvent` ↔ `core.openai_response_events.StreamEvent`
+* **Responses request**: `openai.types.responses.ResponseCreateParams` ↔ `openai_api.requests.ResponseCreateParams`
+* **Chat Completions request**: `openai.types.chat.CompletionCreateParams` ↔ `openai_api.requests.CompletionCreateParams` (validated OpenWebUI payload)
+* **Streaming events**: `openai.types.responses.StreamEvent` ↔ `openai_api.events.StreamEvent`
   * Text deltas/done: `ResponseOutputTextDeltaEvent` / `ResponseOutputTextDoneEvent`
 * **Client verbs**: `client.responses.create` / `client.responses.create(stream=True)` ↔ `infra.openai_client.OpenAIResponsesClient.create` / `.stream`
 * The bundled single‑file artifact re‑exports these via `core.__all__`, so the same names are available when imported as `openai_responses_manifold`.

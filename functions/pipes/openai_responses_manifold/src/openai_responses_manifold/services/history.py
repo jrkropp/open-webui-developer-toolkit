@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 import json
 
-from openai_responses_manifold.domain.markers import (
+from openai_responses_manifold.core.markers import (
     contains_marker,
     create_marker,
     extract_markers,
@@ -13,13 +13,13 @@ from openai_responses_manifold.domain.markers import (
     split_text_by_markers,
     wrap_marker,
 )
-from openai_responses_manifold.domain.messages import (
+from openai_responses_manifold.core.messages import (
     assistant_text_item,
     developer_message,
     normalize_user_blocks,
     user_blocks_to_responses_items,
 )
-from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
+from openai_responses_manifold.openwebui.store import ItemStore
 
 Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
 

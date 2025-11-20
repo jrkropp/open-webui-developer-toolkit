@@ -2,50 +2,15 @@
 
 from __future__ import annotations
 
-from openai_responses_manifold.application.engine import ResponsesEngine
-from openai_responses_manifold.application.routing import route_auto_model
-from openai_responses_manifold.application.tools import build_tools, execute_tool_calls, resolve_tools
 from openai_responses_manifold.config.settings import PipeValves, UserValves
-from openai_responses_manifold.domain.errors import (
+from openai_responses_manifold.core.errors import (
     ManifoldError,
     OpenAIStreamError,
     PersistenceError,
     RoutingError,
     ToolExecutionError,
 )
-from openai_responses_manifold.domain.markers import (
-    ULID_LENGTH,
-    contains_marker,
-    create_marker,
-    extract_markers,
-    generate_item_id,
-    parse_marker,
-    split_text_by_markers,
-    wrap_marker,
-)
-from openai_responses_manifold.domain.model_catalog import (
-    EMPTY_FEATURES,
-    MODEL_ALIASES,
-    MODEL_FEATURES,
-    alias_defaults,
-    base_model,
-    features,
-    normalize,
-    supports,
-)
-from openai_responses_manifold.domain.openai_events import (
-    BaseStreamEvent,
-    ErrorEvent,
-    EventType,
-    StreamEvent,
-    UnknownStreamEventType,
-    parse_event,
-)
-from openai_responses_manifold.domain.openai_requests import (
-    CompletionCreateParams,
-    ResponseCreateParams,
-)
-from openai_responses_manifold.infrastructure.logging import (
+from openai_responses_manifold.core.logging import (
     OWUI_CHAT_ID,
     OWUI_LOG_LEVEL,
     OWUI_MESSAGE_ID,
@@ -61,9 +26,48 @@ from openai_responses_manifold.infrastructure.logging import (
     push_logging_context,
     truncate_for_log,
 )
-from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
-from openai_responses_manifold.infrastructure.openwebui_events import EventEmitter, EventEmitterFn
-from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
+from openai_responses_manifold.core.markers import (
+    ULID_LENGTH,
+    contains_marker,
+    create_marker,
+    extract_markers,
+    generate_item_id,
+    parse_marker,
+    split_text_by_markers,
+    wrap_marker,
+)
+from openai_responses_manifold.core.model_catalog import (
+    EMPTY_FEATURES,
+    MODEL_ALIASES,
+    MODEL_FEATURES,
+    alias_defaults,
+    base_model,
+    features,
+    normalize,
+    supports,
+)
+from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
+from openai_responses_manifold.openai_api.events import (
+    BaseStreamEvent,
+    ErrorEvent,
+    EventType,
+    StreamEvent,
+    UnknownStreamEventType,
+    parse_event,
+)
+from openai_responses_manifold.openai_api.requests import (
+    CompletionCreateParams,
+    ResponseCreateParams,
+)
+from openai_responses_manifold.openwebui.events import EventEmitter, EventEmitterFn
+from openai_responses_manifold.openwebui.store import ItemStore
+from openai_responses_manifold.services.engine import ResponsesEngine, TurnResult
+from openai_responses_manifold.services.routing import route_auto_model
+from openai_responses_manifold.services.tools import (
+    build_tools,
+    execute_tool_calls,
+    resolve_tools,
+)
 from openai_responses_manifold.interface.openwebui_pipe import Pipe
 
 __all__ = [
@@ -97,7 +101,10 @@ __all__ = [
     "UnknownStreamEventType",
     "parse_event",
     "Pipe",
+    "PipeValves",
+    "UserValves",
     "ResponsesEngine",
+    "TurnResult",
     "EventEmitter",
     "EventEmitterFn",
     "ItemStore",

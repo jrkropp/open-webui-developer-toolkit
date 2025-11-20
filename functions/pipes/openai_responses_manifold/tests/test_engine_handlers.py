@@ -1,8 +1,8 @@
 import pytest
 
 import openai_responses_manifold as orm
-import openai_responses_manifold.application.engine as orm_engine
-from openai_responses_manifold.domain.openai_events import (
+import openai_responses_manifold.services.engine as orm_engine
+from openai_responses_manifold.openai_api.events import (
     ResponseOutputTextDeltaEvent,
     ResponseOutputTextDoneEvent,
 )

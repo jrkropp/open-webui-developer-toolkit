@@ -16,11 +16,9 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Awaitable, Callable, Literal
 
-from open_webui.models.chats import Chats
-
-from openai_responses_manifold.domain.errors import ToolExecutionError
-from openai_responses_manifold.domain.model_catalog import supports
-from openai_responses_manifold.domain.openai_events import (
+from openai_responses_manifold.core.errors import ToolExecutionError
+from openai_responses_manifold.core.model_catalog import supports
+from openai_responses_manifold.openai_api.events import (
     ErrorEvent,
     ResponseCompletedEvent,
     ResponseCreatedEvent,
@@ -34,20 +32,20 @@ from openai_responses_manifold.domain.openai_events import (
     ResponseQueuedEvent,
     ResponseReasoningSummaryTextDoneEvent,
 )
-from openai_responses_manifold.domain.openai_requests import ResponseCreateParams
-from openai_responses_manifold.infrastructure.logging import (
+from openai_responses_manifold.openai_api.requests import ResponseCreateParams
+from openai_responses_manifold.core.logging import (
     OWUI_SESSION_ID,
     clear_session_logs,
     get_logger,
     get_session_logs,
     truncate_for_log,
 )
-from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
-from openai_responses_manifold.infrastructure.openwebui_events import EventEmitter, EventEmitterFn
-from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
-from .history import HistoryPersistence
-from .tasks import run_task_model
-from .tools import execute_tool_calls
+from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
+from openai_responses_manifold.openwebui.events import EventEmitter, EventEmitterFn
+from openai_responses_manifold.openwebui.store import ItemStore
+from openai_responses_manifold.services.history import HistoryPersistence
+from openai_responses_manifold.services.tasks import run_task_model
+from openai_responses_manifold.services.tools import execute_tool_calls
 
 
 @dataclass
@@ -69,6 +67,16 @@ class _StreamState:
         self.completed_response = None
         self.usage_summary = None
         self.has_sent_status = False
+
+
+@dataclass
+class TurnResult:
+    """Result of a streaming turn, reusable outside Open WebUI."""
+
+    text: str
+    usage: dict[str, Any] | None
+    citations: list[dict[str, Any]]
+    error_message: str | None = None
 
 
 class _StreamSession:
@@ -311,7 +319,7 @@ class ResponsesEngine:
         metadata: dict[str, Any],
         event_emitter: EventEmitterFn,
         openwebui_tools: dict[str, dict[str, Any]] | None = None,
-    ) -> str:
+    ) -> TurnResult:
         session = _StreamSession(
             self,
             body,
@@ -418,16 +426,13 @@ class ResponsesEngine:
             await session.emitter.chat_completion(
                 {'content': session.state.response_text, 'usage': usage_for_completion, 'done': True}
             )
-            chat_id = metadata.get('chat_id')
-            message_id = metadata.get('message_id')
-            if chat_id and message_id and session.state.citations:
-                Chats.upsert_message_to_chat_by_id_and_message_id(
-                    chat_id,
-                    message_id,
-                    {'id': message_id, 'sources': session.state.citations},
-                )
 
-        return session.state.response_text
+        return TurnResult(
+            text=session.state.response_text,
+            usage=usage_for_completion,
+            citations=session.state.citations if session.state.citations else [],
+            error_message=session.state.error_message,
+        )
 
     async def run_task_model(
         self,

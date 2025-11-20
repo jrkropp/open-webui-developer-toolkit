@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
+from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
 
 
 async def run_task_model(

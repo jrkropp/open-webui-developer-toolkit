@@ -6,23 +6,24 @@ import logging
 from collections.abc import Awaitable
 from typing import Any
 
+from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
 
 from openai_responses_manifold.config.settings import PipeValves, UserValves
-from openai_responses_manifold.domain.model_catalog import supports
-from openai_responses_manifold.domain.openai_requests import CompletionCreateParams
-from openai_responses_manifold.application.engine import ResponsesEngine
-from openai_responses_manifold.application.request_builder import build_responses_body
-from openai_responses_manifold.application.routing import route_auto_model
-from openai_responses_manifold.application.tools import build_tools
-from openai_responses_manifold.infrastructure.logging import get_logger, logging_context
-from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
-from openai_responses_manifold.infrastructure.openwebui_events import (
+from openai_responses_manifold.core.logging import get_logger, logging_context
+from openai_responses_manifold.core.model_catalog import supports
+from openai_responses_manifold.openai_api.requests import CompletionCreateParams
+from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
+from openai_responses_manifold.openwebui.events import (
     EventCall,
     EventCallerFn,
     EventEmitterFn,
 )
-from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
+from openai_responses_manifold.openwebui.store import ItemStore
+from openai_responses_manifold.services.engine import ResponsesEngine
+from openai_responses_manifold.services.request_builder import build_responses_body
+from openai_responses_manifold.services.routing import route_auto_model
+from openai_responses_manifold.services.tools import build_tools
 
 
 class Pipe:
@@ -110,13 +111,22 @@ class Pipe:
             self._apply_reasoning_options(responses_body, valves)
             self._apply_parallel_tool_policy(responses_body, valves)
 
-            return await self.engine.run_streaming_turn(
+            result = await self.engine.run_streaming_turn(
                 responses_body,
                 valves=valves,
                 metadata=__metadata__,
                 event_emitter=__event_emitter__,
                 openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
             )
+
+            if result.citations and __metadata__.get("chat_id") and __metadata__.get("message_id"):
+                Chats.upsert_message_to_chat_by_id_and_message_id(
+                    __metadata__["chat_id"],
+                    __metadata__["message_id"],
+                    {"id": __metadata__["message_id"], "sources": result.citations},
+                )
+
+            return result.text
 
     def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
         merged = pipe_valves.model_copy(deep=True)

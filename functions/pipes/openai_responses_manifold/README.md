@@ -52,15 +52,16 @@ This project started as an internal tool (200+ hours of optimization and testing
 
 ## Local Development
 
-Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything lives under `src/openai_responses_manifold/` in clear layers: `config/` (valves/defaults), `domain/` (model catalog, markers/messages/errors, OpenAI request/event schemas), `infrastructure/` (logging, Open WebUI events/store, OpenAI client), `application/` (engine, history, request builder, tools, tasks, routing), and `interface/` (Open WebUI `Pipe`). Run `make build` when you’re ready to regenerate the monolithic `openai_responses_manifold.py` that Open WebUI imports.
+Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything lives under `src/openai_responses_manifold/` in clear layers: `config/` (valves/defaults), `core/` (model catalog, markers/messages/errors, logging), `openai_api/` (OpenAI DTOs + streaming events + client), `openwebui/` (Open WebUI events + store), `services/` (engine, history, request builder, tools, tasks, routing), and `interface/` (Open WebUI `Pipe`). Run `make build` when you’re ready to regenerate the monolithic `openai_responses_manifold.py` that Open WebUI imports.
 
 ### Project layout
 
 - `src/openai_responses_manifold/interface/openwebui_pipe.py` – Open WebUI adapter (`Pipe`) and valve nesting.
 - `src/openai_responses_manifold/config/settings.py` – pipe and user valve defaults.
-- `src/openai_responses_manifold/domain/` – model catalog/aliases + ID normalization, markers, messages, errors, OpenAI request/response schemas.
-- `src/openai_responses_manifold/infrastructure/` – logging helpers, Open WebUI events + store, `OpenAIResponsesClient`.
-- `src/openai_responses_manifold/application/` – engine orchestration plus history, request builder, tools, tasks, and routing.
+- `src/openai_responses_manifold/core/` – model catalog/aliases + ID normalization, markers, messages, errors, context-aware logging.
+- `src/openai_responses_manifold/openai_api/` – OpenAI DTOs (requests/events) and the `OpenAIResponsesClient`.
+- `src/openai_responses_manifold/openwebui/` – Open WebUI event helpers and chat-backed `ItemStore`.
+- `src/openai_responses_manifold/services/` – engine orchestration plus history, request builder, tools, tasks, and routing.
 - `docs/DEVELOPER_GUIDE.md` – deep dive into the layered architecture (mirrors the Work Package design).
 
 **Clone and bootstrap**
@@ -175,7 +176,7 @@ This makes features like **on-demand web search toggles** possible without break
 
 ## Logging & Diagnostics
 
-Every run buffers structured log lines and attaches them to the assistant reply as a `Logs` citation. The shared `infrastructure/logging.py` module wires standard Python logging with ContextVars so each record automatically carries `session_id`, `chat_id`, `message_id`, and `user_id`. A console handler streams to stdout and a memory handler buffers per-session lines for citation emission.
+Every run buffers structured log lines and attaches them to the assistant reply as a `Logs` citation. The shared `core/logging.py` module wires standard Python logging with ContextVars so each record automatically carries `session_id`, `chat_id`, `message_id`, and `user_id`. A console handler streams to stdout and a memory handler buffers per-session lines for citation emission.
 
 ```
 2025-01-01 00:00:00 [INFO] openai_responses_manifold.application.engine Routing to gpt-5 (effort=medium) session_id=... chat_id=... message_id=... user_id=...

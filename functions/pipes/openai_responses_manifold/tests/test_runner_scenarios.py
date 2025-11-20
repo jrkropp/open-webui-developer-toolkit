@@ -60,7 +60,7 @@ async def test_streaming_flow_emits_single_completion(
         openwebui_tools={},
     )
 
-    assert result == "Hello world"
+    assert result.text == "Hello world"
     assert len(fake_responses_client.stream_calls) == 1
 
     completion_events = [
@@ -311,7 +311,7 @@ async def test_function_call_arguments_delta_handles_bad_json(
         openwebui_tools={"broken_tool": {"callable": lambda **_: None}},
     )
 
-    assert result == "Done"
+    assert result.text == "Done"
     status_events = [event for event in spy_event_emitter.events if event["type"] == "status"]
     assert any(
         event.get("data", {}).get("description") == "Skipping malformed tool arguments."

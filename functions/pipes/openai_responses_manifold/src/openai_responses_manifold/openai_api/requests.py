@@ -7,7 +7,7 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
-from .model_catalog import MODEL_ALIASES, alias_defaults, base_model
+from openai_responses_manifold.core.model_catalog import MODEL_ALIASES, alias_defaults, base_model
 
 
 class ReasoningParams(BaseModel):

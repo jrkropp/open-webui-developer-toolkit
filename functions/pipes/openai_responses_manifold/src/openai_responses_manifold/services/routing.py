@@ -6,10 +6,10 @@ import json
 import logging
 from typing import Any
 
-from openai_responses_manifold.domain.openai_requests import ResponseCreateParams
-from openai_responses_manifold.infrastructure.logging import get_logger, truncate_for_log
-from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
-from openai_responses_manifold.infrastructure.openwebui_events import EventEmitter, EventEmitterFn
+from openai_responses_manifold.core.logging import get_logger, truncate_for_log
+from openai_responses_manifold.openai_api.client import OpenAIResponsesClient
+from openai_responses_manifold.openai_api.requests import ResponseCreateParams
+from openai_responses_manifold.openwebui.events import EventEmitter, EventEmitterFn
 
 logger = get_logger(__name__)
 

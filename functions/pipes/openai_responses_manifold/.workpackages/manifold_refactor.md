@@ -471,7 +471,7 @@ You will execute the following steps (mirroring the checklist):
 
 **Status notes**
 
-* Package imports now point to `config`, `domain`, `application`, `infrastructure`, and `interface`; legacy module paths were removed.
+* Package imports now point to `config`, `core`, `openai_api`, `openwebui`, `services`, and `interface`; legacy module paths were removed.
 * `scripts/build.py` `MODULE_ORDER` updated to the new layout and the bundle regenerated via `python3 scripts/build.py --skip-tests`.
 
 ---
