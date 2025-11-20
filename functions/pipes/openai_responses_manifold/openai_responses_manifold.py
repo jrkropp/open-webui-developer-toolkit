@@ -3016,6 +3016,7 @@ class _StreamState:
     has_error: bool = False
     last_tool_result: str | None = None
     has_sent_status: bool = False
+    has_any_status: bool = False
     thinking_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
 
     def reset_for_next_response(self) -> None:
@@ -3065,9 +3066,10 @@ class _StreamSession:
         hidden: bool = False,
         require_previous: bool = False,
     ) -> None:
-        if require_previous and not self.state.has_sent_status:
+        if require_previous and not self.state.has_any_status:
             return
         self.state.has_sent_status = True
+        self.state.has_any_status = True
         await self.events.status(description, done=done, hidden=hidden)
 
     async def handle_event(self, event: Any) -> bool:
