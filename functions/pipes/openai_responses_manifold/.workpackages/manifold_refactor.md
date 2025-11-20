@@ -1,280 +1,526 @@
-# ⚙️ Work Package — OpenAI Responses Manifold Refactor (based on Developer Guide v2)
-
-> **For AI agents & humans**
+> **Agent instruction:** Keep this work package plan current as you execute WP11. Update statuses on the checklist below and add new items whenever additional work emerges.
 >
-> * **Keep this work package up-to-date** as you work.
-> * If you discover new tasks or risks, **add them** under the appropriate section and link your changes/commits.
-> * Start with the **Assessment** section, then proceed phase-by-phase.
-> * This plan implements the structure described in the **Developer Guide (v2 design)** (functions/pipes/openai_responses_manifold/docs/DEVELOPER_GUIDE.md) we just produced.
+> ## Work Package Checklist
+>
+> * [ ] WP11.1 – Confirm current source layout and bundling behavior
+> * [ ] WP11.2 – Create new package folders and `__init__.py` skeletons
+> * [ ] WP11.3 – Move & refactor *domain* modules (models, IDs, markers, messages, errors)
+> * [ ] WP11.4 – Move OpenAI protocol types (requests + streaming events + client)
+> * [ ] WP11.5 – Move infrastructure modules (logging, OpenWebUI events, store)
+> * [ ] WP11.6 – Move application modules (engine, history, request builder, tools, tasks, routing)
+> * [ ] WP11.7 – Move and adapt the OpenWebUI `Pipe` adapter
+> * [ ] WP11.8 – Update all imports and the bundling script (`scripts/build.py`)
+> * [ ] WP11.9 – Run tests / smoke tests and fix any regressions
+> * [ ] WP11.10 – Update README / internal docs to explain the new architecture
+> * [ ] WP11.11 – Add any newly discovered tasks to this checklist and keep statuses updated
 
 ---
 
-## ✅ Live Checklist (update as you go)
+# WP11 – Refactor OpenAI Responses Manifold Architecture
 
-**Phase 0 — Assessment**
+## 1. Objective
 
-* [x] 0.1 Read current single-file module and confirm all sections present (capabilities, pipe, models, markers, persistence, client, tools, router, session logger, utils).
-* [x] 0.2 Build a **Current→Target mapping** (fill table below with exact function names & line refs).
-* [x] 0.3 Identify any **hidden coupling** (e.g., DB I/O inside transform functions).
-* [x] 0.4 Inventory **OpenWebUI integration points** (events emitted, `Chats` writes, model list, tools registry usage).
-* [x] 0.5 Confirm **marker namespace** and **store key** to maintain backward compatibility (default: `openai_responses:v2` and `openai_responses_pipe`).
+**Goal:** Refactor the OpenAI Responses API “manifold” plugin for Open WebUI into a clearer, more intuitive architecture with explicit layers and a consistent folder structure, *without changing runtime behavior*.
 
-**Phase 1 — Project Skeleton**
+You will:
 
-* [x] 1.1 Create folders/files per **Project structure** below.
-* [x] 1.2 Add `__init__.py` everywhere.
-* [x] 1.3 Add placeholder docstrings that reference the **Developer Guide v2** sections.
+* Reorganize the existing modular source under `src/openai_responses_manifold/` into clearly named packages.
+* Preserve the existing build flow where `scripts/build.py` bundles the modules into a single file for Open WebUI.
+* Keep public behavior and the plugin’s external APIs compatible.
 
-**Phase 2 — Core (pure logic, no I/O)**
+The result should make it obvious where to find:
 
-* [x] 2.1 `core/requests.py`: move `CompletionsBody`, `ResponsesBody` (+ alias defaults validator).
-* [x] 2.2 `core/ids.py`: implement `normalize()`, `base_model()` (prefix/dot/date-safe).
-* [x] 2.3 `core/capabilities.py`: move `MODEL_FEATURES`, `MODEL_ALIASES`, `supports()`.
-* [x] 2.4 `core/messages.py`: user/dev/assistant block helpers (text/image/file → Responses items).
-* [x] 2.5 `core/markers.py`: move marker syntax helpers (no DB).
-* [x] 2.6 `core/errors.py`: define typed exceptions.
-
-**Phase 3 — Infra (I/O implementations)**
-
-* [x] 3.1 `infra/openai_client.py`: implement `OpenAIResponsesClient.create()` + `.stream()` (aiohttp).
-* [x] 3.2 `infra/openwebui_store.py`: implement `ItemStore.save_items()` / `load_items()` using `open_webui.models.chats.Chats` (stable key).
-
-**Phase 4 — Services (domain services with infra)**
-
-* [x] 4.1 `services/history.py`:
-
-  * [x] `HistoryPersistence.persist_items_for_message()` (items→ULIDs→markers).
-  * [x] `HistoryBuilder.build_input_from_messages()` (markers→items).
-* [x] 4.2 `services/tools.py`:
-
-  * [x] `build_tools(...)` (OpenWebUI registry → OpenAI tools; web_search/MCP; strict JSON Schema).
-  * [x] `execute_tool_calls(...)` (sync/async; safe error mapping).
-* [x] 4.3 `services/routing.py`: `route_auto_model(...)` (helper model to set final model + effort).
-
-**Phase 5 — Engine (single-turn orchestration)**
-
-* [x] 5.1 `engine.py`: `ResponsesEngine.run_streaming_turn(...)` (SSE, tool loops, persistence, events).
-* [x] 5.2 Event helpers usage (`utils/events.py`) for status/usage/chat:message/citation/completion.
-* [x] 5.3 Integrate `SessionLogger` (`utils/logging.py`) & emit end-of-run “Logs” citation.
-
-**Phase 6 — Adapter (OpenWebUI Pipe)**
-
-* [x] 6.1 `main.py`: implement `Pipe` with `pipes()` and `pipe()` (thin adapter).
-* [x] 6.2 `settings.py`: move & scope **Valves** (`PipeValves`, `UserValves`), merge logic from old `Pipe`.
-* [x] 6.3 Ensure **no hard-coded Function ID** logic; rely on `core.ids.normalize()` for capabilities.
-
-**Phase 7 — Tests & QA**
-
-* [x] 7.1 Unit tests (core): ids, markers, requests.
-* [x] 7.2 Service tests: history (builder/persistence), tools (build/execute), routing.
-* [x] 7.3 Engine smoke test: mock SSE stream; assert emissions and loops.
-* [x] 7.4 Backward compatibility: existing chats still resolve markers; Function ID rename does not break.
-
-**Phase 8 — Packaging / Build**
-
-* [x] 8.1 (Optional) Add `scripts/bundle.py` and `Makefile` `build` target to produce a single-file `openai_responses_manifold.py`.
-* [x] 8.2 Verify the monolith imports cleanly in OpenWebUI.
-
-**Phase 9 — Documentation**
-
-* [x] 9.1 Add **Developer Guide v2** to repo (`docs/DEVELOPER_GUIDE.md`).
-* [x] 9.2 Add this **Work Package** to repo (`docs/WORK_PACKAGE.md`).
-* [x] 9.3 Update README with quick-start and structure summary.
-
-**Phase 10 — Rollout**
-
-* [ ] 10.1 PRs organized by phases above, with checklists.
-* [ ] 10.2 Backout plan: keep a tag of the current single-file version.
-* [ ] 10.3 Announce changes and migration notes for contributors.
+* Domain concepts (model catalog, markers, messages, errors).
+* OpenAI protocol definitions (Requests, streaming events, HTTP client).
+* Application logic (engine, tools, routing, history, request building).
+* Infrastructure (logging, OpenWebUI store and events).
+* Adapters (OpenWebUI `Pipe` entry point).
 
 ---
 
-## 📦 Scope & Goals
+## 2. Context (What you are starting from)
 
-* **Goal:** Restructure the manifold per **Developer Guide (v2 design)** into clear, conventional layers that are intuitive to OpenWebUI users, OpenAI API developers, and Python developers.
-* **Non-goals:** Rewrite business rules or behavior; we’re refactoring structure. Behavior should remain compatible (markers, store key, features).
+The monolithic file you see in Open WebUI is generated. The comment at the top describes the **source layout** (current situation):
+
+* `model_catalog.py`
+* `settings.py`
+* `utils/logging.py`
+* `utils/openwebui_events.py`
+* `core/openai_response_events.py`
+* `core/openai_requests.py`
+* `core/ids.py`
+* `core/messages.py`
+* `core/markers.py`
+* `core/errors.py`
+* `main.py`
+* `engine.py`
+* `services/history.py`
+* `services/request_builder.py`
+* `services/tools.py`
+* `services/tasks.py`
+* `services/routing.py`
+* `infra/openwebui_store.py`
+* `infra/openai_client.py`
+
+Conceptually, these already fall into natural groups:
+
+* **Domain-ish:** model catalog, IDs, messages, markers, errors.
+* **OpenAI protocol:** requests & streaming events.
+* **Application:** engine, history, request_builder, tools, tasks, routing.
+* **Infrastructure:** logging, OpenAI client, OpenWebUI events/store.
+* **Adapter:** OpenWebUI `Pipe` (`main.py`).
+
+This work package formalizes that into an explicit, layered architecture.
 
 ---
 
-## 🗂 Target Project Structure (authoritative)
+## 3. Target architecture (ideal folder structure)
 
-```
+You will refactor the source tree under `src/openai_responses_manifold/` to the following structure (names are important):
+
+```text
 openai_responses_manifold/
-├─ main.py                      # Pipe (OpenWebUI manifold adapter)
-├─ settings.py                  # Valves (PipeValves, UserValves)
-├─ engine.py                    # ResponsesEngine (single-turn orchestrator)
-├─ core/
-│  ├─ __init__.py
-│  ├─ requests.py               # CompletionsBody, ResponsesBody (+ alias defaults)
-│  ├─ messages.py               # message block helpers
-│  ├─ capabilities.py           # MODEL_FEATURES, MODEL_ALIASES, supports()
-│  ├─ ids.py                    # normalize(), base_model() – prefix/dot/date safe
-│  ├─ markers.py                # marker format/parse/split
-│  └─ errors.py                 # typed exceptions
-├─ services/
-│  ├─ __init__.py
-│  ├─ history.py                # HistoryPersistence, HistoryBuilder
-│  ├─ tools.py                  # build_tools(), execute_tool_calls()
-│  └─ routing.py                # route_auto_model()
-├─ infra/
-│  ├─ __init__.py
-│  ├─ openai_client.py          # OpenAIResponsesClient.create()/stream()
-│  └─ openwebui_store.py        # ItemStore.save_items()/load_items()
-├─ utils/
-│  ├─ __init__.py
-│  ├─ logging.py                # SessionLogger
-│  └─ events.py                 # OpenWebUI event helpers
-└─ docs/
-   ├─ DEVELOPER_GUIDE.md        # Developer Guide (v2 design)
-   └─ WORK_PACKAGE.md           # This file
+  __init__.py
+
+  config/
+    settings.py              # PipeValves, UserValves, DEFAULT_PIPE_LOG_LEVEL
+
+  domain/
+    model_catalog.py         # OpenAI model IDs, features, aliases AND ID normalization
+    messages.py              # user/assistant blocks → Responses items helpers
+    markers.py               # hidden marker encoding/decoding/splitting
+    errors.py                # ManifoldError, ToolExecutionError, ...
+
+    openai_requests.py       # ResponseCreateParams, CompletionCreateParams, ReasoningParams, ...
+    openai_events.py         # Streaming EventType + StreamEvent union + parse_event
+
+  infrastructure/
+    logging.py               # session-aware logging, ContextVars, SESSION_LOGS buffer
+    openwebui_events.py      # EventEmitter, EventCall, OpenWebUI event payload models
+    openwebui_store.py       # ItemStore wrapping open_webui.models.chats.Chats
+    openai_client.py         # OpenAIResponsesClient (aiohttp wrapper)
+
+  application/
+    engine.py                # ResponsesEngine (streaming orchestration + tool loop)
+    history.py               # HistoryPersistence, HistoryBuilder, HistoryService
+    request_builder.py       # build_responses_body(...)
+    tools.py                 # build_tools(...), execute_tool_calls(...), resolve_tools(...)
+    tasks.py                 # run_task_model(...)
+    routing.py               # route_auto_model(...), router schema + prompt
+
+  interface/
+    openwebui_pipe.py        # Pipe class integrating everything into Open WebUI
 ```
 
----
+### Layering rules
 
-## 🔁 Current → Target Mapping (fill during Phase 0)
+* `interface/` may depend on `application`, `config`, `domain`, `infrastructure`.
+* `application/` may depend on `domain` and `infrastructure`.
+* `infrastructure/` may depend on `domain` (for types) but not on `application` or `interface`.
+* `domain/` depends on nothing else inside this package.
 
-> AI agent: expand this table with line refs or anchors to help reviewers.
-
-| Current section / function                                                  | Target module & symbol                                                                         | Notes / changes                                                          |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `core/capabilities.py` (`MODEL_FEATURES`, `MODEL_ALIASES`, `supports`)      | `core/capabilities.py`                                                                         | Mostly move; drop `MODEL_PREFIX` stripping from here; rely on `core/ids` |
-| `core/models.py::CompletionsBody`, `ResponsesBody`                          | `core/requests.py`                                                                             | Keep validator for alias defaults                                        |
-| `core/models.py::transform_messages_to_input`                               | `services/history.py::HistoryBuilder.build_input_from_messages` (+ `core/messages.py` helpers) | Inject resolver; remove DB/Chats coupling                                |
-| `core/markers.py`                                                           | `core/markers.py`                                                                              | Move as-is (pure)                                                        |
-| `core/session_logger.py`                                                    | `utils/logging.py`                                                                             | Rename to `SessionLogger`, keep ContextVar behavior                      |
-| `core/utils.py::wrap_event_emitter`, `merge_usage_stats`, `wrap_code_block` | `utils/events.py` (emission helpers), `engine.py` (aggregate usage)                            | Prefer focused helpers; keep `wrap_code_block` where used                |
-| `features/tools.py::build_tools`                                            | `services/tools.py::build_tools`                                                               | Keep strict JSON Schema option; dedupe                                   |
-| `features/router.py::route_gpt5_auto`                                       | `services/routing.py::route_auto_model`                                                        | Keep router prompt in-module or separate prompt file                     |
-| `infra/client.py::OpenAIResponsesClient`                                    | `infra/openai_client.py`                                                                       | Rename methods to `create`/`stream`                                      |
-| `infra/persistence.py` (persist/fetch)                                      | `infra/openwebui_store.py::ItemStore` and `services/history.py::HistoryPersistence`            | Split storage vs markers                                                 |
-| `pipe.py::ResponseRunner`                                                   | `engine.py::ResponsesEngine`                                                                   | Orchestrator for turn; event emissions; tool loops                       |
-| `pipe.py::Pipe` (+ Valves)                                                  | `main.py::Pipe` and `settings.py`                                                              | Keep `pipes()` and `pipe()` thin; valves moved                           |
+These rules are your guide when fixing imports.
 
 ---
 
-## 🧭 Execution Phases (details & acceptance criteria)
+## 4. High-level plan
 
-### Phase 0 — Assessment
+You will execute the following steps (mirroring the checklist):
 
-* **Deliverables:** Completed Current→Target Mapping table; list of couplings to untangle (DB I/O inside transforms; Function ID assumptions; web_search parallelism side effects).
-* **Acceptance:** Table is filled; risks identified; no refactors yet.
-
-### Phase 1 — Project Skeleton
-
-* Create folders/files with module docstrings linking **Developer Guide v2**.
-* **Acceptance:** `pytest -q` is runnable (even if empty); import graph is clean.
-
-### Phase 2 — Core
-
-* Migrate pure logic without changing behavior.
-* Implement `core/ids.normalize()` correctly (prefix strip only when suffix in known models/aliases; strip `-YYYY-MM-DD`; handle dotted IDs).
-* **Acceptance:** Unit tests for ids/markers/models pass; no infra imports in `core/`.
-
-### Phase 3 — Infra
-
-* Implement `OpenAIResponsesClient.create/stream` with aiohttp.
-* Implement `ItemStore.save_items/load_items` with stable key `openai_responses_pipe`.
-* **Acceptance:** Mocks can verify both APIs; no domain logic in infra.
-
-### Phase 4 — Services
-
-* **HistoryPersistence:** items→ULIDs→markers; returns concatenated marker string.
-* **HistoryBuilder:** messages→(scan markers)→resolve→full Responses input.
-* **Tools:** build tools (function/web_search/MCP) and execute calls (sync/async).
-* **Routing:** auto routing function with JSON schema response.
-* **Acceptance:** Service tests cover marker round-trip, tool build/exec, routing merge.
-
-### Phase 5 — Engine
-
-* Orchestrate one turn: build body, attach tools, route if needed, stream SSE, run tools, persist items, emit events, finalize.
-* Use `utils/events` and `utils/logging`.
-* **Acceptance:** Engine smoke test passes; event order & content as expected; tool loops terminate; usage aggregated.
-
-### Phase 6 — Adapter
-
-* `Pipe.pipes()` from `settings.MODEL_ID`.
-* `Pipe.pipe()` thin: wiring + delegation only.
-* **Acceptance:** No infra or heavy logic in `main.py`; honors user valves; no Function ID dependency in capabilities.
-
-### Phase 7 — Tests & QA
-
-* Add tests mentioned in **Testing guidance** of the Developer Guide.
-* **Acceptance:** All tests pass; covers normalization, markers, tool execution, routing, engine flow.
-
-### Phase 8 — Packaging / Build
-
-* Optional: `scripts/bundle.py` and `Makefile build` to output **single-file** artifact.
-* **Acceptance:** Monolith imports and runs in OpenWebUI; smoke test works.
-
-### Phase 9 — Documentation
-
-* Add **Developer Guide v2** and this **Work Package** to `docs/`.
-* Update README with structure & quick start.
-* **Acceptance:** Docs readable, consistent, and reference code.
-
-### Phase 10 — Rollout
-
-* PRs per phase; backout tag; migration note (Function ID independence; stable marker/store keys).
-* **Acceptance:** Merged with approvals; old chats still resolve markers.
+1. Confirm the current modular layout in `src/` and how `scripts/build.py` bundles it.
+2. Create the new packages and move modules into their new homes.
+3. Merge the model ID logic into a single domain module (`domain/model_catalog.py`) to remove the `model_catalog` ↔ `ids` circularity.
+4. Move OpenAI protocol types into `domain/openai_requests.py` and `domain/openai_events.py`.
+5. Move infrastructure helpers (logging, events, store, client).
+6. Move application logic (engine, history, request builder, tools, tasks, routing).
+7. Move the OpenWebUI `Pipe` into `interface/openwebui_pipe.py`.
+8. Update all imports and update the bundling script to match the new layout.
+9. Run tests / smoke tests and fix any breakage.
+10. Update README / comments to reflect the new architecture.
 
 ---
 
-## 🧪 Testing Matrix (must cover)
+## 5. Detailed tasks & guidance
 
-* **IDs:**
+### WP11.1 – Confirm current source layout and bundling behavior
 
-  * raw: `gpt-5` → `gpt-5`
-  * dotted: `gpt-4.1` → `gpt-4.1`
-  * dated: `gpt-4.1-2025-11-03` → `gpt-4.1`
-  * prefixed: `anyfunc.gpt-4.1-2025-11-03` → `gpt-4.1` (if known suffix)
-  * alias: `gpt-5-thinking-high` → base `gpt-5` + defaults merged
-* **Markers:** encode/parse/split round-trips; marker segments interleaved with text.
-* **HistoryBuilder:** user/dev blocks + assistant with markers restored; resolver absent → ignore markers.
-* **Tools:** build specs (strict on/off), web_search gating on reasoning effort minimal, execute sync/async with error mapping.
-* **Routing:** parse JSON; merge `model`, `reasoning.effort`; store `model_router_result`.
-* **Engine:** SSE happy path (text deltas, usage, tool call loop), error path (emit error + logs citation).
-* **Back-compat:** existing markers load; Function ID rename does not affect capability checks or persistence.
+**What to do**
 
----
+* Locate the actual modular source tree (likely `src/openai_responses_manifold/` or similar).
+* Verify that the modules listed in the header comments of the monolith match 1:1 with real files.
+* Open and inspect `scripts/build.py` to understand:
 
-## 🛡️ Invariants & Risks
+  * how modules are discovered/imported,
+  * how they are concatenated into the monolith,
+  * whether it relies on specific paths or glob patterns.
 
-**Invariants**
+**Acceptance criteria**
 
-* **Never** hard-code Function ID for normalization/capabilities.
-* Marker namespace **stable** (`openai_responses:v2`).
-* Store key **stable** (`openai_responses_pipe`).
-* Capability checks always via `core.capabilities.supports()` after `core.ids.normalize()`.
-* Only attach tools when model supports function calling.
+* You have a clear understanding of:
 
-**Risks & Mitigations**
-
-* *Risk:* Hidden infra coupling in transforms.
-  *Mitigation:* `HistoryBuilder` uses injected resolver; no infra imports in core/services.
-* *Risk:* Web search tool disables parallel tool calls.
-  *Mitigation:* Respect valves; document behavior; test both paths.
-* *Risk:* Router JSON shape changes.
-  *Mitigation:* Tolerant parse; bounds checking; default fallback to original `model`.
-* *Risk:* Old chats break on rename.
-  *Mitigation:* Keep stable namespace & store key; add fallback loader if needed.
+  * where each logical module lives now,
+  * how `build.py` expects to find them.
+* You add any deviations (if the local layout doesn’t perfectly match the header list) as notes to this work package if needed.
 
 ---
 
-## 📣 Agent Operating Notes
+### WP11.2 – Create new package folders and `__init__.py` skeletons
 
-* **Update this Work Package** as you proceed:
+**What to do**
 
-  * Add subtasks, decisions, risks, and links to commits/PRs.
-  * Keep the **Live Checklist** accurate.
-* When you complete a phase, **check it off**, add a short summary, and proceed.
-* If you discover unplanned work, **add it** under the relevant phase with `[NEW]` and rationale.
+* Under `src/openai_responses_manifold/`, create the directories:
+
+  ```text
+  config/
+  domain/
+  infrastructure/
+  application/
+  interface/
+  ```
+
+* Add `__init__.py` to each (even empty) so they are valid Python packages.
+
+* Ensure the top-level `openai_responses_manifold/__init__.py` continues to exist and exports whatever is currently expected (if anything).
+
+**Acceptance criteria**
+
+* All new directories exist and are importable as packages.
+* No runtime behavior has changed yet; only new structure is present.
 
 ---
 
-## 🔚 Definition of Done
+### WP11.3 – Move & refactor domain modules
 
-* Codebase matches the **Target Project Structure**.
-* All **tests pass** and coverage added for new boundaries.
-* **Backward compatibility** validated (markers resolve, Function ID rename safe).
-* **Docs** (Developer Guide v2 + Work Package + README) updated and accurate.
-* (Optional) **Bundle** builds a single-file artifact that works in OpenWebUI.
+**What to do**
+
+1. **Model catalog + IDs (merge to remove cycles)**
+
+   * Current:
+
+     * `model_catalog.py`
+     * `core/ids.py`
+   * Target:
+
+     * `domain/model_catalog.py`
+   * Inside `domain/model_catalog.py`:
+
+     * Keep:
+
+       * `EMPTY_FEATURES`
+       * `MODEL_FEATURES`
+       * `MODEL_ALIASES`
+       * `alias_defaults`
+       * `features`
+       * `supports`
+     * Also move the ID logic from `core/ids.py`:
+
+       * `_DATE_SUFFIX_RE`
+       * `_KNOWN_IDS` (built from `MODEL_FEATURES.keys()` and `MODEL_ALIASES.keys()`)
+       * `normalize(model_id: str) -> str`
+       * `base_model(model_id: str, alias_lookup: Mapping[str, Mapping[str, str | dict]] | None = None) -> str`
+     * Update `alias_defaults` and `features` to use the *local* `normalize` and `base_model` functions.
+     * Delete or empty the old `core/ids.py` module once all imports are updated.
+
+2. **Messages**
+
+   * Move `core/messages.py` → `domain/messages.py` as-is.
+   * Ensure it still exposes:
+
+     * `normalize_user_blocks`
+     * `user_blocks_to_responses_items`
+     * `assistant_text_item`
+     * `developer_message`.
+
+3. **Markers**
+
+   * Move `core/markers.py` → `domain/markers.py` as-is.
+
+4. **Errors**
+
+   * Move `core/errors.py` → `domain/errors.py` as-is.
+
+5. **OpenAI requests & events**
+
+   * Move `core/openai_requests.py` → `domain/openai_requests.py`.
+
+     * Adjust imports so `ResponseCreateParams` and helpers import `base_model`, `MODEL_ALIASES`, `alias_defaults` from `domain/model_catalog.py`.
+   * Move `core/openai_response_events.py` → `domain/openai_events.py`.
+
+**Acceptance criteria**
+
+* No remaining references to `core.ids`, `core.messages`, `core.markers`, `core.errors`, `core.openai_requests`, or `core.openai_response_events`.
+* The imports are updated to:
+
+  * `from openai_responses_manifold.domain.model_catalog import ...`
+  * `from openai_responses_manifold.domain.messages import ...`
+  * `from openai_responses_manifold.domain.markers import ...`
+  * `from openai_responses_manifold.domain.errors import ...`
+  * `from openai_responses_manifold.domain.openai_requests import ...`
+  * `from openai_responses_manifold.domain.openai_events import ...`
+* There are no circular imports between domain modules.
+
+---
+
+### WP11.4 – Move OpenAI client (protocol IO) into infrastructure
+
+**What to do**
+
+* Move `infra/openai_client.py` → `infrastructure/openai_client.py`.
+* Update its imports:
+
+  * Replace references to `..core.openai_response_events` and `..utils.logging` with:
+
+    * `from openai_responses_manifold.domain.openai_events import StreamEvent, parse_event`
+    * `from openai_responses_manifold.infrastructure.logging import get_logger, truncate_for_log`
+
+**Acceptance criteria**
+
+* The `OpenAIResponsesClient` class is in `infrastructure/openai_client.py`.
+* All modules that previously imported it now use the new path.
+
+---
+
+### WP11.5 – Move infrastructure modules (logging, OpenWebUI events, store)
+
+**What to do**
+
+1. **Logging**
+
+   * Move `utils/logging.py` → `infrastructure/logging.py`.
+   * Ensure it still exposes:
+
+     * `configure_logging`
+     * `get_logger`
+     * `logging_context`
+     * ContextVars (`OWUI_SESSION_ID`, `OWUI_CHAT_ID`, `OWUI_MESSAGE_ID`, `OWUI_USER_ID`)
+     * `SESSION_LOGS`, `get_session_logs`, `clear_session_logs`, `consume_session_logs`
+     * `truncate_for_log`
+
+2. **OpenWebUI events**
+
+   * Move `utils/openwebui_events.py` → `infrastructure/openwebui_events.py`.
+
+3. **OpenWebUI store**
+
+   * Move `infra/openwebui_store.py` → `infrastructure/openwebui_store.py`.
+
+4. Update all imports throughout the codebase:
+
+   * `from utils.logging` → `from openai_responses_manifold.infrastructure.logging`
+   * `from utils.openwebui_events` → `from openai_responses_manifold.infrastructure.openwebui_events`
+   * `from infra.openwebui_store` → `from openai_responses_manifold.infrastructure.openwebui_store`
+
+**Acceptance criteria**
+
+* All infrastructure modules live under `infrastructure/`.
+* No module imports from the old `utils.*` or `infra.*` paths.
+
+---
+
+### WP11.6 – Move application modules (engine, history, request builder, tools, tasks, routing)
+
+**What to do**
+
+1. **Engine**
+
+   * Move `engine.py` → `application/engine.py`.
+   * Ensure `ResponsesEngine` imports now use:
+
+     * Domain: `openai_responses_manifold.domain.openai_requests`, `domain.openai_events`, `domain.errors`, `domain.model_catalog`.
+     * Infra: `infrastructure.openai_client`, `infrastructure.openwebui_events`, `infrastructure.logging`, `infrastructure.openwebui_store`.
+
+2. **History**
+
+   * Move `services/history.py` → `application/history.py`.
+   * Keep `HistoryPersistence`, `HistoryBuilder`, `HistoryService` in this single module (no need to split further unless you want to).
+
+3. **Request builder**
+
+   * Move `services/request_builder.py` → `application/request_builder.py`.
+   * Update imports to:
+
+     * `from openai_responses_manifold.domain.openai_requests import ResponseCreateParams`
+     * `from openai_responses_manifold.application.history import HistoryService`
+     * `from openai_responses_manifold.infrastructure.logging import get_logger`
+
+4. **Tools**
+
+   * Move `services/tools.py` → `application/tools.py`.
+   * Ensure it still exports:
+
+     * `resolve_tools`
+     * `build_tools`
+     * `execute_tool_calls`
+   * Update imports to:
+
+     * `from openai_responses_manifold.domain.openai_requests import ResponseCreateParams`
+     * `from openai_responses_manifold.domain.errors import ToolExecutionError`
+     * `from openai_responses_manifold.domain.model_catalog import supports`
+     * `from openai_responses_manifold.infrastructure.logging import get_logger, truncate_for_log`
+
+5. **Tasks**
+
+   * Move `services/tasks.py` → `application/tasks.py`.
+   * Ensure it imports `OpenAIResponsesClient` from `infrastructure.openai_client`.
+
+6. **Routing**
+
+   * Move `services/routing.py` → `application/routing.py`.
+   * Update imports to:
+
+     * `from openai_responses_manifold.domain.openai_requests import ResponseCreateParams`
+     * `from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient`
+     * `from openai_responses_manifold.infrastructure.openwebui_events import EventEmitter, EventEmitterFn`
+     * `from openai_responses_manifold.infrastructure.logging import get_logger, truncate_for_log`
+
+**Acceptance criteria**
+
+* All `services/*.py` modules have been removed or turned into thin shims that import from `application.*`.
+* Application code (engine, history, tools, tasks, routing, request_builder) lives entirely under `application/`.
+
+---
+
+### WP11.7 – Move and adapt the OpenWebUI `Pipe` adapter
+
+**What to do**
+
+* Move `main.py` → `interface/openwebui_pipe.py`.
+* Ensure the `Pipe` class:
+
+  * Imports Valve types from `config/settings.py`:
+
+    * `from openai_responses_manifold.config.settings import PipeValves, UserValves`
+  * Imports application and infra components from their new locations:
+
+    * `from openai_responses_manifold.application.engine import ResponsesEngine`
+    * `from openai_responses_manifold.application.request_builder import build_responses_body`
+    * `from openai_responses_manifold.application.routing import route_auto_model`
+    * `from openai_responses_manifold.application.tools import build_tools`
+    * `from openai_responses_manifold.domain.model_catalog import supports`
+    * `from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient`
+    * `from openai_responses_manifold.infrastructure.openwebui_store import ItemStore`
+    * `from openai_responses_manifold.infrastructure.openwebui_events import EventCall`
+    * `from openai_responses_manifold.infrastructure.logging import get_logger, logging_context`
+* Ensure the public surface seen by Open WebUI (class name, attributes like `type`, `id`, `pipe`, `pipes`) remains the same.
+
+**Acceptance criteria**
+
+* There is a single OpenWebUI adapter module: `interface/openwebui_pipe.py`.
+* The plugin still registers and behaves correctly in Open WebUI when built and loaded.
+
+---
+
+### WP11.8 – Update all imports and bundling script
+
+**What to do**
+
+1. **Update imports**
+
+   * Search and replace import paths to match the new layout.
+   * Ensure there are no references left to:
+
+     * `core.*`, `utils.*`, `services.*`, `infra.*`, or top-level modules that have been moved.
+
+2. **Update `scripts/build.py`**
+
+   * Adjust any hard-coded module paths, glob patterns, or explicit import lists to:
+
+     * match the new folder structure,
+     * preserve the final order of content in the bundled monolith where necessary (if there were any ordering assumptions).
+   * Ideally, the bundler should read from `openai_responses_manifold/` and respect its new package layout.
+
+**Acceptance criteria**
+
+* The build script runs successfully and produces a monolithic file equivalent (in behavior) to the current one.
+* The monolith header comments can be updated to reflect the new layout (optional, but recommended).
+
+---
+
+### WP11.9 – Run tests / smoke tests
+
+**What to do**
+
+* Run any existing automated tests (if the repository has them).
+* If there are no tests, perform a basic smoke test:
+
+  * Build the plugin.
+  * Load it into Open WebUI.
+  * Verify that:
+
+    * you can select the pipe,
+    * simple chat requests work,
+    * tool calls still function as before,
+    * streaming works,
+    * history-based persistence (markers) still works.
+
+**Acceptance criteria**
+
+* No regressions in core functionality are observed.
+* Any test failures are either resolved or documented with rationale (and ideally fixed).
+
+---
+
+### WP11.10 – Update README / internal docs
+
+**What to do**
+
+* Update the plugin’s README (or add a new `ARCHITECTURE.md`) to describe:
+
+  * The new folder structure.
+  * The four main layers: `domain`, `application`, `infrastructure`, `interface`.
+  * Where to look for:
+
+    * Model catalog & capabilities,
+    * OpenAI request/response/event models,
+    * Engine & tool execution,
+    * History persistence,
+    * OpenWebUI integration (Pipe & events),
+    * OpenAI HTTP client & logging.
+* Update the monolith header comment if needed to point readers to the new source layout.
+
+**Acceptance criteria**
+
+* A new contributor can read the docs and immediately know:
+
+  * “Where is the engine?” → `application/engine.py`
+  * “Where do I change model features?” → `domain/model_catalog.py`
+  * “Where do I adjust the OpenAI client?” → `infrastructure/openai_client.py`
+  * “Where is the OpenWebUI Pipe?” → `interface/openwebui_pipe.py`
+
+---
+
+### WP11.11 – Keep this work package / checklist current
+
+As you execute this work package, you must:
+
+* Update the checklist at the top:
+
+  * Change `[ ]` → `[x]` when a task is completed.
+  * Add new checklist items if you discover additional necessary work (e.g. WP11.12 for test refactors, WP11.13 for CI updates, etc.).
+* If you need to adjust the target architecture based on discoveries (e.g. additional modules or constraints from `build.py`), add a brief note explaining the change and keep the structure description in sync.
+
+---
+
+## 6. Rationale summary (for the agent)
+
+* **Why introduce layers?**
+  To make the code easier to navigate and reason about:
+
+  * Domain concepts are centralized.
+  * Application orchestration is separated from IO and adapters.
+  * Infrastructure (logging, HTTP, storage) is isolated.
+  * OpenWebUI-specific glue is confined to `interface/`.
+
+* **Why merge `model_catalog` + `ids` into one domain file?**
+  The current design couples them via mutual imports. Merging them into `domain/model_catalog.py` removes this circularity and makes the model ID / capability logic a single, obvious place.
+
+* **Why keep the bundling?**
+  Open WebUI expects a single-file pipe. The refactor makes the *source* cleaner while preserving the existing packaging convention.
+
+* **What must not change?**
+
+  * The way Open WebUI instantiates and calls the `Pipe`.
+  * Behavior of streaming, tool calls, routes, and history persistence.
+  * The logical behavior of the engine and services.
+
+Use this work package as your living plan while performing WP11, and keep the checklist updated as you go.
