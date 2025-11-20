@@ -115,6 +115,26 @@ class PipeValves(BaseModel):
             "surfacing the full list of consulted URLs alongside inline citations."
         ),
     )
+    ENABLE_CODE_INTERPRETER_TOOL: bool = Field(
+        default=False,
+        description=(
+            "Enable OpenAI's built-in 'code_interpreter' tool when supported by the model. "
+            "Docs: https://platform.openai.com/docs/assistants/tools/code-interpreter"
+        ),
+    )
+    CODE_INTERPRETER_CONTAINER_JSON: str | None = Field(
+        default=None,
+        description=(
+            "Optional JSON for the code_interpreter tool's 'container' field. "
+            "If unset, defaults to {'type': 'auto'}."
+        ),
+    )
+    CODE_INTERPRETER_INCLUDE_OUTPUTS: bool = Field(
+        default=True,
+        description=(
+            "Automatically include 'code_interpreter_call.outputs' when code interpreter is enabled."
+        ),
+    )
     REMOTE_MCP_SERVERS_JSON: str | None = Field(
         default=None,
         description=(

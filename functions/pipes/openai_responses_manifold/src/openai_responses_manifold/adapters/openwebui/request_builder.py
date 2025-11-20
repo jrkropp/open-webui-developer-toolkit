@@ -45,6 +45,26 @@ async def build_responses_body(
     elif "max_tokens" in owui_request:
         payload["max_output_tokens"] = owui_request.get("max_tokens")
 
+    passthrough_keys = [
+        "tool_choice",
+        "store",
+        "background",
+        "include",
+        "metadata",
+        "text",
+        "service_tier",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "previous_response_id",
+        "conversation",
+        "prompt",
+        "stream_options",
+        "include_obfuscation",
+    ]
+    for key in passthrough_keys:
+        if key in owui_request:
+            payload[key] = owui_request[key]
+
     messages = owui_request.get("messages") or []
     provided_input = owui_request.get("input")
     instructions = owui_request.get("instructions") or _extract_system_instructions(messages)
