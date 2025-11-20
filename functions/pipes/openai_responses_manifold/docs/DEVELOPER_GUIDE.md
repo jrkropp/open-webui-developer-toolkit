@@ -3,11 +3,13 @@
 > **TL;DR (for humans *and* AI agents)**
 >
 > * This repo is a **modular OpenWebUI manifold** that adapts OpenWebUI chat requests to the **OpenAI Responses API** with streaming, tools, routing, and persisted rich items.
-> * The codebase is split into:
->   **Adapter** (`main.py`) → **Engine** (`engine.py`) → **Core** (pure logic, `core/`) → **Services** (history, tools, routing) → **Infra** (OpenAI HTTP, OpenWebUI store).
+> * The codebase is split into layers:
+>   **Interface** (`interface/openwebui_pipe.py`) → **Application** (`application/engine.py` + helpers) → **Domain** (`domain/` schemas + capabilities) → **Infrastructure** (logging/events/store/OpenAI client) → **Config** (`config/settings.py`).
 > * **Sacred concepts:** Conversation/Turn, Messages vs Context Items, Model Capabilities, Markers + Persistence, Single‑turn Engine Run, Valves (settings).
 > * **Model IDs:** We never hard‑code the OpenWebUI Function ID. We **normalize** incoming model IDs (prefix/dot/date safe) before checking capabilities.
 > * **Persistence pattern:** Store structured items (tool results, reasoning) in the chat DB, **embed invisible markers** in assistant text, and **resolve them later** to rebuild context.
+
+> **Refactor note:** Older references to `core/`, `services/`, and `infra/` now map to `domain/`, `application/`, and `infrastructure/` respectively.
 
 ---
 
@@ -15,30 +17,27 @@
 
 ```
 openai_responses_manifold/
-├─ main.py                      # OpenWebUI Pipe (manifold) – entrypoint/adapter
-├─ settings.py                  # Valves: pipe & per-user settings (OpenWebUI-facing)
-├─ engine.py                    # ResponsesEngine – orchestrates one “turn”
-├─ model_catalog.py             # Canonical model/capability table (edit this when adding models)
-├─ core/                        # Pure domain logic (no I/O)
-│  ├─ __init__.py
-│  ├─ requests.py               # Pydantic: CompletionCreateParams, ResponseCreateParams
+├─ interface/openwebui_pipe.py  # OpenWebUI Pipe (adapter/entrypoint)
+├─ config/settings.py           # Valves: pipe & per-user settings (OpenWebUI-facing)
+├─ domain/                      # Pure domain logic (no I/O)
+│  ├─ model_catalog.py          # Canonical model/capability table + ID normalization
 │  ├─ messages.py               # Message block helpers (text/image/file → items)
-│  ├─ ids.py                    # Model ID normalization (prefix/dot/date safe)
 │  ├─ markers.py                # Hidden marker format & parsing (no DB)
-│  └─ errors.py                 # Manifold exceptions (Tool, Routing, Stream)
-├─ services/                    # Light business logic composed with infra
-│  ├─ __init__.py
-│  ├─ history.py                # HistoryPersistence (items→markers), HistoryBuilder (markers→items)
-│  ├─ tools.py                  # Build OpenAI `tools` & execute tool calls
-│  └─ routing.py                # “auto” model routing (e.g., gpt‑5‑auto)
-├─ infra/                       # I/O implementations
-│  ├─ __init__.py
-│  ├─ openai_client.py          # aiohttp client for OpenAI Responses API
-│  └─ openwebui_store.py        # ItemStore for OpenWebUI Chats (persist/fetch items)
-└─ utils/
-   ├─ __init__.py
-   ├─ logging.py                # Context-aware logging + per-session buffer for citations
-   └─ events.py                 # Event helpers (status/usage/completion/citation)
+│  ├─ errors.py                 # Manifold exceptions (Tool, Routing, Stream)
+│  ├─ openai_requests.py        # Pydantic: CompletionCreateParams, ResponseCreateParams
+│  └─ openai_events.py          # Typed SSE schemas and parser
+├─ infrastructure/              # I/O implementations
+│  ├─ logging.py                # Context-aware logging + per-session buffer for citations
+│  ├─ openwebui_events.py       # Event helpers (status/usage/completion/citation)
+│  ├─ openwebui_store.py        # ItemStore for OpenWebUI Chats (persist/fetch items)
+│  └─ openai_client.py          # aiohttp client for OpenAI Responses API
+└─ application/                 # Light business logic composed with infra
+   ├─ engine.py                 # ResponsesEngine – orchestrates one “turn”
+   ├─ history.py                # HistoryPersistence (items→markers), HistoryBuilder (markers→items)
+   ├─ request_builder.py        # OpenWebUI payload → strict ResponseCreateParams
+   ├─ tools.py                  # Build OpenAI `tools` & execute tool calls
+   ├─ tasks.py                  # Non-streaming task helper
+   └─ routing.py                # “auto” model routing (e.g., gpt‑5‑auto)
 ```
 
 **Subtle naming tweaks to feel “standard”**
@@ -116,8 +115,8 @@ openai_responses_manifold/
 
 ### SDK type mapping (requests + streaming)
 
-* **Responses request**: `openai.types.responses.ResponseCreateParams` ↔ `core.requests.ResponseCreateParams`
-* **Chat Completions request**: `openai.types.chat.CompletionCreateParams` ↔ `core.requests.CompletionCreateParams` (validated OpenWebUI payload)
+* **Responses request**: `openai.types.responses.ResponseCreateParams` ↔ `domain.openai_requests.ResponseCreateParams`
+* **Chat Completions request**: `openai.types.chat.CompletionCreateParams` ↔ `domain.openai_requests.CompletionCreateParams` (validated OpenWebUI payload)
 * **Streaming events**: `openai.types.responses.StreamEvent` ↔ `core.openai_response_events.StreamEvent`
   * Text deltas/done: `ResponseOutputTextDeltaEvent` / `ResponseOutputTextDoneEvent`
 * **Client verbs**: `client.responses.create` / `client.responses.create(stream=True)` ↔ `infra.openai_client.OpenAIResponsesClient.create` / `.stream`

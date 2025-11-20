@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from openai_responses_manifold.utils import EventCall, EventEmitter
+from openai_responses_manifold.infrastructure.openwebui_events import EventCall, EventEmitter
 
 
 @pytest.mark.asyncio()

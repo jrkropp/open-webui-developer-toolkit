@@ -144,9 +144,9 @@ _reload_package_module()
 
 from .fakes import FakeResponsesClient, InMemoryChats, SpyEventEmitter  # noqa: E402
 import openai_responses_manifold as orm  # noqa: E402  # pylint: disable=wrong-import-position
-import openai_responses_manifold.engine as orm_engine  # noqa: E402
-import openai_responses_manifold.infra.openwebui_store as orm_store  # noqa: E402
-import openai_responses_manifold.main as orm_main  # noqa: E402
+import openai_responses_manifold.application.engine as orm_engine  # noqa: E402
+import openai_responses_manifold.infrastructure.openwebui_store as orm_store  # noqa: E402
+import openai_responses_manifold.interface.openwebui_pipe as orm_main  # noqa: E402
 
 
 @pytest.fixture()

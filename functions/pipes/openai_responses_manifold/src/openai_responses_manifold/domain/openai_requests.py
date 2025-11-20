@@ -7,8 +7,7 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
-from ..model_catalog import MODEL_ALIASES, alias_defaults
-from .ids import base_model
+from .model_catalog import MODEL_ALIASES, alias_defaults, base_model
 
 
 class ReasoningParams(BaseModel):

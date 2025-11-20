@@ -8,21 +8,21 @@ from typing import Any
 
 from open_webui.models.models import ModelForm, Models
 
-from .core.openai_requests import CompletionCreateParams
-from .engine import ResponsesEngine
-from .infra import ItemStore, OpenAIResponsesClient
-from .model_catalog import supports
-from .services import route_auto_model
-from .services.request_builder import build_responses_body
-from .services.tools import build_tools
-from .settings import PipeValves, UserValves
-from .utils import (
+from openai_responses_manifold.config.settings import PipeValves, UserValves
+from openai_responses_manifold.domain.model_catalog import supports
+from openai_responses_manifold.domain.openai_requests import CompletionCreateParams
+from openai_responses_manifold.application.engine import ResponsesEngine
+from openai_responses_manifold.application.request_builder import build_responses_body
+from openai_responses_manifold.application.routing import route_auto_model
+from openai_responses_manifold.application.tools import build_tools
+from openai_responses_manifold.infrastructure.logging import get_logger, logging_context
+from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
+from openai_responses_manifold.infrastructure.openwebui_events import (
     EventCall,
     EventCallerFn,
     EventEmitterFn,
-    get_logger,
-    logging_context,
 )
+from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
 
 
 class Pipe:

@@ -52,16 +52,15 @@ This project started as an internal tool (200+ hours of optimization and testing
 
 ## Local Development
 
-Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything you edit now lives under `src/openai_responses_manifold/`, where `Pipe`, the runner, and helpers sit alongside the `model_catalog`, `core`, `services`, and `infra` modules that power the manifold. When you are ready to share your changes, run `make build` and the tooling will run tests and regenerate the monolithic `openai_responses_manifold.py` that Open WebUI expects.
+Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything lives under `src/openai_responses_manifold/` in clear layers: `config/` (valves/defaults), `domain/` (model catalog, markers/messages/errors, OpenAI request/event schemas), `infrastructure/` (logging, Open WebUI events/store, OpenAI client), `application/` (engine, history, request builder, tools, tasks, routing), and `interface/` (Open WebUI `Pipe`). Run `make build` when you’re ready to regenerate the monolithic `openai_responses_manifold.py` that Open WebUI imports.
 
 ### Project layout
 
-- `src/openai_responses_manifold/main.py` – the Pipe entry point, runner hooks, and valve definitions that Open WebUI expects.
-- `src/openai_responses_manifold/model_catalog.py` – canonical list of supported models/capabilities (edit this when adding or changing models).
-- `src/openai_responses_manifold/core/` – pure helpers: IDs, capabilities, Pydantic API bodies, markers, and message transforms.
-- `src/openai_responses_manifold/services/` – domain helpers for history, tool building/execution, and auto routing.
-- `src/openai_responses_manifold/infra/` – persistence and HTTP client helpers that speak to OpenAI and Open WebUI.
-- `src/openai_responses_manifold/utils/` – `logging.py` (context-aware logging + per-session buffers) plus event helpers shared by the engine and adapter.
+- `src/openai_responses_manifold/interface/openwebui_pipe.py` – Open WebUI adapter (`Pipe`) and valve nesting.
+- `src/openai_responses_manifold/config/settings.py` – pipe and user valve defaults.
+- `src/openai_responses_manifold/domain/` – model catalog/aliases + ID normalization, markers, messages, errors, OpenAI request/response schemas.
+- `src/openai_responses_manifold/infrastructure/` – logging helpers, Open WebUI events + store, `OpenAIResponsesClient`.
+- `src/openai_responses_manifold/application/` – engine orchestration plus history, request builder, tools, tasks, and routing.
 - `docs/DEVELOPER_GUIDE.md` – deep dive into the layered architecture (mirrors the Work Package design).
 
 **Clone and bootstrap**
@@ -176,15 +175,15 @@ This makes features like **on-demand web search toggles** possible without break
 
 ## Logging & Diagnostics
 
-Every run buffers structured log lines and attaches them to the assistant reply as a `Logs` citation. The shared `utils/logging.py` module wires standard Python logging with ContextVars so each record automatically carries `session_id`, `chat_id`, `message_id`, and `user_id`. A console handler streams to stdout and a memory handler buffers per-session lines for citation emission.
+Every run buffers structured log lines and attaches them to the assistant reply as a `Logs` citation. The shared `infrastructure/logging.py` module wires standard Python logging with ContextVars so each record automatically carries `session_id`, `chat_id`, `message_id`, and `user_id`. A console handler streams to stdout and a memory handler buffers per-session lines for citation emission.
 
 ```
-2025-01-01 00:00:00 [INFO] openai_responses_manifold.engine Routing to gpt-5 (effort=medium) session_id=... chat_id=... message_id=... user_id=...
-2025-01-01 00:00:00 [WARNING] openai_responses_manifold.services.tools REMOTE_MCP_SERVERS_JSON is not valid JSON. truncated=True value={"ser... session_id=... chat_id=... message_id=... user_id=...
+2025-01-01 00:00:00 [INFO] openai_responses_manifold.application.engine Routing to gpt-5 (effort=medium) session_id=... chat_id=... message_id=... user_id=...
+2025-01-01 00:00:00 [WARNING] openai_responses_manifold.application.tools REMOTE_MCP_SERVERS_JSON is not valid JSON. truncated=True value={"ser... session_id=... chat_id=... message_id=... user_id=...
 ```
 
 - Streaming event map: see [`docs/STREAMING_EVENTS.md`](docs/STREAMING_EVENTS.md) for every OpenAI Responses SSE type the manifold may receive and log.
-- Typed schemas + parser: `core/events.py` exposes `parse_event` and `StreamEvent` union types; pass `typed=True` to `OpenAIResponsesClient.stream` to yield validated events instead of raw dicts.
+- Typed schemas + parser: `domain/openai_events.py` exposes `parse_event` and `StreamEvent` union types; pass `typed=True` to `OpenAIResponsesClient.stream` to yield validated events instead of raw dicts.
 - Use `Valves.LOG_LEVEL` (pipe-level) or `UserValves.LOG_LEVEL` (per user) to control verbosity; `INHERIT` defers to the pipe-level default.
 - `INFO` covers lifecycle milestones and routing/tool decisions. `DEBUG` adds truncated payloads (request/response snippets, router payloads). `WARNING/ERROR` surface malformed inputs or downstream failures.
 - Long payloads are truncated to keep the citation readable. Sensitive values (API keys) are never logged.

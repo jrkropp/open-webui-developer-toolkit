@@ -48,33 +48,32 @@ PYPROJECT_FILE = PIPE_ROOT / "pyproject.toml"
 
 # Logical order modules will appear in the monolith.
 MODULE_ORDER: list[str] = [
-    "model_catalog.py",
-    "settings.py",
-    "utils/logging.py",
-    "utils/openwebui_events.py",
-    "core/openai_response_events.py",
-    "core/openai_requests.py",
-    "core/ids.py",
-    "core/messages.py",
-    "core/markers.py",
-    "core/errors.py",
-    "main.py",
-    "engine.py",
-    "services/history.py",
-    "services/request_builder.py",
-    "services/tools.py",
-    "services/tasks.py",
-    "services/routing.py",
-    "infra/openwebui_store.py",
-    "infra/openai_client.py",
+    "config/settings.py",
+    "domain/model_catalog.py",
+    "domain/messages.py",
+    "domain/markers.py",
+    "domain/errors.py",
+    "domain/openai_requests.py",
+    "domain/openai_events.py",
+    "infrastructure/logging.py",
+    "infrastructure/openwebui_events.py",
+    "infrastructure/openwebui_store.py",
+    "infrastructure/openai_client.py",
+    "application/history.py",
+    "application/request_builder.py",
+    "application/tools.py",
+    "application/tasks.py",
+    "application/routing.py",
+    "application/engine.py",
+    "interface/openwebui_pipe.py",
 ]
 
 # Regex for stripping `from __future__ import ...` from individual modules.
 FUTURE_IMPORT_RE = re.compile(r"^from\s+__future__\s+import\s+.*$", re.MULTILINE)
 
 # Names considered "internal" to the package; imports from these are stripped.
-INTERNAL_MODULES = {"model_catalog", "settings", "main", "engine"}
-INTERNAL_PREFIXES = ("core", "services", "infra", "utils")
+INTERNAL_MODULES = set()
+INTERNAL_PREFIXES = ("config", "domain", "application", "infrastructure", "interface")
 PACKAGE_PREFIX = f"{PACKAGE_NAME}."
 
 

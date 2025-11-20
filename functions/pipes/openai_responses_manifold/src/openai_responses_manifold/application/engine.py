@@ -18,8 +18,9 @@ from typing import Any, Awaitable, Callable, Literal
 
 from open_webui.models.chats import Chats
 
-from .core.openai_requests import ResponseCreateParams
-from .core.openai_response_events import (
+from openai_responses_manifold.domain.errors import ToolExecutionError
+from openai_responses_manifold.domain.model_catalog import supports
+from openai_responses_manifold.domain.openai_events import (
     ErrorEvent,
     ResponseCompletedEvent,
     ResponseCreatedEvent,
@@ -33,21 +34,20 @@ from .core.openai_response_events import (
     ResponseQueuedEvent,
     ResponseReasoningSummaryTextDoneEvent,
 )
-from .core.errors import ToolExecutionError
-from .model_catalog import supports
-from .infra import ItemStore, OpenAIResponsesClient
-from .services.history import HistoryPersistence
-from .services.tasks import run_task_model
-from .services.tools import execute_tool_calls
-from .utils import (
+from openai_responses_manifold.domain.openai_requests import ResponseCreateParams
+from openai_responses_manifold.infrastructure.logging import (
     OWUI_SESSION_ID,
     clear_session_logs,
-    EventEmitter,
-    EventEmitterFn,
-    get_session_logs,
     get_logger,
+    get_session_logs,
     truncate_for_log,
 )
+from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
+from openai_responses_manifold.infrastructure.openwebui_events import EventEmitter, EventEmitterFn
+from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
+from .history import HistoryPersistence
+from .tasks import run_task_model
+from .tools import execute_tool_calls
 
 
 @dataclass

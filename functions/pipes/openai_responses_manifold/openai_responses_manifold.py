@@ -21,122 +21,31 @@ Use the version in the alpha-preview or main branches instead.
 # For the development layout and more details, see README.md.
 #
 # Logical module layout (source → sections below):
-# - model_catalog.py                Single source of truth for OpenAI model capabilities.
-# - settings.py                     Shared pipe settings and defaults.
-# - utils/logging.py                Session-aware logging helpers in a single, readable module.
-# - utils/openwebui_events.py       Minimal Open WebUI event helpers matching the documented event catalog.
-# - core/openai_response_events.py  Typed schemas for documented OpenAI Responses streaming events.
-# - core/openai_requests.py         Request DTOs and helpers for OpenAI Responses and Chat Completions.
-# - core/ids.py                     Model identifier normalization helpers (prefix/dot/date safe).
-# - core/messages.py                Helpers for converting OpenWebUI message blocks to Responses items.
-# - core/markers.py                 Helpers for encoding/decoding hidden response markers.
-# - core/errors.py                  Typed exceptions referenced throughout the manifold.
-# - main.py                         Open WebUI pipe implementation that delegates to the Responses engine.
-# - engine.py                       Streaming orchestration and tool loop for the Responses manifold.
-# - services/history.py             Persistence and reconstruction services for Responses items.
-# - services/request_builder.py     Build ResponsesBody requests from OpenWebUI-style inputs.
-# - services/tools.py               Tool declaration and execution helpers.
-# - services/tasks.py               Helpers for running non-streamed task models.
-# - services/routing.py             Helper model routing for auto variants.
-# - infra/openwebui_store.py        Persistence helpers for storing Responses items in OpenWebUI.
-# - infra/openai_client.py          aiohttp-backed client for the OpenAI Responses API.
+# - config/settings.py                  Shared pipe settings and defaults.
+# - domain/model_catalog.py             Single source of truth for OpenAI model IDs, aliases, and capabilities.
+# - domain/messages.py                  Helpers for converting OpenWebUI message blocks to Responses items.
+# - domain/markers.py                   Helpers for encoding/decoding hidden response markers.
+# - domain/errors.py                    Typed exceptions referenced throughout the manifold.
+# - domain/openai_requests.py           Request DTOs and helpers for OpenAI Responses and Chat Completions.
+# - domain/openai_events.py             Typed schemas for documented OpenAI Responses streaming events.
+# - infrastructure/logging.py           Session-aware logging helpers in a single, readable module.
+# - infrastructure/openwebui_events.py  Minimal Open WebUI event helpers matching the documented event catalog.
+# - infrastructure/openwebui_store.py   Persistence helpers for storing Responses items in OpenWebUI.
+# - infrastructure/openai_client.py     aiohttp-backed client for the OpenAI Responses API.
+# - application/history.py              Persistence and reconstruction services for Responses items.
+# - application/request_builder.py      Build ResponsesBody requests from OpenWebUI-style inputs.
+# - application/tools.py                Tool declaration and execution helpers.
+# - application/tasks.py                Helpers for running non-streamed task models.
+# - application/routing.py              Helper model routing for auto variants.
+# - application/engine.py               Streaming orchestration and tool loop for the Responses manifold.
+# - interface/openwebui_pipe.py         Open WebUI pipe implementation that delegates to the Responses engine.
 
 # fmt: off
 # Open WebUI runs Black on upload; disabling fmt keeps this bundle readable in that UI.
 
 from __future__ import annotations
 
-# === model_catalog.py ===
-"""Single source of truth for OpenAI model capabilities.
-
-If you're adding or modifying supported models, edit this file.
-"""
-
-from copy import deepcopy
-from typing import Any
-
-EMPTY_FEATURES: frozenset[str] = frozenset()
-
-# Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
-MODEL_FEATURES: dict[str, frozenset[str]] = {
-    "gpt-5-auto": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
-    "gpt-5.1": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
-    "gpt-5": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
-    "gpt-5-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
-    "gpt-5-nano": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
-    "gpt-4.1": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
-    "gpt-4.1-mini": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
-    "gpt-4.1-nano": frozenset({"function_calling", "image_gen_tool"}),
-    "gpt-4o": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
-    "gpt-4o-mini": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
-    "o3": frozenset({"function_calling", "reasoning", "reasoning_summary"}),
-    "o3-mini": frozenset({"function_calling", "reasoning", "reasoning_summary"}),
-    "o3-pro": frozenset({"function_calling", "reasoning"}),
-    "o4-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool"}),
-    "o3-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
-    "o4-mini-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
-    "gpt-5.1-chat-latest": frozenset({"function_calling", "web_search_tool"}),
-    "gpt-5-chat-latest": frozenset({"function_calling", "web_search_tool"}),
-    "chatgpt-4o-latest": EMPTY_FEATURES,
-}
-
-# Add entries to MODEL_ALIASES for any pseudo-model name users can pick.
-# Each alias is a preset that points to a base model and optional default params,
-# e.g. gpt-5-thinking-high -> gpt-5 with reasoning effort fixed to high.
-MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
-    "gpt-5.1-thinking": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "medium"}}},
-    "gpt-5.1-thinking-minimal": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "minimal"}}},
-    "gpt-5.1-thinking-high": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "high"}}},
-    "gpt-5-thinking": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "medium"}}},
-    "gpt-5-thinking-minimal": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "minimal"}}},
-    "gpt-5-thinking-high": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "high"}}},
-    "gpt-5-thinking-mini": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "medium"}}},
-    "gpt-5-thinking-mini-minimal": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "minimal"}}},
-    "gpt-5-thinking-mini-high": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "high"}}},
-    "gpt-5-thinking-nano": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "medium"}}},
-    "gpt-5-thinking-nano-minimal": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "minimal"}}},
-    "gpt-5-thinking-nano-high": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "high"}}},
-    "o3-mini-high": {"base_model": "o3-mini", "params": {"reasoning": {"effort": "high"}}},
-    "o4-mini-high": {"base_model": "o4-mini", "params": {"reasoning": {"effort": "high"}}},
-}
-
-
-def alias_defaults(model_id: str) -> dict[str, Any]:
-    """Return default parameters defined for a pseudo-model alias."""
-
-    # [build.py] internal imports removed in monolith:
-    # from .core.ids import normalize
-
-    params = MODEL_ALIASES.get(normalize(model_id), {}).get("params")
-    return deepcopy(params) if params else {}
-
-
-def features(model_id: str) -> frozenset[str]:
-    """Return the capability set for the canonical base model."""
-
-    # [build.py] internal imports removed in monolith:
-    # from .core.ids import base_model
-
-    canonical = base_model(model_id, MODEL_ALIASES)
-    return MODEL_FEATURES.get(canonical, EMPTY_FEATURES)
-
-
-def supports(feature: str, model_id: str) -> bool:
-    """Determine whether the supplied model exposes a feature."""
-
-    return feature in features(model_id)
-
-
-__all__ = [
-    "EMPTY_FEATURES",
-    "MODEL_FEATURES",
-    "MODEL_ALIASES",
-    "alias_defaults",
-    "features",
-    "supports",
-]
-
-# === settings.py ===
+# === config/settings.py ===
 """Shared pipe settings and defaults."""
 
 import os
@@ -256,574 +165,479 @@ class UserValves(BaseModel):
         description="Select logging level. 'INHERIT' uses the pipe default.",
     )
 
-# === utils/logging.py ===
-"""Session-aware logging helpers in a single, readable module."""
+# === domain/model_catalog.py ===
+"""Single source of truth for OpenAI model IDs, aliases, and capabilities."""
 
-import logging
-import sys
-from collections import defaultdict, deque
-from contextlib import contextmanager
-from contextvars import ContextVar, Token
-from typing import Any, DefaultDict, Deque, Iterator, Tuple
+import re
+from copy import deepcopy
+from typing import Any, Mapping
 
-# ---------------------------------------------------------------------------
-# ContextVars: what we attach to every log record
-# ---------------------------------------------------------------------------
+EMPTY_FEATURES: frozenset[str] = frozenset()
 
-OWUI_SESSION_ID: ContextVar[str | None] = ContextVar("owui_session_id", default=None)  # OpenWebUI session token
-OWUI_CHAT_ID: ContextVar[str | None] = ContextVar("owui_chat_id", default=None)  # Chat/conversation ID
-OWUI_MESSAGE_ID: ContextVar[str | None] = ContextVar("owui_message_id", default=None)  # Message ID in chat
-OWUI_USER_ID: ContextVar[str | None] = ContextVar("owui_user_id", default=None)  # OpenWebUI user ID
-OWUI_LOG_LEVEL: ContextVar[int] = ContextVar("owui_log_level", default=logging.INFO)
+# Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
+MODEL_FEATURES: dict[str, frozenset[str]] = {
+    "gpt-5-auto": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
+    "gpt-5.1": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
+    "gpt-5": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
+    "gpt-5-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
+    "gpt-5-nano": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "image_gen_tool", "verbosity"}),
+    "gpt-4.1": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
+    "gpt-4.1-mini": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
+    "gpt-4.1-nano": frozenset({"function_calling", "image_gen_tool"}),
+    "gpt-4o": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
+    "gpt-4o-mini": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
+    "o3": frozenset({"function_calling", "reasoning", "reasoning_summary"}),
+    "o3-mini": frozenset({"function_calling", "reasoning", "reasoning_summary"}),
+    "o3-pro": frozenset({"function_calling", "reasoning"}),
+    "o4-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool"}),
+    "o3-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
+    "o4-mini-deep-research": frozenset({"function_calling", "reasoning", "reasoning_summary", "deep_research"}),
+    "gpt-5.1-chat-latest": frozenset({"function_calling", "web_search_tool"}),
+    "gpt-5-chat-latest": frozenset({"function_calling", "web_search_tool"}),
+    "chatgpt-4o-latest": EMPTY_FEATURES,
+}
 
-# Buffered per-session logs for citations
-SESSION_LOGS: DefaultDict[str, Deque[str]] = defaultdict(lambda: deque(maxlen=2000))
+# Add entries to MODEL_ALIASES for any pseudo-model name users can pick.
+# Each alias is a preset that points to a base model and optional default params,
+# e.g. gpt-5-thinking-high -> gpt-5 with reasoning effort fixed to high.
+MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
+    "gpt-5.1-thinking": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "medium"}}},
+    "gpt-5.1-thinking-minimal": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "minimal"}}},
+    "gpt-5.1-thinking-high": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "high"}}},
+    "gpt-5-thinking": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "medium"}}},
+    "gpt-5-thinking-minimal": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "minimal"}}},
+    "gpt-5-thinking-high": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "high"}}},
+    "gpt-5-thinking-mini": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "medium"}}},
+    "gpt-5-thinking-mini-minimal": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "minimal"}}},
+    "gpt-5-thinking-mini-high": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "high"}}},
+    "gpt-5-thinking-nano": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "medium"}}},
+    "gpt-5-thinking-nano-minimal": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "minimal"}}},
+    "gpt-5-thinking-nano-high": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "high"}}},
+    "o3-mini-high": {"base_model": "o3-mini", "params": {"reasoning": {"effort": "high"}}},
+    "o4-mini-high": {"base_model": "o4-mini", "params": {"reasoning": {"effort": "high"}}},
+}
+
+_DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+_KNOWN_IDS = frozenset({*MODEL_FEATURES.keys(), *MODEL_ALIASES.keys()})
+
+def normalize(model_id: str) -> str:
+    """Normalize identifiers by lowercasing, trimming, and removing prefixes/dates."""
+
+    raw = (model_id or "").strip().lower()
+    if not raw:
+        return ""
+
+    no_date = _DATE_SUFFIX_RE.sub("", raw)
+    if no_date in _KNOWN_IDS:
+        return no_date
+
+    dot_index = no_date.find(".")
+    if dot_index != -1:
+        suffix = _DATE_SUFFIX_RE.sub("", no_date[dot_index + 1 :])
+        if suffix in _KNOWN_IDS:
+            return suffix
+
+    return no_date
 
 
-# ---------------------------------------------------------------------------
-# Filters and handlers
-# ---------------------------------------------------------------------------
+def base_model(
+    model_id: str,
+    alias_lookup: Mapping[str, Mapping[str, str | dict]] | None = None,
+) -> str:
+    """Return the canonical base model for a given identifier."""
 
-class ContextFilter(logging.Filter):
-    """Inject context fields and enforce the current log level."""
-
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
-        record.session_id = OWUI_SESSION_ID.get()
-        record.chat_id = OWUI_CHAT_ID.get()
-        record.message_id = OWUI_MESSAGE_ID.get()
-        record.user_id = OWUI_USER_ID.get()
-        return record.levelno >= OWUI_LOG_LEVEL.get()
-
-
-class SessionMemoryHandler(logging.Handler):
-    """Buffer log lines per session for later citation emission."""
-
-    def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - trivial
-        session_id = getattr(record, "session_id", None)
-        if not session_id:
-            return
-        SESSION_LOGS[session_id].append(self.format(record))
+    alias_map = alias_lookup or MODEL_ALIASES
+    normalized = normalize(model_id)
+    alias_entry = alias_map.get(normalized)
+    if alias_entry:
+        base = alias_entry.get("base_model")
+        if isinstance(base, str):
+            return normalize(base)
+    return normalized
 
 
-# ---------------------------------------------------------------------------
-# Logger configuration
-# ---------------------------------------------------------------------------
+def alias_defaults(model_id: str) -> dict[str, Any]:
+    """Return default parameters defined for a pseudo-model alias."""
 
-_configured = False
-_context_filter = ContextFilter()
-_LOG_FORMAT = (
-    "%(asctime)s [%(levelname)s] %(name)s %(message)s "
-    "session_id=%(session_id)s chat_id=%(chat_id)s message_id=%(message_id)s user_id=%(user_id)s"
+    params = MODEL_ALIASES.get(normalize(model_id), {}).get("params")
+    return deepcopy(params) if params else {}
+
+
+def features(model_id: str) -> frozenset[str]:
+    """Return the capability set for the canonical base model."""
+
+    canonical = base_model(model_id, MODEL_ALIASES)
+    return MODEL_FEATURES.get(canonical, EMPTY_FEATURES)
+
+
+def supports(feature: str, model_id: str) -> bool:
+    """Determine whether the supplied model exposes a feature."""
+
+    return feature in features(model_id)
+
+
+__all__ = [
+    "EMPTY_FEATURES",
+    "MODEL_FEATURES",
+    "MODEL_ALIASES",
+    "alias_defaults",
+    "features",
+    "supports",
+    "normalize",
+    "base_model",
+]
+
+# === domain/messages.py ===
+"""Helpers for converting OpenWebUI message blocks to Responses items."""
+
+from typing import Any
+
+
+def normalize_user_blocks(content: str | list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Return a list of user blocks regardless of how OpenWebUI formatted them."""
+
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}]
+    if isinstance(content, list):
+        return [block for block in content if isinstance(block, dict)]
+    return []
+
+
+def user_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenWebUI user blocks into Responses input items."""
+
+    responses: list[dict[str, Any]] = []
+    for block in blocks:
+        block_type = block.get("type")
+        if block_type == "text":
+            responses.append({"type": "input_text", "text": block.get("text", "")})
+        elif block_type == "image_url":
+            url = (block.get("image_url") or {}).get("url")
+            if url:
+                responses.append({"type": "input_image", "image_url": url})
+        elif block_type == "input_file":
+            file_id = block.get("file_id")
+            if file_id:
+                responses.append({"type": "input_file", "file_id": file_id})
+    return responses
+
+
+def assistant_text_item(text: str) -> dict[str, Any]:
+    """Generate an assistant output item for plain text segments."""
+
+    return {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "output_text",
+                "text": text,
+            }
+        ],
+    }
+
+
+def developer_message(content: str) -> dict[str, Any]:
+    """Construct a developer-role message block."""
+
+    return {"role": "developer", "content": content}
+
+
+__all__ = [
+    "assistant_text_item",
+    "developer_message",
+    "normalize_user_blocks",
+    "user_blocks_to_responses_items",
+]
+
+# === domain/markers.py ===
+"""Helpers for encoding/decoding hidden response markers."""
+
+import re
+import secrets
+from typing import Any
+
+ULID_LENGTH = 16
+_CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_SENTINEL = "[openai_responses:v2:"
+_MARKER_RE = re.compile(
+    r"\[openai_responses:v2:(?P<kind>[a-z0-9_]{2,30}):(?P<ulid>[A-Z0-9]{16})(?:\?(?P<query>[^\]]+))?\]:\s*#",
+    re.I,
 )
 
 
-def configure_logging() -> None:
-    """Attach console + memory handlers once under the canonical namespace."""
+def generate_item_id() -> str:
+    """Generate a short ULID-like identifier."""
 
-    global _configured
-    if _configured:
-        return
-
-    logger = logging.getLogger("openai_responses_manifold")
-    logger.setLevel(logging.DEBUG)
-    logger.propagate = False
-
-    formatter = logging.Formatter(_LOG_FORMAT)
-
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.DEBUG)
-    console.setFormatter(formatter)
-    console.addFilter(_context_filter)
-
-    memory = SessionMemoryHandler()
-    memory.setLevel(logging.DEBUG)
-    memory.setFormatter(formatter)
-    memory.addFilter(_context_filter)
-
-    logger.addHandler(console)
-    logger.addHandler(memory)
-    logger.addFilter(_context_filter)
-
-    _configured = True
+    return "".join(secrets.choice(_CROCKFORD_ALPHABET) for _ in range(ULID_LENGTH))
 
 
-def get_logger(name: str = __name__) -> logging.Logger:
-    """Return a logger under the manifold namespace."""
-
-    configure_logging()
-    base = "openai_responses_manifold"
-    qualified = name if name.startswith(base) else f"{base}.{name}"
-    return logging.getLogger(qualified)
+def _qs(metadata: dict[str, str]) -> str:
+    return "&".join(f"{key}={value}" for key, value in metadata.items()) if metadata else ""
 
 
-# ---------------------------------------------------------------------------
-# Context helpers
-# ---------------------------------------------------------------------------
-
-LoggingTokens = Tuple[Token[str | None], Token[str | None], Token[str | None], Token[str | None], Token[int]]
+def _parse_qs(query: str) -> dict[str, str]:
+    return dict(part.split("=", 1) for part in query.split("&")) if query else {}
 
 
-def push_logging_context(
-    session_id: str | None,
-    level: int,
+def create_marker(
+    item_type: str,
     *,
-    chat_id: str | None = None,
-    message_id: str | None = None,
-    user_id: str | None = None,
-) -> LoggingTokens:
-    """Apply session/log-level context; returns tokens to restore later."""
+    ulid: str | None = None,
+    model_id: str | None = None,
+    metadata: dict[str, str] | None = None,
+) -> str:
+    """Create a bare marker payload (without the wrapping newlines)."""
 
-    configure_logging()
-    return (
-        OWUI_SESSION_ID.set(session_id),
-        OWUI_CHAT_ID.set(chat_id),
-        OWUI_MESSAGE_ID.set(message_id),
-        OWUI_USER_ID.set(user_id),
-        OWUI_LOG_LEVEL.set(level),
-    )
+    if not re.fullmatch(r"[a-z0-9_]{2,30}", item_type):
+        raise ValueError("item_type must be 2-30 chars of [a-z0-9_]")
 
+    meta = {**(metadata or {})}
+    if model_id:
+        meta["model"] = model_id
 
-def pop_logging_context(tokens: LoggingTokens) -> None:
-    """Restore ContextVars from tokens returned by ``push_logging_context``."""
-
-    t_session, t_chat, t_message, t_user, t_level = tokens
-    OWUI_SESSION_ID.reset(t_session)
-    OWUI_CHAT_ID.reset(t_chat)
-    OWUI_MESSAGE_ID.reset(t_message)
-    OWUI_USER_ID.reset(t_user)
-    OWUI_LOG_LEVEL.reset(t_level)
+    base = f"openai_responses:v2:{item_type}:{ulid or generate_item_id()}"
+    return f"{base}?{_qs(meta)}" if meta else base
 
 
-@contextmanager
-def logging_context(
-    session_id: str | None,
-    level: int,
-    *,
-    chat_id: str | None = None,
-    message_id: str | None = None,
-    user_id: str | None = None,
-) -> Iterator[None]:
-    tokens = push_logging_context(
-        session_id,
-        level,
-        chat_id=chat_id,
-        message_id=message_id,
-        user_id=user_id,
-    )
-    try:
-        yield
-    finally:
-        pop_logging_context(tokens)
+def wrap_marker(marker: str) -> str:
+    """Wrap a marker string in an empty markdown link."""
+
+    return f"\n[{marker}]: #\n"
 
 
-# ---------------------------------------------------------------------------
-# Citation buffer helpers
-# ---------------------------------------------------------------------------
+def contains_marker(text: str) -> bool:
+    """Return True if the sentinel substring is present."""
 
-def get_session_logs(session_id: str | None) -> list[str]:
-    if not session_id:
-        return []
-    return list(SESSION_LOGS.get(session_id, ()))
+    return _SENTINEL in text
 
 
-def clear_session_logs(session_id: str | None) -> None:
-    if not session_id:
-        return
-    SESSION_LOGS.pop(session_id, None)
+def parse_marker(marker: str) -> dict[str, Any]:
+    """Parse a raw marker string back into its components."""
+
+    if not marker.startswith("openai_responses:v2:"):
+        raise ValueError("not a v2 marker")
+    _, _, kind, rest = marker.split(":", 3)
+    uid, _, query = rest.partition("?")
+    return {"version": "v2", "item_type": kind, "ulid": uid, "metadata": _parse_qs(query)}
 
 
-def consume_session_logs(session_id: str | None) -> list[str]:
-    lines = get_session_logs(session_id)
-    clear_session_logs(session_id)
-    return lines
+def extract_markers(text: str, *, parsed: bool = False) -> list[Any]:
+    """Extract hidden markers from the assistant text."""
+
+    found: list[Any] = []
+    for match in _MARKER_RE.finditer(text):
+        raw = f"openai_responses:v2:{match.group('kind')}:{match.group('ulid')}"
+        if match.group("query"):
+            raw += f"?{match.group('query')}"
+        found.append(parse_marker(raw) if parsed else raw)
+    return found
 
 
-# ---------------------------------------------------------------------------
-# Misc helpers
-# ---------------------------------------------------------------------------
+def split_text_by_markers(text: str) -> list[dict[str, str]]:
+    """Split text into a list of literal segments and marker segments."""
 
-def truncate_for_log(value: Any, limit: int = 2000) -> tuple[str, bool]:
-    """Return a safe, possibly truncated string for logging."""
+    segments: list[dict[str, str]] = []
+    last = 0
+    for match in _MARKER_RE.finditer(text):
+        if match.start() > last:
+            segments.append({"type": "text", "text": text[last : match.start()]})
+        raw = f"openai_responses:v2:{match.group('kind')}:{match.group('ulid')}"
+        if match.group("query"):
+            raw += f"?{match.group('query')}"
+        segments.append({"type": "marker", "marker": raw})
+        last = match.end()
+    if last < len(text):
+        segments.append({"type": "text", "text": text[last:]})
+    return segments
 
-    if value is None:
-        return "", False
-    text = value if isinstance(value, str) else str(value)
-    if len(text) <= limit:
-        return text, False
-    return text[:limit], True
+# === domain/errors.py ===
+"""Typed exceptions referenced throughout the manifold."""
 
 
-# Configure eagerly so child loggers inherit handlers/filters.
-configure_logging()
+class ManifoldError(Exception):
+    """Base class for manifold-specific exceptions."""
+
+
+class ToolExecutionError(ManifoldError):
+    """Raised when a tool invocation fails."""
+
+
+class RoutingError(ManifoldError):
+    """Raised when an automatic model routing step fails."""
+
+
+class OpenAIStreamError(ManifoldError):
+    """Raised when streaming events from OpenAI encounters a fatal error."""
+
+
+class PersistenceError(ManifoldError):
+    """Raised when items fail to persist or resolve."""
 
 
 __all__ = [
-    "configure_logging",
-    "get_logger",
-    "push_logging_context",
-    "pop_logging_context",
-    "logging_context",
-    "OWUI_SESSION_ID",
-    "OWUI_CHAT_ID",
-    "OWUI_MESSAGE_ID",
-    "OWUI_USER_ID",
-    "OWUI_LOG_LEVEL",
-    "SESSION_LOGS",
-    "get_session_logs",
-    "clear_session_logs",
-    "consume_session_logs",
-    "truncate_for_log",
+    "ManifoldError",
+    "OpenAIStreamError",
+    "PersistenceError",
+    "RoutingError",
+    "ToolExecutionError",
 ]
 
-# === utils/openwebui_events.py ===
-"""Minimal Open WebUI event helpers matching the documented event catalog."""
+# === domain/openai_requests.py ===
+"""Request DTOs and helpers for OpenAI Responses and Chat Completions."""
 
-import asyncio
-import inspect
-from typing import Any, Awaitable, Callable, Literal
+import json
+from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
-EventEmitterFn = Callable[[dict[str, Any]], Awaitable[Any] | Any]
-EventCallerFn = Callable[[dict[str, Any]], Awaitable[Any] | Any]
-
-
-# -------------------------
-# Event payload definitions
-# -------------------------
+# [build.py] internal imports removed in monolith:
+# from .model_catalog import MODEL_ALIASES, alias_defaults, base_model
 
 
-class StatusEventData(BaseModel):
-    """Status/progress updates shown in the chat UI."""
+class ReasoningParams(BaseModel):
+    """Reasoning configuration accepted by the Responses API."""
+
+    effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
+    summary: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StreamOptions(BaseModel):
+    """Streaming options for responses."""
+
+    include_usage: bool | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ResponseCreateParams(BaseModel):
+    """Request body for the OpenAI Responses API."""
+
+    model: str
+    input: str | list[dict[str, Any]] | None = None
+    instructions: str | None = None
+    stream: bool = False
+    store: bool | None = True
+    background: bool | None = False
+    conversation: str | dict[str, Any] | None = None
+    include: list[str] | None = None
+    max_output_tokens: int | None = None
+    max_tool_calls: int | None = None
+    metadata: dict[str, str] | None = None
+    parallel_tool_calls: bool | None = True
+    previous_response_id: str | None = None
+    prompt: dict[str, Any] | None = None
+    prompt_cache_key: str | None = None
+    prompt_cache_retention: str | None = None
+    reasoning: ReasoningParams | None = None
+    safety_identifier: str | None = None
+    service_tier: Literal["auto", "default", "flex", "priority"] | None = None
+    stream_options: StreamOptions | None = None
+    temperature: float | None = 1.0
+    top_p: float | None = 1.0
+    top_logprobs: int | None = None
+    tool_choice: str | dict[str, Any] | None = None
+    tools: list[dict[str, Any]] | None = None
+    truncation: Literal["auto", "disabled"] | None = "disabled"
+    text: dict[str, Any] | None = None
+    model_router_result: dict[str, Any] | None = None
+    include_obfuscation: bool | None = False
+    user: str | None = None  # deprecated upstream; kept for compatibility
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _normalize_aliases(self) -> "ResponseCreateParams":
+        """Normalize model aliases and merge default parameters."""
+
+        orig_model = self.model or ""
+        canonical_model = base_model(orig_model, MODEL_ALIASES)
+        defaults = alias_defaults(orig_model) or {}
+
+        if canonical_model == orig_model and not defaults:
+            return self
+
+        data = json.loads(self.model_dump_json(exclude_none=False))
+        data["model"] = canonical_model
+
+        def _deep_overlay(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+            for key, value in src.items():
+                if isinstance(value, dict):
+                    node = dst.get(key)
+                    if isinstance(node, dict):
+                        _deep_overlay(node, value)
+                    else:
+                        dst[key] = json.loads(json.dumps(value))
+                elif isinstance(value, list):
+                    existing = dst.get(key)
+                    if isinstance(existing, list):
+                        seen: set[tuple[str, str]] = set()
+                        merged: list[Any] = []
+
+                        def _make_key(item: Any) -> tuple[str, str]:
+                            try:
+                                return ("json", json.dumps(item, sort_keys=True))
+                            except Exception:
+                                return ("id", str(id(item)))
+
+                        for item in existing + value:
+                            key_tuple = _make_key(item)
+                            if key_tuple not in seen:
+                                seen.add(key_tuple)
+                                merged.append(item)
+                        dst[key] = merged
+                    else:
+                        dst[key] = list(value)
+                else:
+                    dst[key] = value
+            return dst
+
+        if defaults:
+            _deep_overlay(data, defaults)
+
+        for key, value in data.items():
+            setattr(self, key, value)
+        return self
+
+
+class CompletionCreateParams(BaseModel):
+    """Request body for OpenAI's Chat Completions API."""
+
+    model: str
+    messages: list[dict[str, Any]]
+    stream: bool = False
 
     model_config = ConfigDict(extra="allow")
 
-    description: str
-    done: bool = False
-    hidden: bool = False
 
+_RESPONSES_BODY_ADAPTER = TypeAdapter(ResponseCreateParams)
 
-class NotificationEventData(BaseModel):
-    """Toast notification payload consumed by the UI."""
 
-    type: Literal["info", "success", "error", "warning"]
-    content: str
+def validate_response_create_params(payload: ResponseCreateParams | Mapping[str, Any]) -> ResponseCreateParams:
+    """Coerce/validate a payload into a ResponseCreateParams instance."""
 
-
-class FileModelResponse(BaseModel):
-    """Open WebUI file object (mirrors backend FileModelResponse used by the UI)."""
-
-    model_config = ConfigDict(extra="allow")
-
-    id: str
-    user_id: str
-    hash: str | None = None
-
-    filename: str
-    data: dict[str, Any] | None = None
-    meta: dict[str, Any]
-
-    created_at: int
-    updated_at: int
-
-
-class MessageDeltaEventData(BaseModel):
-    """Streaming/append content for an in-progress message."""
-
-    model_config = ConfigDict(extra="allow")
-
-    content: str
-
-
-class ChatMessageEventData(BaseModel):
-    """Complete replacement content for a message."""
-
-    model_config = ConfigDict(extra="allow")
-
-    content: str
-
-
-class FilesEventData(BaseModel):
-    """Files attached to a message; UI expects a list of FileModelResponse objects."""
-
-    files: list[FileModelResponse]
-
-
-class ChatTitleEventData(BaseModel):
-    """Conversation title update."""
-
-    title: str
-
-
-class ChatTagsEventData(BaseModel):
-    """Conversation tags update."""
-
-    tags: list[str]
-
-
-class SourceEventData(BaseModel):
-    """Source/citation payload; UI appends to message sources."""
-
-    model_config = ConfigDict(extra="allow")
-
-
-class ChatCompletionEventData(BaseModel):
-    """
-    Payload for ``chat:completion`` events (custom/implementation-defined).
-
-    Frontend reads ``done`` and optionally ``content``/``title`` when ``done`` is true
-    to trigger toasts/notifications; other fields are passed through.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    done: bool | None = None
-    content: str | None = None
-    title: str | None = None
-    usage: dict[str, Any] | None = None
-
-
-class ConfirmationEventData(BaseModel):
-    """Confirmation dialog payload returned via __event_call__."""
-
-    title: str
-    message: str
-
-
-class InputEventData(BaseModel):
-    """Input dialog payload returned via __event_call__."""
-
-    title: str
-    message: str
-    placeholder: str | None = None
-    value: str | None = None
-
-
-class ExecuteEventData(BaseModel):
-    """Client-side code execution payload returned via __event_call__."""
-
-    code: str
-
-
-class ExecutePythonEventData(BaseModel):
-    """
-    Non-documented type used via ``__event_call__``: ``execute:python``.
-
-    Backend (`utils/middleware.py`) invokes __event_call__ with ``id``, ``code``, and
-    optional ``session_id``; the frontend runs the code client-side.
-    """
-
-    id: str
-    code: str
-    session_id: str
-
-
-class ExecuteToolEventData(BaseModel):
-    """
-    Non-documented type used via ``__event_call__``: ``execute:tool``.
-
-    Backend (`utils/middleware.py`) invokes __event_call__ with these fields to run a tool in the frontend.
-    """
-
-    id: str
-    name: str
-    params: dict[str, Any] = {}
-    server: dict[str, Any] = {}
-    session_id: str
-    model_config = ConfigDict(extra="allow")
-
-
-class RequestChatCompletionEventData(BaseModel):
-    """
-    Non-documented type used via ``__event_call__``: ``request:chat:completion``.
-
-    Backend (`utils/chat.py`) calls __event_call__ with this so the frontend performs a chat completion
-    (direct connection flow). The frontend issues the completion request and streams over the provided channel.
-    """
-
-    session_id: str
-    channel: str
-    form_data: dict[str, Any]
-    model: dict[str, Any]
-
-
-def _to_dict(obj: BaseModel | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(obj, BaseModel):
-        return obj.model_dump()
-    return obj
-
-
-async def _maybe_await(value: Any) -> Any:
-    if asyncio.isfuture(value) or inspect.isawaitable(value):
-        return await value
-    return value
-
-
-# ---------------
-# Event emitting
-# ---------------
-
-
-class EventEmitter:
-    """Thin wrapper around ``__event_emitter__`` for documented chat events."""
-
-    def __init__(self, event_emitter: EventEmitterFn | None) -> None:
-        self.event_emitter = event_emitter
-
-    async def _emit(self, event_type: str, data: BaseModel | dict[str, Any]) -> dict[str, Any]:
-        payload = {"type": event_type, "data": _to_dict(data)}
-        if self.event_emitter:
-            await _maybe_await(self.event_emitter(payload))
+    if isinstance(payload, ResponseCreateParams):
         return payload
-
-    # docs: type = "status"
-    async def status(self, description: str, *, done: bool = False, hidden: bool = False) -> dict[str, Any]:
-        return await self._emit("status", StatusEventData(description=description, done=done, hidden=hidden))
-
-    # docs: type = "chat:message:delta"
-    async def delta(self, content: str) -> dict[str, Any]:
-        return await self._emit("chat:message:delta", MessageDeltaEventData(content=content))
-
-    # docs: type = "message"
-    async def message(self, content: str) -> dict[str, Any]:
-        return await self._emit("message", MessageDeltaEventData(content=content))
-
-    # docs: type = "chat:message"
-    async def replace(self, content: str) -> dict[str, Any]:
-        return await self._emit("chat:message", ChatMessageEventData(content=content))
-
-    # docs: type = "files" (alias: "chat:message:files")
-    async def files(self, files: list[FileModelResponse] | list[dict[str, Any]]) -> dict[str, Any]:
-        normalized = [f if isinstance(f, FileModelResponse) else FileModelResponse(**f) for f in files]
-        return await self._emit("files", FilesEventData(files=normalized))
-
-    # docs: type = "chat:title"
-    async def title(self, title: str | ChatTitleEventData) -> dict[str, Any]:
-        payload = title.model_dump() if isinstance(title, ChatTitleEventData) else {"title": title}
-        return await self._emit("chat:title", payload)
-
-    # docs: type = "chat:tags"
-    async def tags(self, tags: list[str] | ChatTagsEventData) -> dict[str, Any]:
-        payload = tags.model_dump() if isinstance(tags, ChatTagsEventData) else {"tags": tags}
-        return await self._emit("chat:tags", payload)
-
-    # docs: type = "source"
-    async def source(self, data: SourceEventData | dict[str, Any]) -> dict[str, Any]:
-        payload = data if isinstance(data, SourceEventData) else SourceEventData(**data)
-        return await self._emit("source", payload)
-
-    # docs: type = "citation"
-    async def citation(self, data: SourceEventData | dict[str, Any]) -> dict[str, Any]:
-        payload = data if isinstance(data, SourceEventData) else SourceEventData(**data)
-        return await self._emit("citation", payload)
-
-    # docs: type = "notification"
-    async def notification(
-        self,
-        content: str,
-        *,
-        level: Literal["info", "success", "error", "warning"] = "info",
-    ) -> dict[str, Any]:
-        return await self._emit("notification", NotificationEventData(type=level, content=content))
-
-    # docs: type = "chat:completion"
-    async def chat_completion(self, data: ChatCompletionEventData) -> dict[str, Any]:
-        return await self._emit("chat:completion", data)
+    return _RESPONSES_BODY_ADAPTER.validate_python(payload)
 
 
-# -----------------
-# Interactive calls
-# -----------------
+def dump_response_create_params(payload: ResponseCreateParams | Mapping[str, Any]) -> dict[str, Any]:
+    """Return a JSON-ready dict with ``exclude_none=True`` applied."""
 
-
-class EventCall:
-    """Wrapper around ``__event_call__`` for documented and non-documented interactive events."""
-
-    def __init__(self, event_call: EventCallerFn | None = None) -> None:
-        self._call = event_call
-
-    async def _send(self, event_type: str, data: BaseModel | dict[str, Any]) -> Any:
-        if not self._call:
-            raise RuntimeError("__event_call__ not provided")
-        payload = {"type": event_type, "data": _to_dict(data)}
-        result = self._call(payload)
-        return await _maybe_await(result)
-
-    # docs: type = "input"
-    async def input(
-        self,
-        title: str,
-        message: str,
-        *,
-        placeholder: str | None = None,
-        default: str | None = None,
-    ) -> Any:
-        data = InputEventData(title=title, message=message, placeholder=placeholder, value=default)
-        result = await self._send("input", data)
-        if isinstance(result, dict) and "value" in result:
-            return result["value"]
-        return result
-
-    # docs: type = "confirmation"
-    async def confirmation(self, title: str, message: str) -> Any:
-        data = ConfirmationEventData(title=title, message=message)
-        result = await self._send("confirmation", data)
-        if isinstance(result, dict) and "value" in result:
-            return result["value"]
-        return result
-
-    # docs: type = "execute"
-    async def execute(self, code: str) -> Any:
-        data = ExecuteEventData(code=code)
-        return await self._send("execute", data)
-
-    # Undocumented: type = "execute:python"
-    async def execute_python(self, data: ExecutePythonEventData | dict[str, Any]) -> Any:
-        payload = data if isinstance(data, ExecutePythonEventData) else ExecutePythonEventData(**data)
-        return await self._send("execute:python", payload)
-
-    # Undocumented: type = "execute:tool"
-    async def execute_tool(
-        self,
-        data: ExecuteToolEventData | dict[str, Any],
-    ) -> Any:
-        payload = data if isinstance(data, ExecuteToolEventData) else ExecuteToolEventData(**data)
-        return await self._send("execute:tool", payload)
-
-    # Undocumented: type = "request:chat:completion"
-    async def request_chat_completion(
-        self,
-        data: RequestChatCompletionEventData | dict[str, Any],
-    ) -> Any:
-        payload = data if isinstance(data, RequestChatCompletionEventData) else RequestChatCompletionEventData(**data)
-        return await self._send("request:chat:completion", payload)
+    return validate_response_create_params(payload).model_dump(exclude_none=True)
 
 
 __all__ = [
-    "EventEmitterFn",
-    "EventCallerFn",
-    "EventEmitter",
-    "EventCall",
-    "StatusEventData",
-    "NotificationEventData",
-    "FileModelResponse",
-    "MessageDeltaEventData",
-    "ChatMessageEventData",
-    "FilesEventData",
-    "ChatTitleEventData",
-    "ChatTagsEventData",
-    "SourceEventData",
-    "ChatCompletionEventData",
-    "ConfirmationEventData",
-    "InputEventData",
-    "ExecuteEventData",
-    # Non-documented frontend-handled types (used via __event_call__)
-    "ExecutePythonEventData",
-    "ExecuteToolEventData",
-    "RequestChatCompletionEventData",
+    "CompletionCreateParams",
+    "ReasoningParams",
+    "StreamOptions",
+    "ResponseCreateParams",
+    "validate_response_create_params",
+    "dump_response_create_params",
 ]
 
-# === core/openai_response_events.py ===
+# === domain/openai_events.py ===
 """Typed schemas for documented OpenAI Responses streaming events."""
 
 from enum import Enum
@@ -1518,1264 +1332,879 @@ __all__ = [
     "parse_event",
 ]
 
-# === core/openai_requests.py ===
-"""Request DTOs and helpers for OpenAI Responses and Chat Completions."""
+# === infrastructure/logging.py ===
+"""Session-aware logging helpers in a single, readable module."""
 
-import json
-from typing import Any, Literal, Mapping
+import logging
+import sys
+from collections import defaultdict, deque
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from typing import Any, DefaultDict, Deque, Iterator, Tuple
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
+# ---------------------------------------------------------------------------
+# ContextVars: what we attach to every log record
+# ---------------------------------------------------------------------------
 
-# [build.py] internal imports removed in monolith:
-# from ..model_catalog import MODEL_ALIASES, alias_defaults
-# from .ids import base_model
+OWUI_SESSION_ID: ContextVar[str | None] = ContextVar("owui_session_id", default=None)  # OpenWebUI session token
+OWUI_CHAT_ID: ContextVar[str | None] = ContextVar("owui_chat_id", default=None)  # Chat/conversation ID
+OWUI_MESSAGE_ID: ContextVar[str | None] = ContextVar("owui_message_id", default=None)  # Message ID in chat
+OWUI_USER_ID: ContextVar[str | None] = ContextVar("owui_user_id", default=None)  # OpenWebUI user ID
+OWUI_LOG_LEVEL: ContextVar[int] = ContextVar("owui_log_level", default=logging.INFO)
 
-
-class ReasoningParams(BaseModel):
-    """Reasoning configuration accepted by the Responses API."""
-
-    effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
-    summary: str | None = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class StreamOptions(BaseModel):
-    """Streaming options for responses."""
-
-    include_usage: bool | None = None
-
-    model_config = ConfigDict(extra="forbid")
+# Buffered per-session logs for citations
+SESSION_LOGS: DefaultDict[str, Deque[str]] = defaultdict(lambda: deque(maxlen=2000))
 
 
-class ResponseCreateParams(BaseModel):
-    """Request body for the OpenAI Responses API."""
+# ---------------------------------------------------------------------------
+# Filters and handlers
+# ---------------------------------------------------------------------------
 
-    model: str
-    input: str | list[dict[str, Any]] | None = None
-    instructions: str | None = None
-    stream: bool = False
-    store: bool | None = True
-    background: bool | None = False
-    conversation: str | dict[str, Any] | None = None
-    include: list[str] | None = None
-    max_output_tokens: int | None = None
-    max_tool_calls: int | None = None
-    metadata: dict[str, str] | None = None
-    parallel_tool_calls: bool | None = True
-    previous_response_id: str | None = None
-    prompt: dict[str, Any] | None = None
-    prompt_cache_key: str | None = None
-    prompt_cache_retention: str | None = None
-    reasoning: ReasoningParams | None = None
-    safety_identifier: str | None = None
-    service_tier: Literal["auto", "default", "flex", "priority"] | None = None
-    stream_options: StreamOptions | None = None
-    temperature: float | None = 1.0
-    top_p: float | None = 1.0
-    top_logprobs: int | None = None
-    tool_choice: str | dict[str, Any] | None = None
-    tools: list[dict[str, Any]] | None = None
-    truncation: Literal["auto", "disabled"] | None = "disabled"
-    text: dict[str, Any] | None = None
-    model_router_result: dict[str, Any] | None = None
-    include_obfuscation: bool | None = False
-    user: str | None = None  # deprecated upstream; kept for compatibility
+class ContextFilter(logging.Filter):
+    """Inject context fields and enforce the current log level."""
 
-    model_config = ConfigDict(extra="forbid")
-
-    @model_validator(mode="after")
-    def _normalize_aliases(self) -> "ResponseCreateParams":
-        """Normalize model aliases and merge default parameters."""
-
-        orig_model = self.model or ""
-        canonical_model = base_model(orig_model, MODEL_ALIASES)
-        defaults = alias_defaults(orig_model) or {}
-
-        if canonical_model == orig_model and not defaults:
-            return self
-
-        data = json.loads(self.model_dump_json(exclude_none=False))
-        data["model"] = canonical_model
-
-        def _deep_overlay(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
-            for key, value in src.items():
-                if isinstance(value, dict):
-                    node = dst.get(key)
-                    if isinstance(node, dict):
-                        _deep_overlay(node, value)
-                    else:
-                        dst[key] = json.loads(json.dumps(value))
-                elif isinstance(value, list):
-                    existing = dst.get(key)
-                    if isinstance(existing, list):
-                        seen: set[tuple[str, str]] = set()
-                        merged: list[Any] = []
-
-                        def _make_key(item: Any) -> tuple[str, str]:
-                            try:
-                                return ("json", json.dumps(item, sort_keys=True))
-                            except Exception:
-                                return ("id", str(id(item)))
-
-                        for item in existing + value:
-                            key_tuple = _make_key(item)
-                            if key_tuple not in seen:
-                                seen.add(key_tuple)
-                                merged.append(item)
-                        dst[key] = merged
-                    else:
-                        dst[key] = list(value)
-                else:
-                    dst[key] = value
-            return dst
-
-        if defaults:
-            _deep_overlay(data, defaults)
-
-        for key, value in data.items():
-            setattr(self, key, value)
-        return self
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401
+        record.session_id = OWUI_SESSION_ID.get()
+        record.chat_id = OWUI_CHAT_ID.get()
+        record.message_id = OWUI_MESSAGE_ID.get()
+        record.user_id = OWUI_USER_ID.get()
+        return record.levelno >= OWUI_LOG_LEVEL.get()
 
 
-class CompletionCreateParams(BaseModel):
-    """Request body for OpenAI's Chat Completions API."""
+class SessionMemoryHandler(logging.Handler):
+    """Buffer log lines per session for later citation emission."""
 
-    model: str
-    messages: list[dict[str, Any]]
-    stream: bool = False
+    def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover - trivial
+        session_id = getattr(record, "session_id", None)
+        if not session_id:
+            return
+        SESSION_LOGS[session_id].append(self.format(record))
+
+
+# ---------------------------------------------------------------------------
+# Logger configuration
+# ---------------------------------------------------------------------------
+
+_configured = False
+_context_filter = ContextFilter()
+_LOG_FORMAT = (
+    "%(asctime)s [%(levelname)s] %(name)s %(message)s "
+    "session_id=%(session_id)s chat_id=%(chat_id)s message_id=%(message_id)s user_id=%(user_id)s"
+)
+
+
+def configure_logging() -> None:
+    """Attach console + memory handlers once under the canonical namespace."""
+
+    global _configured
+    if _configured:
+        return
+
+    logger = logging.getLogger("openai_responses_manifold")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    formatter = logging.Formatter(_LOG_FORMAT)
+
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.DEBUG)
+    console.setFormatter(formatter)
+    console.addFilter(_context_filter)
+
+    memory = SessionMemoryHandler()
+    memory.setLevel(logging.DEBUG)
+    memory.setFormatter(formatter)
+    memory.addFilter(_context_filter)
+
+    logger.addHandler(console)
+    logger.addHandler(memory)
+    logger.addFilter(_context_filter)
+
+    _configured = True
+
+
+def get_logger(name: str = __name__) -> logging.Logger:
+    """Return a logger under the manifold namespace."""
+
+    configure_logging()
+    base = "openai_responses_manifold"
+    qualified = name if name.startswith(base) else f"{base}.{name}"
+    return logging.getLogger(qualified)
+
+
+# ---------------------------------------------------------------------------
+# Context helpers
+# ---------------------------------------------------------------------------
+
+LoggingTokens = Tuple[Token[str | None], Token[str | None], Token[str | None], Token[str | None], Token[int]]
+
+
+def push_logging_context(
+    session_id: str | None,
+    level: int,
+    *,
+    chat_id: str | None = None,
+    message_id: str | None = None,
+    user_id: str | None = None,
+) -> LoggingTokens:
+    """Apply session/log-level context; returns tokens to restore later."""
+
+    configure_logging()
+    return (
+        OWUI_SESSION_ID.set(session_id),
+        OWUI_CHAT_ID.set(chat_id),
+        OWUI_MESSAGE_ID.set(message_id),
+        OWUI_USER_ID.set(user_id),
+        OWUI_LOG_LEVEL.set(level),
+    )
+
+
+def pop_logging_context(tokens: LoggingTokens) -> None:
+    """Restore ContextVars from tokens returned by ``push_logging_context``."""
+
+    t_session, t_chat, t_message, t_user, t_level = tokens
+    OWUI_SESSION_ID.reset(t_session)
+    OWUI_CHAT_ID.reset(t_chat)
+    OWUI_MESSAGE_ID.reset(t_message)
+    OWUI_USER_ID.reset(t_user)
+    OWUI_LOG_LEVEL.reset(t_level)
+
+
+@contextmanager
+def logging_context(
+    session_id: str | None,
+    level: int,
+    *,
+    chat_id: str | None = None,
+    message_id: str | None = None,
+    user_id: str | None = None,
+) -> Iterator[None]:
+    tokens = push_logging_context(
+        session_id,
+        level,
+        chat_id=chat_id,
+        message_id=message_id,
+        user_id=user_id,
+    )
+    try:
+        yield
+    finally:
+        pop_logging_context(tokens)
+
+
+# ---------------------------------------------------------------------------
+# Citation buffer helpers
+# ---------------------------------------------------------------------------
+
+def get_session_logs(session_id: str | None) -> list[str]:
+    if not session_id:
+        return []
+    return list(SESSION_LOGS.get(session_id, ()))
+
+
+def clear_session_logs(session_id: str | None) -> None:
+    if not session_id:
+        return
+    SESSION_LOGS.pop(session_id, None)
+
+
+def consume_session_logs(session_id: str | None) -> list[str]:
+    lines = get_session_logs(session_id)
+    clear_session_logs(session_id)
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Misc helpers
+# ---------------------------------------------------------------------------
+
+def truncate_for_log(value: Any, limit: int = 2000) -> tuple[str, bool]:
+    """Return a safe, possibly truncated string for logging."""
+
+    if value is None:
+        return "", False
+    text = value if isinstance(value, str) else str(value)
+    if len(text) <= limit:
+        return text, False
+    return text[:limit], True
+
+
+# Configure eagerly so child loggers inherit handlers/filters.
+configure_logging()
+
+
+__all__ = [
+    "configure_logging",
+    "get_logger",
+    "push_logging_context",
+    "pop_logging_context",
+    "logging_context",
+    "OWUI_SESSION_ID",
+    "OWUI_CHAT_ID",
+    "OWUI_MESSAGE_ID",
+    "OWUI_USER_ID",
+    "OWUI_LOG_LEVEL",
+    "SESSION_LOGS",
+    "get_session_logs",
+    "clear_session_logs",
+    "consume_session_logs",
+    "truncate_for_log",
+]
+
+# === infrastructure/openwebui_events.py ===
+"""Minimal Open WebUI event helpers matching the documented event catalog."""
+
+import asyncio
+import inspect
+from typing import Any, Awaitable, Callable, Literal
+
+from pydantic import BaseModel, ConfigDict
+
+EventEmitterFn = Callable[[dict[str, Any]], Awaitable[Any] | Any]
+EventCallerFn = Callable[[dict[str, Any]], Awaitable[Any] | Any]
+
+
+# -------------------------
+# Event payload definitions
+# -------------------------
+
+
+class StatusEventData(BaseModel):
+    """Status/progress updates shown in the chat UI."""
+
+    model_config = ConfigDict(extra="allow")
+
+    description: str
+    done: bool = False
+    hidden: bool = False
+
+
+class NotificationEventData(BaseModel):
+    """Toast notification payload consumed by the UI."""
+
+    type: Literal["info", "success", "error", "warning"]
+    content: str
+
+
+class FileModelResponse(BaseModel):
+    """Open WebUI file object (mirrors backend FileModelResponse used by the UI)."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    user_id: str
+    hash: str | None = None
+
+    filename: str
+    data: dict[str, Any] | None = None
+    meta: dict[str, Any]
+
+    created_at: int
+    updated_at: int
+
+
+class MessageDeltaEventData(BaseModel):
+    """Streaming/append content for an in-progress message."""
+
+    model_config = ConfigDict(extra="allow")
+
+    content: str
+
+
+class ChatMessageEventData(BaseModel):
+    """Complete replacement content for a message."""
+
+    model_config = ConfigDict(extra="allow")
+
+    content: str
+
+
+class FilesEventData(BaseModel):
+    """Files attached to a message; UI expects a list of FileModelResponse objects."""
+
+    files: list[FileModelResponse]
+
+
+class ChatTitleEventData(BaseModel):
+    """Conversation title update."""
+
+    title: str
+
+
+class ChatTagsEventData(BaseModel):
+    """Conversation tags update."""
+
+    tags: list[str]
+
+
+class SourceEventData(BaseModel):
+    """Source/citation payload; UI appends to message sources."""
 
     model_config = ConfigDict(extra="allow")
 
 
-_RESPONSES_BODY_ADAPTER = TypeAdapter(ResponseCreateParams)
+class ChatCompletionEventData(BaseModel):
+    """
+    Payload for ``chat:completion`` events (custom/implementation-defined).
+
+    Frontend reads ``done`` and optionally ``content``/``title`` when ``done`` is true
+    to trigger toasts/notifications; other fields are passed through.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    done: bool | None = None
+    content: str | None = None
+    title: str | None = None
+    usage: dict[str, Any] | None = None
 
 
-def validate_response_create_params(payload: ResponseCreateParams | Mapping[str, Any]) -> ResponseCreateParams:
-    """Coerce/validate a payload into a ResponseCreateParams instance."""
+class ConfirmationEventData(BaseModel):
+    """Confirmation dialog payload returned via __event_call__."""
 
-    if isinstance(payload, ResponseCreateParams):
+    title: str
+    message: str
+
+
+class InputEventData(BaseModel):
+    """Input dialog payload returned via __event_call__."""
+
+    title: str
+    message: str
+    placeholder: str | None = None
+    value: str | None = None
+
+
+class ExecuteEventData(BaseModel):
+    """Client-side code execution payload returned via __event_call__."""
+
+    code: str
+
+
+class ExecutePythonEventData(BaseModel):
+    """
+    Non-documented type used via ``__event_call__``: ``execute:python``.
+
+    Backend (`utils/middleware.py`) invokes __event_call__ with ``id``, ``code``, and
+    optional ``session_id``; the frontend runs the code client-side.
+    """
+
+    id: str
+    code: str
+    session_id: str
+
+
+class ExecuteToolEventData(BaseModel):
+    """
+    Non-documented type used via ``__event_call__``: ``execute:tool``.
+
+    Backend (`utils/middleware.py`) invokes __event_call__ with these fields to run a tool in the frontend.
+    """
+
+    id: str
+    name: str
+    params: dict[str, Any] = {}
+    server: dict[str, Any] = {}
+    session_id: str
+    model_config = ConfigDict(extra="allow")
+
+
+class RequestChatCompletionEventData(BaseModel):
+    """
+    Non-documented type used via ``__event_call__``: ``request:chat:completion``.
+
+    Backend (`utils/chat.py`) calls __event_call__ with this so the frontend performs a chat completion
+    (direct connection flow). The frontend issues the completion request and streams over the provided channel.
+    """
+
+    session_id: str
+    channel: str
+    form_data: dict[str, Any]
+    model: dict[str, Any]
+
+
+def _to_dict(obj: BaseModel | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(obj, BaseModel):
+        return obj.model_dump()
+    return obj
+
+
+async def _maybe_await(value: Any) -> Any:
+    if asyncio.isfuture(value) or inspect.isawaitable(value):
+        return await value
+    return value
+
+
+# ---------------
+# Event emitting
+# ---------------
+
+
+class EventEmitter:
+    """Thin wrapper around ``__event_emitter__`` for documented chat events."""
+
+    def __init__(self, event_emitter: EventEmitterFn | None) -> None:
+        self.event_emitter = event_emitter
+
+    async def _emit(self, event_type: str, data: BaseModel | dict[str, Any]) -> dict[str, Any]:
+        payload = {"type": event_type, "data": _to_dict(data)}
+        if self.event_emitter:
+            await _maybe_await(self.event_emitter(payload))
         return payload
-    return _RESPONSES_BODY_ADAPTER.validate_python(payload)
+
+    # docs: type = "status"
+    async def status(self, description: str, *, done: bool = False, hidden: bool = False) -> dict[str, Any]:
+        return await self._emit("status", StatusEventData(description=description, done=done, hidden=hidden))
+
+    # docs: type = "chat:message:delta"
+    async def delta(self, content: str) -> dict[str, Any]:
+        return await self._emit("chat:message:delta", MessageDeltaEventData(content=content))
+
+    # docs: type = "message"
+    async def message(self, content: str) -> dict[str, Any]:
+        return await self._emit("message", MessageDeltaEventData(content=content))
+
+    # docs: type = "chat:message"
+    async def replace(self, content: str) -> dict[str, Any]:
+        return await self._emit("chat:message", ChatMessageEventData(content=content))
+
+    # docs: type = "files" (alias: "chat:message:files")
+    async def files(self, files: list[FileModelResponse] | list[dict[str, Any]]) -> dict[str, Any]:
+        normalized = [f if isinstance(f, FileModelResponse) else FileModelResponse(**f) for f in files]
+        return await self._emit("files", FilesEventData(files=normalized))
+
+    # docs: type = "chat:title"
+    async def title(self, title: str | ChatTitleEventData) -> dict[str, Any]:
+        payload = title.model_dump() if isinstance(title, ChatTitleEventData) else {"title": title}
+        return await self._emit("chat:title", payload)
+
+    # docs: type = "chat:tags"
+    async def tags(self, tags: list[str] | ChatTagsEventData) -> dict[str, Any]:
+        payload = tags.model_dump() if isinstance(tags, ChatTagsEventData) else {"tags": tags}
+        return await self._emit("chat:tags", payload)
+
+    # docs: type = "source"
+    async def source(self, data: SourceEventData | dict[str, Any]) -> dict[str, Any]:
+        payload = data if isinstance(data, SourceEventData) else SourceEventData(**data)
+        return await self._emit("source", payload)
+
+    # docs: type = "citation"
+    async def citation(self, data: SourceEventData | dict[str, Any]) -> dict[str, Any]:
+        payload = data if isinstance(data, SourceEventData) else SourceEventData(**data)
+        return await self._emit("citation", payload)
+
+    # docs: type = "notification"
+    async def notification(
+        self,
+        content: str,
+        *,
+        level: Literal["info", "success", "error", "warning"] = "info",
+    ) -> dict[str, Any]:
+        return await self._emit("notification", NotificationEventData(type=level, content=content))
+
+    # docs: type = "chat:completion"
+    async def chat_completion(self, data: ChatCompletionEventData) -> dict[str, Any]:
+        return await self._emit("chat:completion", data)
 
 
-def dump_response_create_params(payload: ResponseCreateParams | Mapping[str, Any]) -> dict[str, Any]:
-    """Return a JSON-ready dict with ``exclude_none=True`` applied."""
+# -----------------
+# Interactive calls
+# -----------------
 
-    return validate_response_create_params(payload).model_dump(exclude_none=True)
+
+class EventCall:
+    """Wrapper around ``__event_call__`` for documented and non-documented interactive events."""
+
+    def __init__(self, event_call: EventCallerFn | None = None) -> None:
+        self._call = event_call
+
+    async def _send(self, event_type: str, data: BaseModel | dict[str, Any]) -> Any:
+        if not self._call:
+            raise RuntimeError("__event_call__ not provided")
+        payload = {"type": event_type, "data": _to_dict(data)}
+        result = self._call(payload)
+        return await _maybe_await(result)
+
+    # docs: type = "input"
+    async def input(
+        self,
+        title: str,
+        message: str,
+        *,
+        placeholder: str | None = None,
+        default: str | None = None,
+    ) -> Any:
+        data = InputEventData(title=title, message=message, placeholder=placeholder, value=default)
+        result = await self._send("input", data)
+        if isinstance(result, dict) and "value" in result:
+            return result["value"]
+        return result
+
+    # docs: type = "confirmation"
+    async def confirmation(self, title: str, message: str) -> Any:
+        data = ConfirmationEventData(title=title, message=message)
+        result = await self._send("confirmation", data)
+        if isinstance(result, dict) and "value" in result:
+            return result["value"]
+        return result
+
+    # docs: type = "execute"
+    async def execute(self, code: str) -> Any:
+        data = ExecuteEventData(code=code)
+        return await self._send("execute", data)
+
+    # Undocumented: type = "execute:python"
+    async def execute_python(self, data: ExecutePythonEventData | dict[str, Any]) -> Any:
+        payload = data if isinstance(data, ExecutePythonEventData) else ExecutePythonEventData(**data)
+        return await self._send("execute:python", payload)
+
+    # Undocumented: type = "execute:tool"
+    async def execute_tool(
+        self,
+        data: ExecuteToolEventData | dict[str, Any],
+    ) -> Any:
+        payload = data if isinstance(data, ExecuteToolEventData) else ExecuteToolEventData(**data)
+        return await self._send("execute:tool", payload)
+
+    # Undocumented: type = "request:chat:completion"
+    async def request_chat_completion(
+        self,
+        data: RequestChatCompletionEventData | dict[str, Any],
+    ) -> Any:
+        payload = data if isinstance(data, RequestChatCompletionEventData) else RequestChatCompletionEventData(**data)
+        return await self._send("request:chat:completion", payload)
 
 
 __all__ = [
-    "CompletionCreateParams",
-    "ReasoningParams",
-    "StreamOptions",
-    "ResponseCreateParams",
-    "validate_response_create_params",
-    "dump_response_create_params",
+    "EventEmitterFn",
+    "EventCallerFn",
+    "EventEmitter",
+    "EventCall",
+    "StatusEventData",
+    "NotificationEventData",
+    "FileModelResponse",
+    "MessageDeltaEventData",
+    "ChatMessageEventData",
+    "FilesEventData",
+    "ChatTitleEventData",
+    "ChatTagsEventData",
+    "SourceEventData",
+    "ChatCompletionEventData",
+    "ConfirmationEventData",
+    "InputEventData",
+    "ExecuteEventData",
+    # Non-documented frontend-handled types (used via __event_call__)
+    "ExecutePythonEventData",
+    "ExecuteToolEventData",
+    "RequestChatCompletionEventData",
 ]
 
-# === core/ids.py ===
-"""Model identifier normalization helpers (prefix/dot/date safe)."""
+# === infrastructure/openwebui_store.py ===
+"""Persistence helpers for storing Responses items in OpenWebUI."""
 
-import re
-from typing import Mapping
-
-# [build.py] internal imports removed in monolith:
-# from ..model_catalog import MODEL_ALIASES, MODEL_FEATURES
-
-_DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
-_KNOWN_IDS = frozenset({*MODEL_FEATURES.keys(), *MODEL_ALIASES.keys()})
-
-
-def normalize(model_id: str) -> str:
-    """Normalize identifiers by lowercasing, trimming, and removing prefixes/dates."""
-
-    raw = (model_id or "").strip().lower()
-    if not raw:
-        return ""
-    no_date = _DATE_SUFFIX_RE.sub("", raw)
-    if no_date in _KNOWN_IDS:
-        return no_date
-
-    dot_index = no_date.find(".")
-    if dot_index != -1:
-        suffix = _DATE_SUFFIX_RE.sub("", no_date[dot_index + 1 :])
-        if suffix in _KNOWN_IDS:
-            return suffix
-
-    return no_date
-
-
-def base_model(
-    model_id: str,
-    alias_lookup: Mapping[str, Mapping[str, str | dict]] | None = None,
-) -> str:
-    """Return the canonical base model for a given identifier."""
-
-    alias_map = alias_lookup or MODEL_ALIASES
-    normalized = normalize(model_id)
-    alias_entry = alias_map.get(normalized)
-    if alias_entry:
-        base = alias_entry.get("base_model")
-        if isinstance(base, str):
-            return normalize(base)
-    return normalized
-
-
-__all__ = ["base_model", "normalize"]
-
-# === core/messages.py ===
-"""Helpers for converting OpenWebUI message blocks to Responses items."""
-
-from typing import Any
-
-
-def normalize_user_blocks(content: str | list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Return a list of user blocks regardless of how OpenWebUI formatted them."""
-
-    if isinstance(content, str):
-        return [{"type": "text", "text": content}]
-    if isinstance(content, list):
-        return [block for block in content if isinstance(block, dict)]
-    return []
-
-
-def user_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenWebUI user blocks into Responses input items."""
-
-    responses: list[dict[str, Any]] = []
-    for block in blocks:
-        block_type = block.get("type")
-        if block_type == "text":
-            responses.append({"type": "input_text", "text": block.get("text", "")})
-        elif block_type == "image_url":
-            url = (block.get("image_url") or {}).get("url")
-            if url:
-                responses.append({"type": "input_image", "image_url": url})
-        elif block_type == "input_file":
-            file_id = block.get("file_id")
-            if file_id:
-                responses.append({"type": "input_file", "file_id": file_id})
-    return responses
-
-
-def assistant_text_item(text: str) -> dict[str, Any]:
-    """Generate an assistant output item for plain text segments."""
-
-    return {
-        "role": "assistant",
-        "content": [
-            {
-                "type": "output_text",
-                "text": text,
-            }
-        ],
-    }
-
-
-def developer_message(content: str) -> dict[str, Any]:
-    """Construct a developer-role message block."""
-
-    return {"role": "developer", "content": content}
-
-
-__all__ = [
-    "assistant_text_item",
-    "developer_message",
-    "normalize_user_blocks",
-    "user_blocks_to_responses_items",
-]
-
-# === core/markers.py ===
-"""Helpers for encoding/decoding hidden response markers."""
-
-import re
+import datetime
 import secrets
 from typing import Any
 
-ULID_LENGTH = 16
-_CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-_SENTINEL = "[openai_responses:v2:"
-_MARKER_RE = re.compile(
-    r"\[openai_responses:v2:(?P<kind>[a-z0-9_]{2,30}):(?P<ulid>[A-Z0-9]{16})(?:\?(?P<query>[^\]]+))?\]:\s*#",
-    re.I,
-)
-
-
-def generate_item_id() -> str:
-    """Generate a short ULID-like identifier."""
-
-    return "".join(secrets.choice(_CROCKFORD_ALPHABET) for _ in range(ULID_LENGTH))
-
-
-def _qs(metadata: dict[str, str]) -> str:
-    return "&".join(f"{key}={value}" for key, value in metadata.items()) if metadata else ""
-
-
-def _parse_qs(query: str) -> dict[str, str]:
-    return dict(part.split("=", 1) for part in query.split("&")) if query else {}
-
-
-def create_marker(
-    item_type: str,
-    *,
-    ulid: str | None = None,
-    model_id: str | None = None,
-    metadata: dict[str, str] | None = None,
-) -> str:
-    """Create a bare marker payload (without the wrapping newlines)."""
-
-    if not re.fullmatch(r"[a-z0-9_]{2,30}", item_type):
-        raise ValueError("item_type must be 2-30 chars of [a-z0-9_]")
-
-    meta = {**(metadata or {})}
-    if model_id:
-        meta["model"] = model_id
-
-    base = f"openai_responses:v2:{item_type}:{ulid or generate_item_id()}"
-    return f"{base}?{_qs(meta)}" if meta else base
-
-
-def wrap_marker(marker: str) -> str:
-    """Wrap a marker string in an empty markdown link."""
-
-    return f"\n[{marker}]: #\n"
-
-
-def contains_marker(text: str) -> bool:
-    """Return True if the sentinel substring is present."""
-
-    return _SENTINEL in text
-
-
-def parse_marker(marker: str) -> dict[str, Any]:
-    """Parse a raw marker string back into its components."""
-
-    if not marker.startswith("openai_responses:v2:"):
-        raise ValueError("not a v2 marker")
-    _, _, kind, rest = marker.split(":", 3)
-    uid, _, query = rest.partition("?")
-    return {"version": "v2", "item_type": kind, "ulid": uid, "metadata": _parse_qs(query)}
-
-
-def extract_markers(text: str, *, parsed: bool = False) -> list[Any]:
-    """Extract hidden markers from the assistant text."""
-
-    found: list[Any] = []
-    for match in _MARKER_RE.finditer(text):
-        raw = f"openai_responses:v2:{match.group('kind')}:{match.group('ulid')}"
-        if match.group("query"):
-            raw += f"?{match.group('query')}"
-        found.append(parse_marker(raw) if parsed else raw)
-    return found
-
-
-def split_text_by_markers(text: str) -> list[dict[str, str]]:
-    """Split text into a list of literal segments and marker segments."""
-
-    segments: list[dict[str, str]] = []
-    last = 0
-    for match in _MARKER_RE.finditer(text):
-        if match.start() > last:
-            segments.append({"type": "text", "text": text[last : match.start()]})
-        raw = f"openai_responses:v2:{match.group('kind')}:{match.group('ulid')}"
-        if match.group("query"):
-            raw += f"?{match.group('query')}"
-        segments.append({"type": "marker", "marker": raw})
-        last = match.end()
-    if last < len(text):
-        segments.append({"type": "text", "text": text[last:]})
-    return segments
-
-# === core/errors.py ===
-"""Typed exceptions referenced throughout the manifold."""
-
-
-class ManifoldError(Exception):
-    """Base class for manifold-specific exceptions."""
-
-
-class ToolExecutionError(ManifoldError):
-    """Raised when a tool invocation fails."""
-
-
-class RoutingError(ManifoldError):
-    """Raised when an automatic model routing step fails."""
-
-
-class OpenAIStreamError(ManifoldError):
-    """Raised when streaming events from OpenAI encounters a fatal error."""
-
-
-class PersistenceError(ManifoldError):
-    """Raised when items fail to persist or resolve."""
-
-
-__all__ = [
-    "ManifoldError",
-    "OpenAIStreamError",
-    "PersistenceError",
-    "RoutingError",
-    "ToolExecutionError",
-]
-
-# === main.py ===
-"""Open WebUI pipe implementation that delegates to the Responses engine."""
-
-import logging
-from collections.abc import Awaitable
-from typing import Any
-
-from open_webui.models.models import ModelForm, Models
-
-# [build.py] internal imports removed in monolith:
-# from .core.openai_requests import CompletionCreateParams
-# from .engine import ResponsesEngine
-# from .infra import ItemStore, OpenAIResponsesClient
-# from .model_catalog import supports
-# from .services import route_auto_model
-# from .services.request_builder import build_responses_body
-# from .services.tools import build_tools
-# from .settings import PipeValves, UserValves
-# from .utils import (
-#     EventCall,
-#     EventCallerFn,
-#     EventEmitterFn,
-#     get_logger,
-#     logging_context,
-# )
-
-
-class Pipe:
-    class Valves(PipeValves):
-        """Admin-level valve configuration."""
-
-    class UserValves(UserValves):
-        """Per-user valve overrides."""
-
-    def __init__(self) -> None:
-        self.type = "manifold"
-        self.id = "openai_responses"
-        self.valves = self.Valves()
-        self.logger = get_logger(__name__)
-        self.store = ItemStore()
-        self.engine = ResponsesEngine(
-            client=OpenAIResponsesClient(),
-            item_store=self.store,
-            logger=self.logger,
-        )
-
-    async def pipes(self) -> list[dict[str, str]]:
-        model_ids = [
-            model_id.strip() for model_id in self.valves.MODEL_ID.split(",") if model_id.strip()
-        ]
-        return [{"id": model_id, "name": f"OpenAI: {model_id}"} for model_id in model_ids]
-
-    async def pipe(
-        self,
-        body: dict[str, Any],
-        __user__: dict[str, Any],
-        __event_emitter__: EventEmitterFn,
-        __event_call__: EventCallerFn | None,
-        __metadata__: dict[str, Any],
-        __tools__: list[dict[str, Any]] | dict[str, Any] | None,
-        __task__: dict[str, Any] | None = None,
-        __task_body__: dict[str, Any] | None = None,
-    ) -> Awaitable[str] | str | None:
-        valves = self._merge_valves(
-            self.valves, self.UserValves.model_validate(__user__.get("valves", {}))
-        )
-        openwebui_model_id = __metadata__.get("model", {}).get("id", "")
-        user_identifier = __user__[valves.PROMPT_CACHE_KEY]
-        features = __metadata__.get("features", {}).get("openai_responses", {})
-
-        with logging_context(
-            __metadata__.get("session_id"),
-            getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
-            chat_id=__metadata__.get("chat_id"),
-            message_id=__metadata__.get("message_id"),
-            user_id=__metadata__.get("user_id"),
-        ):
-            await self._maybe_unclamp_status(__event_call__)
-
-            completions_body = CompletionCreateParams.model_validate(body)
-            responses_body = await build_responses_body(
-                completions_body.model_dump(),
-                valves=valves,
-                metadata=__metadata__,
-                user_identifier=user_identifier,
-                item_store=self.store,
-            )
-            provided_tools = __tools__ if __tools__ is not None else body.get("tools")
-            extra_tools = getattr(completions_body, "extra_tools", None) or body.get("extra_tools")
-            tool_specs = build_tools(
-                responses_body,
-                valves,
-                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
-                features=features,
-                extra_tools=extra_tools if isinstance(extra_tools, list) else None,
-            )
-            if tool_specs:
-                responses_body.tools = tool_specs
-
-            if __task__:
-                self.logger.info("Detected task model: %s", __task__)
-                return await self.engine.run_task_model(responses_body.model_dump(), valves)
-
-            responses_body = await self._ensure_native_function_calling_if_needed(
-                responses_body, openwebui_model_id, __event_emitter__
-            )
-            responses_body = await self._ensure_routed_auto_model(
-                responses_body, valves, openwebui_model_id, __event_emitter__
-            )
-            self._apply_reasoning_options(responses_body, valves)
-            self._apply_parallel_tool_policy(responses_body, valves)
-
-            return await self.engine.run_streaming_turn(
-                responses_body,
-                valves=valves,
-                metadata=__metadata__,
-                event_emitter=__event_emitter__,
-                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
-            )
-
-    def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
-        merged = pipe_valves.model_copy(deep=True)
-        if user_valves.LOG_LEVEL != "INHERIT":
-            merged.LOG_LEVEL = user_valves.LOG_LEVEL
-        return merged
-
-    @staticmethod
-    def _status_unclamp_script() -> str:
-        return """
-        (() => {
-        if (document.getElementById("owui-status-unclamp")) return "ok";
-        const style = document.createElement("style");
-        style.id = "owui-status-unclamp";
-        style.textContent = `
-            .status-description .line-clamp-1,
-            .status-description .text-base.line-clamp-1,
-            .status-description .text-gray-500.text-base.line-clamp-1 {
-            display: block !important;
-            overflow: visible !important;
-            -webkit-line-clamp: unset !important;
-            -webkit-box-orient: initial !important;
-            white-space: pre-wrap !important;
-            word-break: break-word;
-            }
-
-            .status-description .text-base::first-line,
-            .status-description .text-gray-500.text-base::first-line {
-            font-weight: 500 !important;
-            }
-        `;
-
-        document.head.appendChild(style);
-        return "ok";
-        })();
-        """
-
-    async def _maybe_unclamp_status(self, event_call: EventCallerFn | None) -> None:
-        if not event_call:
-            return
-        # Temporary UI hack to unclamp status text so reasoning tokens can be shown multi-line.
-        call = EventCall(event_call)
-        await call.execute(self._status_unclamp_script())
-
-    async def _apply_model_policies(
-        self,
-        responses_body: Any,
-        valves: PipeValves,
-        openwebui_model_id: str,
-        event_emitter: EventEmitterFn,
-    ):
-        await self._ensure_native_function_calling_if_needed(
-            responses_body, openwebui_model_id, event_emitter
-        )
-        responses_body = await self._ensure_routed_auto_model(
-            responses_body, valves, openwebui_model_id, event_emitter
-        )
-        self._apply_reasoning_options(responses_body, valves)
-        self._apply_parallel_tool_policy(responses_body, valves)
-        return responses_body
-
-    async def _ensure_native_function_calling_if_needed(
-        self,
-        responses_body: Any,
-        openwebui_model_id: str,
-        event_emitter: EventEmitterFn,
-    ) -> Any:
-        tools = responses_body.tools or []
-        if not (tools and supports("function_calling", responses_body.model)):
-            return responses_body
-        model = Models.get_model_by_id(openwebui_model_id)
-        if not model:
-            return responses_body
-        params = dict(model.params or {})
-        if params.get("function_calling") == "native":
-            return responses_body
-
-        await self.engine.emit_notification(
-            event_emitter,
-            content=(
-                f"Enabling native function calling for model: {openwebui_model_id}. "
-                "Please re-run your query."
-            ),
-            level="info",
-        )
-        params["function_calling"] = "native"
-        form_data = model.model_dump()
-        form_data["params"] = params
-        Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
-        return responses_body
-
-    async def _ensure_routed_auto_model(
-        self,
-        responses_body: Any,
-        valves: PipeValves,
-        openwebui_model_id: str,
-        event_emitter: EventEmitterFn,
-    ):
-        if openwebui_model_id.endswith(".gpt-5-auto-dev"):
-            return await route_auto_model(
-                self.engine.client,
-                router_model="gpt-4.1-mini",
-                responses_body=responses_body,
-                valves=valves,
-                tools=responses_body.tools or [],
-                event_emitter=event_emitter,
-            )
-
-        if openwebui_model_id.endswith(".gpt-5-auto"):
-            responses_body.model = "gpt-5-chat-latest"
-            await self.engine.emit_notification(
-                event_emitter,
-                content="Model router coming soon — using gpt-5-chat-latest (GPT-5 Fast).",
-                level="warning",
-            )
-        return responses_body
-
-    def _apply_reasoning_options(self, responses_body: Any, valves: PipeValves) -> None:
-        if supports("reasoning_summary", responses_body.model) and valves.REASONING_SUMMARY != "disabled":
-            reasoning_params = dict(responses_body.reasoning or {})
-            reasoning_params["summary"] = valves.REASONING_SUMMARY
-            responses_body.reasoning = reasoning_params
-
-        if (
-            supports("reasoning", responses_body.model)
-            and valves.PERSIST_REASONING_TOKENS != "disabled"
-            and responses_body.store is False
-        ):
-            responses_body.include = responses_body.include or []
-            if "reasoning.encrypted_content" not in responses_body.include:
-                responses_body.include.append("reasoning.encrypted_content")
-
-    def _apply_parallel_tool_policy(self, responses_body: Any, valves: PipeValves) -> None:
-        if any(
-            isinstance(tool, dict) and tool.get("type") == "web_search"
-            for tool in (responses_body.tools or [])
-        ):
-            responses_body.parallel_tool_calls = False
-            return
-        responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
-
-# === engine.py ===
-"""Streaming orchestration and tool loop for the Responses manifold.
-
-The flow is deliberately linear and explicit:
-1) Stream a response from OpenAI Responses API.
-2) Emit deltas, statuses, and persist structured items as they arrive.
-3) If the model requested tool calls, run local tools, append outputs, and loop.
-"""
-
-import asyncio
-import json
-import logging
-import os
-import random
-from time import perf_counter
-from typing import Any, Awaitable, Callable, Literal
-
 from open_webui.models.chats import Chats
 
-# [build.py] internal imports removed in monolith:
-# from .core.openai_requests import ResponseCreateParams
-# from .core.openai_response_events import (
-#     ErrorEvent,
-#     ResponseCompletedEvent,
-#     ResponseCreatedEvent,
-#     ResponseFailedEvent,
-#     ResponseIncompleteEvent,
-#     ResponseInProgressEvent,
-#     ResponseOutputItemAddedEvent,
-#     ResponseOutputItemDoneEvent,
-#     ResponseOutputTextDeltaEvent,
-#     ResponseOutputTextDoneEvent,
-#     ResponseQueuedEvent,
-#     ResponseReasoningSummaryTextDoneEvent,
-# )
-# from .core.errors import ToolExecutionError
-# from .model_catalog import supports
-# from .infra import ItemStore, OpenAIResponsesClient
-# from .services.history import HistoryPersistence
-# from .services.tasks import run_task_model
-# from .services.tools import execute_tool_calls
-# from .utils import (
-#     OWUI_SESSION_ID,
-#     clear_session_logs,
-#     EventEmitter,
-#     EventEmitterFn,
-#     get_session_logs,
-#     get_logger,
-#     truncate_for_log,
-# )
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 
-class ResponsesEngine:
-    """Encapsulates streaming and tool orchestration."""
+class ItemStore:
+    """Adapter around ``open_webui.models.chats.Chats``."""
 
-    def __init__(
+    def __init__(self, *, store_key: str = "openai_responses_pipe") -> None:
+        self.store_key = store_key
+
+    def save_items(
         self,
-        *,
-        client: OpenAIResponsesClient | None = None,
-        item_store: ItemStore | None = None,
-        history_persistence: HistoryPersistence | None = None,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        self.client = client or OpenAIResponsesClient()
-        self.store = item_store or ItemStore()
-        self.history_persistence = history_persistence or HistoryPersistence(self.store)
-        self.logger = logger or get_logger(__name__)
+        chat_id: str,
+        message_id: str,
+        items: list[dict[str, Any]],
+        model_id: str,
+    ) -> list[str]:
+        """Persist items and return the generated ULIDs."""
 
-    async def run_streaming_turn(
-        self,
-        body: ResponseCreateParams,
-        *,
-        valves: Any,
-        metadata: dict[str, Any],
-        event_emitter: EventEmitterFn,
-        openwebui_tools: dict[str, dict[str, Any]] | None = None,
-    ) -> str:
-        emitter = EventEmitter(event_emitter)
-        delta_log_stride = int(os.getenv("DELTA_LOG_STRIDE", "500") or "500")
-        assistant_message = ""
-        last_usage: dict[str, Any] | None = None
-        emitted_citations: list[dict[str, Any]] = []
-        debug_enabled = self.logger.isEnabledFor(logging.DEBUG)
-        delta_count = 0
-        delta_chars = 0
-        tool_call_count = 0
-        last_error: str | None = None
-        last_tool_output: str | None = None
-
-        status_emitted = False
-
-        async def emit_status(
-            description: str,
-            *,
-            done: bool = False,
-            hidden: bool = False,
-            require_previous: bool = False,
-        ) -> None:
-            nonlocal status_emitted
-            if require_previous and not status_emitted:
-                return
-            status_emitted = True
-            await emitter.status(description, done=done, hidden=hidden)
-
-        thinking_tasks = self._schedule_reasoning_statuses(body, emit_status)
-        final_response_payload: dict[str, Any] | None = None
-
-        model_router_result = body.model_router_result
-        if model_router_result:
-            body.model_router_result = None
-            explanation = model_router_result.get("explanation", "")
-            await emit_status(
-                description=(
-                    f"Routing to {model_router_result.get('model')} "
-                    f"(effort: {model_router_result.get('reasoning_effort')})\n"
-                    f"Explanation: {explanation}"
-                )
-            )
-
-        self.logger.info("turn.start model=%s task=chat", body.model)
-        start_time = perf_counter()
-        error_occurred = False
-
-        try:
-            max_loops = getattr(valves, "MAX_FUNCTION_CALL_LOOPS", 10)
-            loop_idx = 0
-            while loop_idx < max_loops:
-                loop_idx += 1
-                final_response_payload = None
-
-                async for event in self.client.stream(
-                    body.model_dump(exclude_none=True),
-                    api_key=valves.API_KEY,
-                    base_url=valves.BASE_URL,
-                    typed=True,
-                ):
-                    # Text deltas
-                    if isinstance(event, ResponseOutputTextDeltaEvent):
-                        delta_val = event.delta
-                        delta_count += 1
-                        delta_chars += len(delta_val or "")
-                        if debug_enabled and delta_val and (delta_count == 1 or delta_count % delta_log_stride == 0):
-                            self.logger.debug("delta_progress count=%d chars=%d", delta_count, delta_chars)
-                        if delta_val:
-                            assistant_message += delta_val
-                            await emitter.delta(delta_val)
-                        continue
-
-                    # Message started
-                    if isinstance(event, ResponseOutputItemAddedEvent):
-                        item = event.item or {}
-                        if item.get("type") == "message" and item.get("status") == "in_progress":
-                            await emit_status("Responding to the user…", require_previous=True)
-                        continue
-
-                    # Output item completed
-                    if isinstance(event, ResponseOutputItemDoneEvent):
-                        item = event.item or {}
-                        item_type = item.get("type") or ""
-
-                        should_persist = False
-                        if item_type == "reasoning":
-                            should_persist = getattr(valves, "PERSIST_REASONING_TOKENS", "disabled") == "conversation"
-                        elif item_type in ("message", "web_search_call"):
-                            should_persist = False
-                        else:
-                            should_persist = getattr(valves, "PERSIST_TOOL_RESULTS", True)
-
-                        if should_persist:
-                            chat_id = metadata.get("chat_id")
-                            message_id = metadata.get("message_id")
-                            model_id = (metadata.get("model") or {}).get("id")
-                            if chat_id and message_id and model_id:
-                                try:
-                                    hidden_markers = self.history_persistence.persist_items_for_message(
-                                        chat_id,
-                                        message_id,
-                                        [item],
-                                        model_id=model_id,
-                                    )
-                                except Exception as exc:  # pragma: no cover
-                                    self.logger.warning("Failed to persist output item: %s", exc)
-                                    hidden_markers = ""
-                                if hidden_markers:
-                                    assistant_message += hidden_markers
-                                    await emitter.replace(assistant_message)
-
-                        status_desc = self._status_from_output_item(item)
-                        if status_desc:
-                            await emit_status(status_desc)
-                        continue
-
-                    # Reasoning summary
-                    if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
-                        text_val = (event.text or "").strip()
-                        if text_val:
-                            title, content = self._parse_reasoning_summary(text_val)
-                            await self._cancel_tasks(thinking_tasks)
-                            await emit_status(f"{title}\n{content}")
-                        continue
-
-                    # Text done
-                    if isinstance(event, ResponseOutputTextDoneEvent):
-                        text_val = event.text
-                        if debug_enabled:
-                            self.logger.debug("event=response.output_text.done text_len=%d", len(text_val or ""))
-                        await self._cancel_tasks(thinking_tasks)
-                        if text_val and not assistant_message:
-                            assistant_message = text_val
-                        await emitter.replace(assistant_message or text_val)
-                        continue
-
-                    # Envelope
-                    if isinstance(event, ResponseCompletedEvent):
-                        if debug_enabled:
-                            usage = event.response.get("usage") or {}
-                            self.logger.debug("event=response.completed usage_keys=%s", sorted(usage.keys()))
-                        final_response_payload = event.response
-                        await self._cancel_tasks(thinking_tasks)
-                        break
-
-                    if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
-                        await self._cancel_tasks(thinking_tasks)
-                        error_occurred = True
-                        if isinstance(event, ErrorEvent):
-                            last_error = event.message
-                        else:
-                            response_payload = event.response
-                            last_error = (response_payload.get("error") or {}).get("message", "OpenAI returned an error.")
-                        self.logger.error("turn.error type=response_error message=%s", last_error)
-                        await self._handle_stream_error(emitter, last_error)
-                        break
-
-                    if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
-                        if debug_enabled:
-                            self.logger.debug(
-                                "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
-                            )
-                        continue
-
-                # -- post-stream processing --
-                if final_response_payload:
-                    usage_from_response = self._extract_usage_from_final_response(final_response_payload)
-                    if usage_from_response:
-                        last_usage = usage_from_response
-
-                    response_output_items = self._sanitize_output_items(
-                        final_response_payload.get("output") or [], store=body.store
-                    )
-                    if response_output_items:
-                        existing_input = list(body.input) if isinstance(body.input, list) else []
-                        body.input = existing_input + response_output_items
-
-                if error_occurred or not final_response_payload:
-                    break
-
-                if not supports("function_calling", body.model):
-                    break
-
-                call_items = response_output_items or (final_response_payload or {}).get("output", [])
-                tool_calls = [item for item in call_items if item.get("type") == "function_call"]
-                if not tool_calls:
-                    break
-                tool_call_count += len(tool_calls)
-
-                try:
-                    if not openwebui_tools:
-                        self.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
-                        await emit_status("Tool execution skipped: no tool registry available.")
-                        break
-                    function_outputs = await execute_tool_calls(tool_calls, openwebui_tools)
-                except ToolExecutionError as exc:
-                    self.logger.warning("Skipping malformed tool arguments: %s", exc)
-                    await emit_status("Skipping malformed tool arguments.")
-                    break
-                if not function_outputs:
-                    break
-
-                last_tool_output = str(function_outputs[-1].get("output", ""))
-                if getattr(valves, "PERSIST_TOOL_RESULTS", True):
-                    chat_id = metadata.get("chat_id")
-                    message_id = metadata.get("message_id")
-                    model_id = (metadata.get("model") or {}).get("id")
-                    if chat_id and message_id and model_id:
-                        try:
-                            hidden_markers = self.history_persistence.persist_items_for_message(
-                                chat_id,
-                                message_id,
-                                function_outputs,
-                                model_id=model_id,
-                            )
-                        except Exception as exc:  # pragma: no cover
-                            self.logger.warning("Failed to persist tool results: %s", exc)
-                            hidden_markers = ""
-                        if hidden_markers:
-                            assistant_message += hidden_markers
-                            await emitter.replace(assistant_message)
-
-                for output in function_outputs:
-                    output_str = output.get("output", "")
-                    if output_str:
-                        await emit_status(f"Received tool result\n{output_str}")
-
-                existing_input = list(body.input) if isinstance(body.input, list) else []
-                body.input = existing_input + function_outputs
-
-                # Loop again with the appended tool outputs.
-                continue
-
-            # debug payload preview
-            if debug_enabled and final_response_payload:
-                try:
-                    payload_str = json.dumps(final_response_payload, ensure_ascii=False)
-                    preview, truncated = truncate_for_log(payload_str, limit=1000)
-                    self.logger.debug(
-                        "response.payload_preview enabled=true truncated=%s len=%d payload=%s",
-                        truncated,
-                        len(payload_str),
-                        preview,
-                    )
-                except Exception:
-                    pass
-
-            usage_summary = last_usage or {}
-            tokens_in = usage_summary.get("input_tokens")
-            tokens_out = usage_summary.get("output_tokens")
-            total_tokens = usage_summary.get("total_tokens")
-            try:
-                tokens_total = (
-                    total_tokens
-                    if isinstance(total_tokens, (int, float))
-                    else (tokens_in or 0) + (tokens_out or 0)
-                )
-            except Exception:
-                tokens_total = None
-            respond_time = perf_counter() - start_time
-            tokens_sec = round(tokens_total / respond_time, 2) if tokens_total and respond_time > 0 else None
-            summary_kwargs = {
-                "status": "error" if error_occurred else "ok",
-                "model": body.model,
-                "duration_sec": respond_time,
-                "deltas": delta_count,
-                "text_chars": delta_chars,
-                "tool_calls": tool_call_count,
-                "citations": len(emitted_citations),
-                "input_tokens": tokens_in,
-                "output_tokens": tokens_out,
-                "tokens_sec": tokens_sec,
-            }
-            if last_error:
-                summary_kwargs["last_error"] = last_error
-            self.logger.info(
-                "Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f "
-                "deltas=%(deltas)d text_chars=%(text_chars)d tool_calls=%(tool_calls)d citations=%(citations)d "
-                "input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s tokens_sec=%(tokens_sec)s"
-                + (" last_error=%(last_error)s" if last_error else ""),
-                summary_kwargs,
-            )
-
-        except Exception as exc:  # pragma: no cover
-            await self._cancel_tasks(thinking_tasks)
-            error_occurred = True
-            last_error = str(exc)
-            self.logger.error("turn.error type=%s message=%s", type(exc).__name__, last_error)
-            await self._handle_stream_error(emitter, last_error)
-
-        finally:
-            await self._emit_log_citation(emitter, emitted_citations)
-            if not assistant_message and not error_occurred and last_tool_output:
-                assistant_message = last_tool_output
-            usage_for_completion = last_usage or self._extract_usage_from_final_response(final_response_payload or {}) or None
-            # Emit a final visible status marked as done so the UI collapses the in-progress badge.
-            await emit_status("Done", done=True, hidden=False, require_previous=True)
-            await emitter.chat_completion(
-                {"content": assistant_message, "usage": usage_for_completion, "done": True}
-            )
-            chat_id = metadata.get("chat_id")
-            message_id = metadata.get("message_id")
-            if chat_id and message_id and emitted_citations:
-                Chats.upsert_message_to_chat_by_id_and_message_id(
-                    chat_id,
-                    message_id,
-                    {"sources": emitted_citations},
-                )
-
-        return assistant_message
-
-    async def run_nonstreaming_turn(
-        self,
-        body: ResponseCreateParams,
-        *,
-        valves: Any,
-        metadata: dict[str, Any],
-        event_emitter: EventEmitterFn,
-        openwebui_tools: dict[str, dict[str, Any]] | None = None,
-    ) -> str:
-        body.stream = True
-        return await self.run_streaming_turn(
-            body,
-            valves=valves,
-            metadata=metadata,
-            event_emitter=event_emitter,
-            openwebui_tools=openwebui_tools,
-        )
-
-    async def run_task_model(
-        self,
-        body: dict[str, Any],
-        valves: Any,
-    ) -> str:
-        return await run_task_model(self.client, body, valves)
-
-    async def emit_notification(
-        self,
-        event_emitter: EventEmitterFn | None,
-        content: str,
-        *,
-        level: Literal["info", "success", "warning", "error"] = "info",
-    ) -> None:
-        await EventEmitter(event_emitter).notification(content, level=level)
-
-    async def emit_error(
-        self,
-        event_emitter: EventEmitterFn | None,
-        error_obj: Exception | str,
-        *,
-        show_error_message: bool = True,
-        done: bool = False,
-    ) -> None:
-        if not show_error_message:
-            return
-        await EventEmitter(event_emitter).chat_completion(
-            {"error": {"message": str(error_obj)}, "done": done}
-        )
-
-    def _schedule_reasoning_statuses(
-        self, body: ResponseCreateParams, status_fn: Callable[[str], Awaitable[Any]]
-    ) -> list[asyncio.Task[Any]]:
-        if not supports("reasoning", body.model):
+        if not items:
             return []
 
-        async def _later(delay: float, msg: str) -> None:
-            await asyncio.sleep(delay)
-            await status_fn(msg)
+        chat_model = Chats.get_chat_by_id(chat_id)
+        if not chat_model:
+            return []
 
-        tasks: list[asyncio.Task[Any]] = []
-        for delay, msg in [
-            (0, "Thinking…"),
-            (1.5, "Reading the user's question…"),
-            (4.0, "Gathering my thoughts…"),
-            (6.0, "Exploring possible responses…"),
-            (7.0, "Building a plan…"),
-        ]:
-            tasks.append(asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg)))
-        return tasks
+        pipe_root = chat_model.chat.setdefault(self.store_key, {"__v": 3})
+        items_store = pipe_root.setdefault("items", {})
+        messages_index = pipe_root.setdefault("messages_index", {})
+        message_bucket = messages_index.setdefault(
+            message_id,
+            {"role": "assistant", "done": True, "item_ids": []},
+        )
 
-    async def _cancel_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
-        if not tasks:
-            return
-        to_cancel = list(tasks)
-        tasks.clear()
-        for task in to_cancel:
-            task.cancel()
-        await asyncio.gather(*to_cancel, return_exceptions=True)
+        now = int(datetime.datetime.now(datetime.UTC).timestamp())
+        stored_ids: list[str] = []
+        for payload in items:
+            item_id = _generate_item_id()
+            items_store[item_id] = {
+                "model": model_id,
+                "created_at": now,
+                "payload": payload,
+                "message_id": message_id,
+            }
+            message_bucket["item_ids"].append(item_id)
+            stored_ids.append(item_id)
 
-    async def _emit_log_citation(
+        Chats.update_chat_by_id(chat_id, chat_model.chat)
+        return stored_ids
+
+    def load_items(
         self,
-        emitter: EventEmitter,
-        emitted_citations: list[dict[str, Any]],
-    ) -> None:
-        session_id = OWUI_SESSION_ID.get()
-        if not session_id:
-            return
-        logs = get_session_logs(session_id)
-        if not logs:
-            return
-        log_text = "\n".join(logs)
-        truncated = len(log_text) > 4000
-        self.logger.debug("Emitting log citation lines=%d truncated=%s", len(logs), truncated)
-        await emitter.citation(
-            {
-                "document": [log_text],
-                "metadata": [{"source": "Logs"}],
-                "source": {"name": "Logs"},
-            }
-        )
-        snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
-        emitted_citations.append(
-            {
-                "provider": "openai:logs",
-                "id": str(len(emitted_citations) + 1),
-                "title": "Logs",
-                "snippet": snippet,
-                "metadata": {
-                    "source": "Logs",
-                    "total_lines": len(logs),
-                    "truncated": len(snippet) < len(log_text),
-                },
-            }
-        )
-        clear_session_logs(session_id)
+        chat_id: str,
+        item_ids: list[str],
+        *,
+        model_id: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch persisted items by ULID, optionally filtered by model id."""
 
-    def _sanitize_output_items(self, items: list[dict[str, Any]], *, store: bool | None) -> list[dict[str, Any]]:
-        """Strip server-side IDs when store=False to avoid lookups on replay."""
-        cleaned: list[dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
+        if not item_ids:
+            return {}
+        chat_model = Chats.get_chat_by_id(chat_id)
+        if not chat_model:
+            return {}
+
+        items_store = chat_model.chat.get(self.store_key, {}).get("items", {})
+        lookup: dict[str, dict[str, Any]] = {}
+        for item_id in item_ids:
+            item = items_store.get(item_id)
+            if not item:
                 continue
-            clone = json.loads(json.dumps(item))
-            if store is False:
-                clone.pop("id", None)
-            cleaned.append(clone)
-        return cleaned
+            if model_id and item.get("model") != model_id:
+                continue
+            payload = item.get("payload")
+            if isinstance(payload, dict):
+                lookup[item_id] = payload
+        return lookup
 
-    def _extract_usage_from_final_response(self, final_response: dict[str, Any]) -> dict[str, Any]:
-        if "usage" in final_response:
-            usage = final_response.get("usage")
-            return usage if isinstance(usage, dict) else {}
 
-        response_payload = final_response.get("response")
-        if isinstance(response_payload, dict):
-            usage = response_payload.get("usage")
-            if isinstance(usage, dict):
-                return usage
+def _generate_item_id(length: int = 16) -> str:
+    return "".join(secrets.choice(_CROCKFORD) for _ in range(length))
 
-        return {}
 
-    async def _handle_stream_error(
+__all__ = ["ItemStore"]
+
+# === infrastructure/openai_client.py ===
+"""aiohttp-backed client for the OpenAI Responses API."""
+
+import json
+from collections.abc import AsyncIterator
+from typing import Any
+
+import aiohttp
+import logging
+from pydantic import BaseModel
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.domain.openai_events import StreamEvent, parse_event
+# from openai_responses_manifold.infrastructure.logging import get_logger, truncate_for_log
+
+
+class OpenAIResponsesClient:
+    """Thin wrapper around ``aiohttp`` with SDK-like method names."""
+
+    def __init__(self) -> None:
+        self._session: aiohttp.ClientSession | None = None
+        self._logger = get_logger(__name__)
+
+    async def stream(
         self,
-        emitter: EventEmitter | None,
-        message: str,
-    ) -> None:
-        self.logger.error("Streaming error: %s", message)
-        if emitter:
-            await emitter.chat_completion({"error": {"message": message}, "done": False})
+        request_body: dict[str, Any] | BaseModel,
+        *,
+        api_key: str,
+        base_url: str,
+        typed: bool = False,
+    ) -> AsyncIterator[StreamEvent | dict[str, Any]]:
+        """Yield SSE events from ``POST /responses``.
 
-    def _status_from_output_item(self, item: dict[str, Any]) -> str | None:
-        """Return a user-facing status string for a completed output item."""
+        Set ``typed=True`` to parse each payload into a structured ``StreamEvent``.
+        """
 
-        item_type = item.get("type")
-        if not item_type:
-            return None
+        payload = (
+            request_body.model_dump(exclude_none=True)
+            if isinstance(request_body, BaseModel)
+            else request_body
+        )
 
-        if item_type == "function_call":
-            name = item.get("name", "tool")
+        session = await self._get_or_init_http_session()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        url = base_url.rstrip("/") + "/responses"
+        if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
+            input_items = payload.get("input") or []
+            instructions = payload.get("instructions") or ""
+            self._logger.debug(
+                "Streaming request prepared model=%s input_items=%d instructions_len=%d",
+                payload.get("model"),
+                len(input_items) if isinstance(input_items, list) else 0,
+                len(instructions) if isinstance(instructions, str) else 0,
+            )
             try:
-                arguments = json.loads(item.get("arguments") or "{}")
-                args_formatted = ", ".join(f"{k}={json.dumps(v)}" for k, v in arguments.items())
-                return f"Running the {name} tool…\n{name}({args_formatted})"
-            except Exception:
-                return f"Running the {name} tool…"
-
-        if item_type == "web_search_call":
-            action = item.get("action") or {}
-            if action.get("type") == "search":
-                query = action.get("query")
-                return f"Searching\n{query}" if query else "Searching the web…"
-            return "Web search in progress…"
-
-        if item_type == "file_search_call":
-            return "Let me skim those files…"
-        if item_type == "image_generation_call":
-            return "Let me create that image…"
-        if item_type == "mcp_call":
-            return "Querying the MCP server…"
-        if item_type == "code_interpreter_call":
-            return "Running code interpreter…"
-
-        return None
-
-    def _parse_reasoning_summary(self, text_val: str) -> tuple[str, str]:
-        """Extract a title/content pair from reasoning summary text."""
-
-        title = "Thinking…"
-        content = text_val
-        if "**" in text_val:
-            try:
-                parts = text_val.split("**")
-                bold_segments = [parts[i] for i in range(1, len(parts), 2)]
-                if bold_segments:
-                    title = bold_segments[-1].strip()
-                    content = text_val.replace(f"**{bold_segments[-1]}**", "").strip()
+                trimmed = dict(payload)
+                if "instructions" in trimmed:
+                    trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
+                payload_str = json.dumps(trimmed, ensure_ascii=False)
+                preview, truncated = truncate_for_log(payload_str, limit=300)
+                self._logger.debug(
+                    "request.payload_preview enabled=true truncated=%s len=%d payload=%s",
+                    truncated,
+                    len(payload_str),
+                    preview,
+                )
             except Exception:
                 pass
-        return title, content
+
+        buf = bytearray()
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status >= 400:
+                await self._log_and_raise(resp, kind="streaming")
+
+            async for chunk in resp.content.iter_chunked(4096):
+                buf.extend(chunk)
+                start_idx = 0
+                while True:
+                    newline_idx = buf.find(b"\n", start_idx)
+                    if newline_idx == -1:
+                        break
+                    line = buf[start_idx:newline_idx].strip()
+                    start_idx = newline_idx + 1
+                    if not line or line.startswith(b":") or not line.startswith(b"data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == b"[DONE]":
+                        return
+                    evt: dict[str, Any] = json.loads(payload.decode("utf-8"))
+                    if typed:
+                        try:
+                            yield parse_event(evt)
+                            continue
+                        except Exception as exc:
+                            preview, truncated = truncate_for_log(json.dumps(evt, ensure_ascii=False), 400)
+                            self._logger.error(
+                                "Failed to parse streaming event type=%s truncated=%s payload=%s error=%s",
+                                evt.get("type"),
+                                truncated,
+                                preview,
+                                exc,
+                            )
+                            raise
+                    yield evt
+                if start_idx > 0:
+                    del buf[:start_idx]
+
+    async def create(
+        self,
+        request_body: dict[str, Any] | BaseModel,
+        *,
+        api_key: str,
+        base_url: str,
+    ) -> dict[str, Any]:
+        """Send a non-streaming request to ``POST /responses``."""
+
+        payload = (
+            request_body.model_dump(exclude_none=True)
+            if isinstance(request_body, BaseModel)
+            else request_body
+        )
+
+        session = await self._get_or_init_http_session()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        url = base_url.rstrip("/") + "/responses"
+        if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
+            input_items = payload.get("input") or []
+            instructions = payload.get("instructions") or ""
+            self._logger.debug(
+                "Non-streaming request prepared model=%s input_items=%d instructions_len=%d",
+                payload.get("model"),
+                len(input_items) if isinstance(input_items, list) else 0,
+                len(instructions) if isinstance(instructions, str) else 0,
+            )
+            try:
+                trimmed = dict(payload)
+                if "instructions" in trimmed:
+                    trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
+                payload_str = json.dumps(trimmed, ensure_ascii=False)
+                preview, truncated = truncate_for_log(payload_str, limit=300)
+                self._logger.debug(
+                    "request.payload_preview enabled=true truncated=%s len=%d payload=%s",
+                    truncated,
+                    len(payload_str),
+                    preview,
+                )
+            except Exception:
+                pass
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status >= 400:
+                await self._log_and_raise(resp, kind="non-streaming")
+            return await resp.json()
+
+    async def close(self) -> None:
+        """Close the underlying client session."""
+
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+    async def _get_or_init_http_session(self) -> aiohttp.ClientSession:
+        if self._session is not None and not self._session.closed:
+            self._logger.debug("Reusing existing aiohttp session")
+            return self._session
+
+        connector = aiohttp.TCPConnector(
+            limit=50,
+            limit_per_host=10,
+            keepalive_timeout=75,
+            ttl_dns_cache=300,
+        )
+        timeout = aiohttp.ClientTimeout(
+            connect=30,
+            sock_connect=30,
+            sock_read=3600,
+        )
+        self._logger.debug("Creating new aiohttp session")
+        self._session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
+            json_serialize=json.dumps,
+        )
+        return self._session
+
+    async def _log_and_raise(self, resp: aiohttp.ClientResponse, *, kind: str) -> None:
+        """Log upstream error details and re-raise."""
+
+        try:
+            text = await resp.text()
+        except Exception:  # pragma: no cover - defensive
+            text = "<unable to read error body>"
+
+        preview, _ = truncate_for_log(text, 800)
+        self._logger.error("%s request failed status=%s body=%s", kind, resp.status, preview)
+        resp.raise_for_status()
 
 
-__all__ = ["EventEmitterFn", "ResponsesEngine"]
+__all__ = ["OpenAIResponsesClient"]
 
-# === services/history.py ===
+# === application/history.py ===
 """Persistence and reconstruction services for Responses items."""
 
 from typing import Any, Callable
 import json
 
 # [build.py] internal imports removed in monolith:
-# from ..core.markers import (
+# from openai_responses_manifold.domain.markers import (
 #     contains_marker,
 #     create_marker,
 #     extract_markers,
@@ -2783,13 +2212,13 @@ import json
 #     split_text_by_markers,
 #     wrap_marker,
 # )
-# from ..core.messages import (
+# from openai_responses_manifold.domain.messages import (
 #     assistant_text_item,
 #     developer_message,
 #     normalize_user_blocks,
 #     user_blocks_to_responses_items,
 # )
-# from ..infra.openwebui_store import ItemStore
+# from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
 
 Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
 
@@ -2941,16 +2370,16 @@ class HistoryService:
 
 __all__ = ["HistoryBuilder", "HistoryPersistence", "HistoryService"]
 
-# === services/request_builder.py ===
+# === application/request_builder.py ===
 """Build ResponsesBody requests from OpenWebUI-style inputs."""
 
 from typing import Any
 
 # [build.py] internal imports removed in monolith:
-# from ..core.openai_requests import ResponseCreateParams
-# from ..infra import ItemStore
-# from ..services.history import HistoryService
-# from ..utils import get_logger
+# from openai_responses_manifold.domain.openai_requests import ResponseCreateParams
+# from openai_responses_manifold.infrastructure.logging import get_logger
+# from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
+# from .history import HistoryService
 
 logger = get_logger(__name__)
 
@@ -3039,7 +2468,7 @@ def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
 
 __all__ = ["build_responses_body"]
 
-# === services/tools.py ===
+# === application/tools.py ===
 """Tool declaration and execution helpers."""
 
 import asyncio
@@ -3049,10 +2478,10 @@ import logging
 from typing import Any
 
 # [build.py] internal imports removed in monolith:
-# from ..core.openai_requests import ResponseCreateParams
-# from ..core.errors import ToolExecutionError
-# from ..model_catalog import supports
-# from ..utils import get_logger, truncate_for_log
+# from openai_responses_manifold.domain.errors import ToolExecutionError
+# from openai_responses_manifold.domain.model_catalog import supports
+# from openai_responses_manifold.domain.openai_requests import ResponseCreateParams
+# from openai_responses_manifold.infrastructure.logging import get_logger, truncate_for_log
 
 logger = get_logger(__name__)
 
@@ -3341,13 +2770,13 @@ __all__ = [
     "resolve_tools",
 ]
 
-# === services/tasks.py ===
+# === application/tasks.py ===
 """Helpers for running non-streamed task models."""
 
 from typing import Any
 
 # [build.py] internal imports removed in monolith:
-# from ..infra.openai_client import OpenAIResponsesClient
+# from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
 
 
 async def run_task_model(
@@ -3382,7 +2811,7 @@ async def run_task_model(
 
 __all__ = ["run_task_model"]
 
-# === services/routing.py ===
+# === application/routing.py ===
 """Helper model routing for auto variants."""
 
 import json
@@ -3390,9 +2819,10 @@ import logging
 from typing import Any
 
 # [build.py] internal imports removed in monolith:
-# from ..core.openai_requests import ResponseCreateParams
-# from ..utils import EventEmitter, EventEmitterFn, get_logger, truncate_for_log
-# from ..infra.openai_client import OpenAIResponsesClient
+# from openai_responses_manifold.domain.openai_requests import ResponseCreateParams
+# from openai_responses_manifold.infrastructure.logging import get_logger, truncate_for_log
+# from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
+# from openai_responses_manifold.infrastructure.openwebui_events import EventEmitter, EventEmitterFn
 
 logger = get_logger(__name__)
 
@@ -3620,302 +3050,896 @@ Respond only with a JSON object containing your model selection and a concise ex
 
 __all__ = ["route_auto_model"]
 
-# === infra/openwebui_store.py ===
-"""Persistence helpers for storing Responses items in OpenWebUI."""
+# === application/engine.py ===
+"""Streaming orchestration and tool loop for the Responses manifold.
 
-import datetime
-import secrets
-from typing import Any
+The flow is deliberately linear and explicit:
+1) Stream a response from OpenAI Responses API.
+2) Emit deltas, statuses, and persist structured items as they arrive.
+3) If the model requested tool calls, run local tools, append outputs, and loop.
+"""
+
+import asyncio
+import json
+import logging
+import random
+from dataclasses import dataclass, field
+from time import perf_counter
+from typing import Any, Awaitable, Callable, Literal
 
 from open_webui.models.chats import Chats
 
-_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-
-
-class ItemStore:
-    """Adapter around ``open_webui.models.chats.Chats``."""
-
-    def __init__(self, *, store_key: str = "openai_responses_pipe") -> None:
-        self.store_key = store_key
-
-    def save_items(
-        self,
-        chat_id: str,
-        message_id: str,
-        items: list[dict[str, Any]],
-        model_id: str,
-    ) -> list[str]:
-        """Persist items and return the generated ULIDs."""
-
-        if not items:
-            return []
-
-        chat_model = Chats.get_chat_by_id(chat_id)
-        if not chat_model:
-            return []
-
-        pipe_root = chat_model.chat.setdefault(self.store_key, {"__v": 3})
-        items_store = pipe_root.setdefault("items", {})
-        messages_index = pipe_root.setdefault("messages_index", {})
-        message_bucket = messages_index.setdefault(
-            message_id,
-            {"role": "assistant", "done": True, "item_ids": []},
-        )
-
-        now = int(datetime.datetime.now(datetime.UTC).timestamp())
-        stored_ids: list[str] = []
-        for payload in items:
-            item_id = _generate_item_id()
-            items_store[item_id] = {
-                "model": model_id,
-                "created_at": now,
-                "payload": payload,
-                "message_id": message_id,
-            }
-            message_bucket["item_ids"].append(item_id)
-            stored_ids.append(item_id)
-
-        Chats.update_chat_by_id(chat_id, chat_model.chat)
-        return stored_ids
-
-    def load_items(
-        self,
-        chat_id: str,
-        item_ids: list[str],
-        *,
-        model_id: str | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        """Fetch persisted items by ULID, optionally filtered by model id."""
-
-        if not item_ids:
-            return {}
-        chat_model = Chats.get_chat_by_id(chat_id)
-        if not chat_model:
-            return {}
-
-        items_store = chat_model.chat.get(self.store_key, {}).get("items", {})
-        lookup: dict[str, dict[str, Any]] = {}
-        for item_id in item_ids:
-            item = items_store.get(item_id)
-            if not item:
-                continue
-            if model_id and item.get("model") != model_id:
-                continue
-            payload = item.get("payload")
-            if isinstance(payload, dict):
-                lookup[item_id] = payload
-        return lookup
-
-
-def _generate_item_id(length: int = 16) -> str:
-    return "".join(secrets.choice(_CROCKFORD) for _ in range(length))
-
-
-__all__ = ["ItemStore"]
-
-# === infra/openai_client.py ===
-"""aiohttp-backed client for the OpenAI Responses API."""
-
-import json
-from collections.abc import AsyncIterator
-from typing import Any
-
-import aiohttp
-import logging
-from pydantic import BaseModel
-
 # [build.py] internal imports removed in monolith:
-# from ..core.openai_response_events import StreamEvent, parse_event
-# from ..utils import get_logger, truncate_for_log
+# from openai_responses_manifold.domain.errors import ToolExecutionError
+# from openai_responses_manifold.domain.model_catalog import supports
+# from openai_responses_manifold.domain.openai_events import (
+#     ErrorEvent,
+#     ResponseCompletedEvent,
+#     ResponseCreatedEvent,
+#     ResponseFailedEvent,
+#     ResponseIncompleteEvent,
+#     ResponseInProgressEvent,
+#     ResponseOutputItemAddedEvent,
+#     ResponseOutputItemDoneEvent,
+#     ResponseOutputTextDeltaEvent,
+#     ResponseOutputTextDoneEvent,
+#     ResponseQueuedEvent,
+#     ResponseReasoningSummaryTextDoneEvent,
+# )
+# from openai_responses_manifold.domain.openai_requests import ResponseCreateParams
+# from openai_responses_manifold.infrastructure.logging import (
+#     OWUI_SESSION_ID,
+#     clear_session_logs,
+#     get_logger,
+#     get_session_logs,
+#     truncate_for_log,
+# )
+# from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
+# from openai_responses_manifold.infrastructure.openwebui_events import EventEmitter, EventEmitterFn
+# from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
+# from .history import HistoryPersistence
+# from .tasks import run_task_model
+# from .tools import execute_tool_calls
 
 
-class OpenAIResponsesClient:
-    """Thin wrapper around ``aiohttp`` with SDK-like method names."""
+@dataclass
+class _StreamState:
+    """Streaming scratch space for a single turn."""
 
-    def __init__(self) -> None:
-        self._session: aiohttp.ClientSession | None = None
-        self._logger = get_logger(__name__)
+    response_text: str = ""
+    usage_summary: dict[str, Any] | None = None
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls_executed: int = 0
+    completed_response: dict[str, Any] | None = None
+    error_message: str | None = None
+    has_error: bool = False
+    last_tool_result: str | None = None
+    has_sent_status: bool = False
+    thinking_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
 
-    async def stream(
+    def reset_for_next_response(self) -> None:
+        self.completed_response = None
+        self.usage_summary = None
+        self.has_sent_status = False
+
+
+class _StreamSession:
+    """Consumes stream events while coordinating a single turn."""
+
+    def __init__(
         self,
-        request_body: dict[str, Any] | BaseModel,
+        engine: ResponsesEngine,
+        body: ResponseCreateParams,
+        valves: Any,
+        metadata: dict[str, Any],
+        event_emitter: EventEmitterFn,
         *,
-        api_key: str,
-        base_url: str,
-        typed: bool = False,
-    ) -> AsyncIterator[StreamEvent | dict[str, Any]]:
-        """Yield SSE events from ``POST /responses``.
+        openwebui_tools: dict[str, dict[str, Any]] | None,
+    ) -> None:
+        self.engine = engine
+        self.body = body
+        self.valves = valves
+        self.metadata = metadata
+        self.emitter = EventEmitter(event_emitter)
+        self.openwebui_tools = openwebui_tools
+        self.state = _StreamState()
+        self.debug_enabled = engine.logger.isEnabledFor(logging.DEBUG)
+        self.state.thinking_tasks = self.engine._schedule_reasoning_statuses(body, self.emit_status)
 
-        Set ``typed=True`` to parse each payload into a structured ``StreamEvent``.
-        """
-
-        payload = (
-            request_body.model_dump(exclude_none=True)
-            if isinstance(request_body, BaseModel)
-            else request_body
-        )
-
-        session = await self._get_or_init_http_session()
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
-        url = base_url.rstrip("/") + "/responses"
-        if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
-            input_items = payload.get("input") or []
-            instructions = payload.get("instructions") or ""
-            self._logger.debug(
-                "Streaming request prepared model=%s input_items=%d instructions_len=%d",
-                payload.get("model"),
-                len(input_items) if isinstance(input_items, list) else 0,
-                len(instructions) if isinstance(instructions, str) else 0,
-            )
-            try:
-                trimmed = dict(payload)
-                if "instructions" in trimmed:
-                    trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
-                payload_str = json.dumps(trimmed, ensure_ascii=False)
-                preview, truncated = truncate_for_log(payload_str, limit=300)
-                self._logger.debug(
-                    "request.payload_preview enabled=true truncated=%s len=%d payload=%s",
-                    truncated,
-                    len(payload_str),
-                    preview,
-                )
-            except Exception:
-                pass
-
-        buf = bytearray()
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status >= 400:
-                await self._log_and_raise(resp, kind="streaming")
-
-            async for chunk in resp.content.iter_chunked(4096):
-                buf.extend(chunk)
-                start_idx = 0
-                while True:
-                    newline_idx = buf.find(b"\n", start_idx)
-                    if newline_idx == -1:
-                        break
-                    line = buf[start_idx:newline_idx].strip()
-                    start_idx = newline_idx + 1
-                    if not line or line.startswith(b":") or not line.startswith(b"data:"):
-                        continue
-                    payload = line[5:].strip()
-                    if payload == b"[DONE]":
-                        return
-                    evt: dict[str, Any] = json.loads(payload.decode("utf-8"))
-                    if typed:
-                        try:
-                            yield parse_event(evt)
-                            continue
-                        except Exception as exc:
-                            preview, truncated = truncate_for_log(json.dumps(evt, ensure_ascii=False), 400)
-                            self._logger.error(
-                                "Failed to parse streaming event type=%s truncated=%s payload=%s error=%s",
-                                evt.get("type"),
-                                truncated,
-                                preview,
-                                exc,
-                            )
-                            raise
-                    yield evt
-                if start_idx > 0:
-                    del buf[:start_idx]
-
-    async def create(
+    async def emit_status(
         self,
-        request_body: dict[str, Any] | BaseModel,
+        description: str,
         *,
-        api_key: str,
-        base_url: str,
-    ) -> dict[str, Any]:
-        """Send a non-streaming request to ``POST /responses``."""
+        done: bool = False,
+        hidden: bool = False,
+        require_previous: bool = False,
+    ) -> None:
+        if require_previous and not self.state.has_sent_status:
+            return
+        self.state.has_sent_status = True
+        await self.emitter.status(description, done=done, hidden=hidden)
 
-        payload = (
-            request_body.model_dump(exclude_none=True)
-            if isinstance(request_body, BaseModel)
-            else request_body
-        )
+    async def handle_event(self, event: Any) -> bool:
+        """Process a single stream event. Returns True when the stream should stop."""
 
-        session = await self._get_or_init_http_session()
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        url = base_url.rstrip("/") + "/responses"
-        if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
-            input_items = payload.get("input") or []
-            instructions = payload.get("instructions") or ""
-            self._logger.debug(
-                "Non-streaming request prepared model=%s input_items=%d instructions_len=%d",
-                payload.get("model"),
-                len(input_items) if isinstance(input_items, list) else 0,
-                len(instructions) if isinstance(instructions, str) else 0,
-            )
-            try:
-                trimmed = dict(payload)
-                if "instructions" in trimmed:
-                    trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
-                payload_str = json.dumps(trimmed, ensure_ascii=False)
-                preview, truncated = truncate_for_log(payload_str, limit=300)
-                self._logger.debug(
-                    "request.payload_preview enabled=true truncated=%s len=%d payload=%s",
-                    truncated,
-                    len(payload_str),
-                    preview,
+        if isinstance(event, ResponseOutputTextDeltaEvent):
+            await self._handle_text_delta(event)
+            return False
+
+        if isinstance(event, ResponseOutputItemAddedEvent):
+            await self._handle_item_added(event)
+            return False
+
+        if isinstance(event, ResponseOutputItemDoneEvent):
+            await self._handle_item_done(event)
+            return False
+
+        if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
+            await self._handle_reasoning_summary(event)
+            return False
+
+        if isinstance(event, ResponseOutputTextDoneEvent):
+            await self._handle_text_done(event)
+            return False
+
+        if isinstance(event, ResponseCompletedEvent):
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            self.state.completed_response = event.response
+            self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
+            if self.debug_enabled:
+                usage_keys = sorted((self.state.usage_summary or {}).keys())
+                self.engine.logger.debug("event=response.completed usage_keys=%s", usage_keys)
+            return True
+
+        if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            self.state.has_error = True
+            if isinstance(event, ErrorEvent):
+                self.state.error_message = event.message
+            else:
+                response_payload = event.response
+                self.state.error_message = (response_payload.get("error") or {}).get(
+                    "message", "OpenAI returned an error."
                 )
-            except Exception:
-                pass
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status >= 400:
-                await self._log_and_raise(resp, kind="non-streaming")
-            return await resp.json()
+            self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
+            await self.engine._handle_stream_error(self.emitter, self.state.error_message or "")
+            return True
 
-    async def close(self) -> None:
-        """Close the underlying client session."""
+        if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
+            if self.debug_enabled:
+                self.engine.logger.debug(
+                    "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
+                )
+            return False
 
-        if self._session and not self._session.closed:
-            await self._session.close()
+        return False
 
-    async def _get_or_init_http_session(self) -> aiohttp.ClientSession:
-        if self._session is not None and not self._session.closed:
-            self._logger.debug("Reusing existing aiohttp session")
-            return self._session
+    async def collect_output_items(self) -> list[dict[str, Any]]:
+        if not self.state.completed_response:
+            return []
 
-        connector = aiohttp.TCPConnector(
-            limit=50,
-            limit_per_host=10,
-            keepalive_timeout=75,
-            ttl_dns_cache=300,
+        output_items = self.engine._sanitize_output_items(
+            (self.state.completed_response or {}).get("output") or [], store=self.body.store
         )
-        timeout = aiohttp.ClientTimeout(
-            connect=30,
-            sock_connect=30,
-            sock_read=3600,
-        )
-        self._logger.debug("Creating new aiohttp session")
-        self._session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            json_serialize=json.dumps,
-        )
-        return self._session
 
-    async def _log_and_raise(self, resp: aiohttp.ClientResponse, *, kind: str) -> None:
-        """Log upstream error details and re-raise."""
+        if output_items:
+            if isinstance(self.body.input, list):
+                self.body.input.extend(output_items)
+            else:
+                self.body.input = output_items
+
+        return output_items
+
+    def find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        call_items = output_items or (self.state.completed_response or {}).get("output", [])
+        tool_calls = [item for item in call_items if item.get("type") == "function_call"]
+        if tool_calls:
+            self.state.tool_calls_executed += len(tool_calls)
+        return tool_calls
+
+    async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not tool_calls:
+            return []
+
+        if not self.openwebui_tools:
+            self.engine.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
+            await self.emit_status("Tool execution skipped: no tool registry available.")
+            return []
 
         try:
-            text = await resp.text()
-        except Exception:  # pragma: no cover - defensive
-            text = "<unable to read error body>"
+            function_outputs = await execute_tool_calls(tool_calls, self.openwebui_tools)
+        except ToolExecutionError as exc:
+            self.engine.logger.warning("Skipping malformed tool arguments: %s", exc)
+            await self.emit_status("Skipping malformed tool arguments.")
+            return []
 
-        preview, _ = truncate_for_log(text, 800)
-        self._logger.error("%s request failed status=%s body=%s", kind, resp.status, preview)
-        resp.raise_for_status()
+        return function_outputs
+
+    async def append_tool_outputs(self, function_outputs: list[dict[str, Any]]) -> bool:
+        if not function_outputs:
+            return False
+
+        self.state.last_tool_result = str(function_outputs[-1].get("output", ""))
+        if getattr(self.valves, "PERSIST_TOOL_RESULTS", True):
+            await self._persist_items(function_outputs)
+
+        for output in function_outputs:
+            output_str = output.get("output", "")
+            if output_str:
+                await self.emit_status(f"Received tool result\n{output_str}")
+
+        if isinstance(self.body.input, list):
+            self.body.input.extend(function_outputs)
+        else:
+            self.body.input = list(function_outputs)
+        return True
+
+    async def _handle_text_delta(self, event: ResponseOutputTextDeltaEvent) -> None:
+        delta_val = event.delta
+        if delta_val:
+            self.state.response_text += delta_val
+            await self.emitter.delta(delta_val)
+
+    async def _handle_item_added(self, event: ResponseOutputItemAddedEvent) -> None:
+        item = event.item or {}
+        if item.get("type") == "message" and item.get("status") == "in_progress":
+            await self.emit_status("Responding to the user…", require_previous=True)
+
+    async def _handle_item_done(self, event: ResponseOutputItemDoneEvent) -> None:
+        item = event.item or {}
+        item_type = item.get("type") or ""
+
+        should_persist = False
+        if item_type == "reasoning":
+            should_persist = getattr(self.valves, "PERSIST_REASONING_TOKENS", "disabled") == "conversation"
+        elif item_type in ("message", "web_search_call"):
+            should_persist = False
+        else:
+            should_persist = getattr(self.valves, "PERSIST_TOOL_RESULTS", True)
+
+        if should_persist:
+            await self._persist_items([item])
+
+        status_desc = self.engine._status_from_output_item(item)
+        if status_desc:
+            await self.emit_status(status_desc)
+
+    async def _handle_reasoning_summary(self, event: ResponseReasoningSummaryTextDoneEvent) -> None:
+        text_val = (event.text or "").strip()
+        if text_val:
+            title, content = self.engine._parse_reasoning_summary(text_val)
+            await self.engine._cancel_tasks(self.state.thinking_tasks)
+            await self.emit_status(f"{title}\n{content}")
+
+    async def _handle_text_done(self, event: ResponseOutputTextDoneEvent) -> None:
+        text_val = event.text
+        if self.debug_enabled:
+            self.engine.logger.debug("event=response.output_text.done text_len=%d", len(text_val or ""))
+        await self.engine._cancel_tasks(self.state.thinking_tasks)
+        if text_val and not self.state.response_text:
+            self.state.response_text = text_val
+        await self.emitter.replace(self.state.response_text or text_val)
+
+    async def _persist_items(self, items: list[dict[str, Any]]) -> None:
+        chat_id = self.metadata.get("chat_id")
+        message_id = self.metadata.get("message_id")
+        model_id = (self.metadata.get("model") or {}).get("id")
+        if chat_id and message_id and model_id:
+            try:
+                hidden_markers = self.engine.history_persistence.persist_items_for_message(
+                    chat_id,
+                    message_id,
+                    items,
+                    model_id=model_id,
+                )
+            except Exception as exc:  # pragma: no cover
+                self.engine.logger.warning("Failed to persist output items: %s", exc)
+                hidden_markers = ""
+            if hidden_markers:
+                self.state.response_text += hidden_markers
+                await self.emitter.replace(self.state.response_text)
+
+class ResponsesEngine:
+    """Encapsulates streaming and tool orchestration."""
+
+    def __init__(
+        self,
+        *,
+        client: OpenAIResponsesClient | None = None,
+        item_store: ItemStore | None = None,
+        history_persistence: HistoryPersistence | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.client = client or OpenAIResponsesClient()
+        self.store = item_store or ItemStore()
+        self.history_persistence = history_persistence or HistoryPersistence(self.store)
+        self.logger = logger or get_logger(__name__)
+
+    async def run_streaming_turn(
+        self,
+        body: ResponseCreateParams,
+        *,
+        valves: Any,
+        metadata: dict[str, Any],
+        event_emitter: EventEmitterFn,
+        openwebui_tools: dict[str, dict[str, Any]] | None = None,
+    ) -> str:
+        session = _StreamSession(
+            self,
+            body,
+            valves,
+            metadata,
+            event_emitter,
+            openwebui_tools=openwebui_tools,
+        )
+
+        model_router_result = body.model_router_result
+        if model_router_result:
+            body.model_router_result = None
+            explanation = model_router_result.get('explanation', '')
+            await session.emit_status(
+                description=(
+                    f"Routing to {model_router_result.get('model')} "
+                    f"(effort: {model_router_result.get('reasoning_effort')})\n"
+                    f"Explanation: {explanation}"
+                )
+            )
+
+        self.logger.info('turn.start model=%s task=chat', body.model)
+        start_time = perf_counter()
+        function_calls_supported = supports('function_calling', body.model)
+
+        try:
+            max_loops = getattr(valves, 'MAX_FUNCTION_CALL_LOOPS', 10)
+            for _ in range(max_loops):
+                session.state.reset_for_next_response()
+
+                await self._stream_response(session, body, valves)
+
+                if session.state.has_error or not session.state.completed_response:
+                    break
+
+                if not function_calls_supported:
+                    break
+
+                response_output_items = await session.collect_output_items()
+                tool_calls = session.find_tool_calls(response_output_items)
+                if not tool_calls:
+                    break
+
+                function_outputs = await session.execute_tool_calls(tool_calls)
+                if not function_outputs:
+                    break
+
+                if not await session.append_tool_outputs(function_outputs):
+                    break
+
+            if session.debug_enabled and session.state.completed_response:
+                try:
+                    payload_str = json.dumps(session.state.completed_response, ensure_ascii=False)
+                    preview, truncated = truncate_for_log(payload_str, limit=1000)
+                    self.logger.debug(
+                        'response.payload_preview enabled=true truncated=%s len=%d payload=%s',
+                        truncated,
+                        len(payload_str),
+                        preview,
+                    )
+                except Exception:
+                    pass
+
+            usage_summary = session.state.usage_summary or {}
+            tokens_in = usage_summary.get('input_tokens')
+            tokens_out = usage_summary.get('output_tokens')
+            respond_time = perf_counter() - start_time
+            summary_kwargs = {
+                'status': 'error' if session.state.has_error else 'ok',
+                'model': body.model,
+                'duration_sec': respond_time,
+                'tool_calls': session.state.tool_calls_executed,
+                'citations': len(session.state.citations),
+                'input_tokens': tokens_in,
+                'output_tokens': tokens_out,
+            }
+            if session.state.error_message:
+                summary_kwargs['last_error'] = session.state.error_message
+            self.logger.info(
+                'Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f '
+                'tool_calls=%(tool_calls)d citations=%(citations)d '
+                'input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s'
+                + (' last_error=%(last_error)s' if session.state.error_message else ''),
+                summary_kwargs,
+            )
+
+        except Exception as exc:  # pragma: no cover
+            await self._cancel_tasks(session.state.thinking_tasks)
+            session.state.has_error = True
+            session.state.error_message = str(exc)
+            self.logger.error('turn.error type=%s message=%s', type(exc).__name__, session.state.error_message)
+            await self._handle_stream_error(session.emitter, session.state.error_message)
+
+        finally:
+            await self._emit_log_citation(session.emitter, session.state.citations)
+            if not session.state.response_text and not session.state.has_error and session.state.last_tool_result:
+                session.state.response_text = session.state.last_tool_result
+            usage_for_completion = (
+                session.state.usage_summary
+                or self._extract_usage_from_final_response(session.state.completed_response or {})
+                or None
+            )
+            await session.emit_status('Done', done=True, hidden=False, require_previous=True)
+            await session.emitter.chat_completion(
+                {'content': session.state.response_text, 'usage': usage_for_completion, 'done': True}
+            )
+            chat_id = metadata.get('chat_id')
+            message_id = metadata.get('message_id')
+            if chat_id and message_id and session.state.citations:
+                Chats.upsert_message_to_chat_by_id_and_message_id(
+                    chat_id,
+                    message_id,
+                    {'id': message_id, 'sources': session.state.citations},
+                )
+
+        return session.state.response_text
+
+    async def run_task_model(
+        self,
+        body: dict[str, Any],
+        valves: Any,
+    ) -> str:
+        return await run_task_model(self.client, body, valves)
+
+    async def emit_notification(
+        self,
+        event_emitter: EventEmitterFn | None,
+        content: str,
+        *,
+        level: Literal["info", "success", "warning", "error"] = "info",
+    ) -> None:
+        await EventEmitter(event_emitter).notification(content, level=level)
+
+    async def emit_error(
+        self,
+        event_emitter: EventEmitterFn | None,
+        error_obj: Exception | str,
+        *,
+        show_error_message: bool = True,
+        done: bool = False,
+    ) -> None:
+        if not show_error_message:
+            return
+        await EventEmitter(event_emitter).chat_completion(
+            {"error": {"message": str(error_obj)}, "done": done}
+        )
+
+    def _schedule_reasoning_statuses(
+        self, body: ResponseCreateParams, status_fn: Callable[[str], Awaitable[Any]]
+    ) -> list[asyncio.Task[Any]]:
+        if not supports("reasoning", body.model):
+            return []
+
+        async def _later(delay: float, msg: str) -> None:
+            await asyncio.sleep(delay)
+            await status_fn(msg)
+
+        tasks: list[asyncio.Task[Any]] = []
+        for delay, msg in [
+            (0, "Thinking…"),
+            (1.5, "Reading the user's question…"),
+            (4.0, "Gathering my thoughts…"),
+            (6.0, "Exploring possible responses…"),
+            (7.0, "Building a plan…"),
+        ]:
+            tasks.append(asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg)))
+        return tasks
+
+    async def _cancel_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
+        if not tasks:
+            return
+        to_cancel = list(tasks)
+        tasks.clear()
+        for task in to_cancel:
+            task.cancel()
+        await asyncio.gather(*to_cancel, return_exceptions=True)
+
+    async def _emit_log_citation(
+        self,
+        emitter: EventEmitter,
+        emitted_citations: list[dict[str, Any]],
+    ) -> None:
+        session_id = OWUI_SESSION_ID.get()
+        if not session_id:
+            return
+        logs = get_session_logs(session_id)
+        if not logs:
+            return
+        log_text = "\n".join(logs)
+        truncated = len(log_text) > 4000
+        self.logger.debug("Emitting log citation lines=%d truncated=%s", len(logs), truncated)
+        await emitter.citation(
+            {
+                "document": [log_text],
+                "metadata": [{"source": "Logs"}],
+                "source": {"name": "Logs"},
+            }
+        )
+        snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
+        emitted_citations.append(
+            {
+                "provider": "openai:logs",
+                "id": str(len(emitted_citations) + 1),
+                "title": "Logs",
+                "snippet": snippet,
+                "metadata": {
+                    "source": "Logs",
+                    "total_lines": len(logs),
+                    "truncated": len(snippet) < len(log_text),
+                },
+            }
+        )
+        clear_session_logs(session_id)
+
+    def _sanitize_output_items(self, items: list[dict[str, Any]], *, store: bool | None) -> list[dict[str, Any]]:
+        """Strip server-side IDs when store=False to avoid lookups on replay."""
+
+        if store is not False:
+            return [item for item in items if isinstance(item, dict)]
+
+        cleaned: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, dict):
+                clone = dict(item)
+                clone.pop("id", None)
+                cleaned.append(clone)
+        return cleaned
+
+    def _extract_usage_from_final_response(self, final_response: dict[str, Any]) -> dict[str, Any]:
+        if "usage" in final_response:
+            usage = final_response.get("usage")
+            return usage if isinstance(usage, dict) else {}
+
+        response_payload = final_response.get("response")
+        if isinstance(response_payload, dict):
+            usage = response_payload.get("usage")
+            if isinstance(usage, dict):
+                return usage
+
+        return {}
+
+    async def _handle_stream_error(
+        self,
+        emitter: EventEmitter | None,
+        message: str,
+    ) -> None:
+        self.logger.error("Streaming error: %s", message)
+        if emitter:
+            await emitter.chat_completion({"error": {"message": message}, "done": False})
+
+    async def _stream_response(
+        self,
+        session: _StreamSession,
+        body: ResponseCreateParams,
+        valves: Any,
+    ) -> None:
+        async for event in self.client.stream(
+            body.model_dump(exclude_none=True),
+            api_key=valves.API_KEY,
+            base_url=valves.BASE_URL,
+            typed=True,
+        ):
+            if await session.handle_event(event):
+                break
+
+    def _status_from_output_item(self, item: dict[str, Any]) -> str | None:
+        """Return a user-facing status string for a completed output item."""
+
+        item_type = item.get("type")
+        if not item_type:
+            return None
+
+        if item_type == "function_call":
+            name = item.get("name", "tool")
+            try:
+                arguments = json.loads(item.get("arguments") or "{}")
+                args_formatted = ", ".join(f"{k}={json.dumps(v)}" for k, v in arguments.items())
+                return f"Running the {name} tool…\n{name}({args_formatted})"
+            except Exception:
+                return f"Running the {name} tool…"
+
+        if item_type == "web_search_call":
+            action = item.get("action") or {}
+            if action.get("type") == "search":
+                query = action.get("query")
+                return f"Searching\n{query}" if query else "Searching the web…"
+            return "Web search in progress…"
+
+        if item_type == "file_search_call":
+            return "Let me skim those files…"
+        if item_type == "image_generation_call":
+            return "Let me create that image…"
+        if item_type == "mcp_call":
+            return "Querying the MCP server…"
+        if item_type == "code_interpreter_call":
+            return "Running code interpreter…"
+
+        return None
+
+    def _parse_reasoning_summary(self, text_val: str) -> tuple[str, str]:
+        """Extract a title/content pair from reasoning summary text."""
+
+        title = "Thinking…"
+        content = text_val
+        if "**" in text_val:
+            try:
+                parts = text_val.split("**")
+                bold_segments = [parts[i] for i in range(1, len(parts), 2)]
+                if bold_segments:
+                    title = bold_segments[-1].strip()
+                    content = text_val.replace(f"**{bold_segments[-1]}**", "").strip()
+            except Exception:
+                pass
+        return title, content
 
 
-__all__ = ["OpenAIResponsesClient"]
+__all__ = ["EventEmitterFn", "ResponsesEngine"]
+
+# === interface/openwebui_pipe.py ===
+"""Open WebUI pipe implementation that delegates to the Responses engine."""
+
+import logging
+from collections.abc import Awaitable
+from typing import Any
+
+from open_webui.models.models import ModelForm, Models
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.config.settings import PipeValves, UserValves
+# from openai_responses_manifold.domain.model_catalog import supports
+# from openai_responses_manifold.domain.openai_requests import CompletionCreateParams
+# from openai_responses_manifold.application.engine import ResponsesEngine
+# from openai_responses_manifold.application.request_builder import build_responses_body
+# from openai_responses_manifold.application.routing import route_auto_model
+# from openai_responses_manifold.application.tools import build_tools
+# from openai_responses_manifold.infrastructure.logging import get_logger, logging_context
+# from openai_responses_manifold.infrastructure.openai_client import OpenAIResponsesClient
+# from openai_responses_manifold.infrastructure.openwebui_events import (
+#     EventCall,
+#     EventCallerFn,
+#     EventEmitterFn,
+# )
+# from openai_responses_manifold.infrastructure.openwebui_store import ItemStore
+
+
+class Pipe:
+    class Valves(PipeValves):
+        """Admin-level valve configuration."""
+
+    class UserValves(UserValves):
+        """Per-user valve overrides."""
+
+    def __init__(self) -> None:
+        self.type = "manifold"
+        self.id = "openai_responses"
+        self.valves = self.Valves()
+        self.logger = get_logger(__name__)
+        self.store = ItemStore()
+        self.engine = ResponsesEngine(
+            client=OpenAIResponsesClient(),
+            item_store=self.store,
+            logger=self.logger,
+        )
+
+    async def pipes(self) -> list[dict[str, str]]:
+        model_ids = [
+            model_id.strip() for model_id in self.valves.MODEL_ID.split(",") if model_id.strip()
+        ]
+        return [{"id": model_id, "name": f"OpenAI: {model_id}"} for model_id in model_ids]
+
+    async def pipe(
+        self,
+        body: dict[str, Any],
+        __user__: dict[str, Any],
+        __event_emitter__: EventEmitterFn,
+        __event_call__: EventCallerFn | None,
+        __metadata__: dict[str, Any],
+        __tools__: list[dict[str, Any]] | dict[str, Any] | None,
+        __task__: dict[str, Any] | None = None,
+        __task_body__: dict[str, Any] | None = None,
+    ) -> Awaitable[str] | str | None:
+        valves = self._merge_valves(
+            self.valves, self.UserValves.model_validate(__user__.get("valves", {}))
+        )
+        openwebui_model_id = __metadata__.get("model", {}).get("id", "")
+        user_identifier = __user__[valves.PROMPT_CACHE_KEY]
+        features = __metadata__.get("features", {}).get("openai_responses", {})
+
+        with logging_context(
+            __metadata__.get("session_id"),
+            getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
+            chat_id=__metadata__.get("chat_id"),
+            message_id=__metadata__.get("message_id"),
+            user_id=__metadata__.get("user_id"),
+        ):
+            await self._maybe_unclamp_status(__event_call__)
+
+            completions_body = CompletionCreateParams.model_validate(body)
+            responses_body = await build_responses_body(
+                completions_body.model_dump(),
+                valves=valves,
+                metadata=__metadata__,
+                user_identifier=user_identifier,
+                item_store=self.store,
+            )
+            provided_tools = __tools__ if __tools__ is not None else body.get("tools")
+            extra_tools = getattr(completions_body, "extra_tools", None) or body.get("extra_tools")
+            tool_specs = build_tools(
+                responses_body,
+                valves,
+                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
+                features=features,
+                extra_tools=extra_tools if isinstance(extra_tools, list) else None,
+            )
+            if tool_specs:
+                responses_body.tools = tool_specs
+
+            if __task__:
+                self.logger.info("Detected task model: %s", __task__)
+                return await self.engine.run_task_model(responses_body.model_dump(), valves)
+
+            responses_body = await self._ensure_native_function_calling_if_needed(
+                responses_body, openwebui_model_id, __event_emitter__
+            )
+            responses_body = await self._ensure_routed_auto_model(
+                responses_body, valves, openwebui_model_id, __event_emitter__
+            )
+            self._apply_reasoning_options(responses_body, valves)
+            self._apply_parallel_tool_policy(responses_body, valves)
+
+            return await self.engine.run_streaming_turn(
+                responses_body,
+                valves=valves,
+                metadata=__metadata__,
+                event_emitter=__event_emitter__,
+                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
+            )
+
+    def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
+        merged = pipe_valves.model_copy(deep=True)
+        if user_valves.LOG_LEVEL != "INHERIT":
+            merged.LOG_LEVEL = user_valves.LOG_LEVEL
+        return merged
+
+    @staticmethod
+    def _status_unclamp_script() -> str:
+        return """
+        (() => {
+        if (document.getElementById("owui-status-unclamp")) return "ok";
+        const style = document.createElement("style");
+        style.id = "owui-status-unclamp";
+        style.textContent = `
+            .status-description .line-clamp-1,
+            .status-description .text-base.line-clamp-1,
+            .status-description .text-gray-500.text-base.line-clamp-1 {
+            display: block !important;
+            overflow: visible !important;
+            -webkit-line-clamp: unset !important;
+            -webkit-box-orient: initial !important;
+            white-space: pre-wrap !important;
+            word-break: break-word;
+            }
+
+            .status-description .text-base::first-line,
+            .status-description .text-gray-500.text-base::first-line {
+            font-weight: 500 !important;
+            }
+        `;
+
+        document.head.appendChild(style);
+        return "ok";
+        })();
+        """
+
+    async def _maybe_unclamp_status(self, event_call: EventCallerFn | None) -> None:
+        if not event_call:
+            return
+        # Temporary UI hack to unclamp status text so reasoning tokens can be shown multi-line.
+        call = EventCall(event_call)
+        await call.execute(self._status_unclamp_script())
+
+    async def _apply_model_policies(
+        self,
+        responses_body: Any,
+        valves: PipeValves,
+        openwebui_model_id: str,
+        event_emitter: EventEmitterFn,
+    ):
+        await self._ensure_native_function_calling_if_needed(
+            responses_body, openwebui_model_id, event_emitter
+        )
+        responses_body = await self._ensure_routed_auto_model(
+            responses_body, valves, openwebui_model_id, event_emitter
+        )
+        self._apply_reasoning_options(responses_body, valves)
+        self._apply_parallel_tool_policy(responses_body, valves)
+        return responses_body
+
+    async def _ensure_native_function_calling_if_needed(
+        self,
+        responses_body: Any,
+        openwebui_model_id: str,
+        event_emitter: EventEmitterFn,
+    ) -> Any:
+        tools = responses_body.tools or []
+        if not (tools and supports("function_calling", responses_body.model)):
+            return responses_body
+        model = Models.get_model_by_id(openwebui_model_id)
+        if not model:
+            return responses_body
+        params = dict(model.params or {})
+        if params.get("function_calling") == "native":
+            return responses_body
+
+        await self.engine.emit_notification(
+            event_emitter,
+            content=(
+                f"Enabling native function calling for model: {openwebui_model_id}. "
+                "Please re-run your query."
+            ),
+            level="info",
+        )
+        params["function_calling"] = "native"
+        form_data = model.model_dump()
+        form_data["params"] = params
+        Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
+        return responses_body
+
+    async def _ensure_routed_auto_model(
+        self,
+        responses_body: Any,
+        valves: PipeValves,
+        openwebui_model_id: str,
+        event_emitter: EventEmitterFn,
+    ):
+        if openwebui_model_id.endswith(".gpt-5-auto-dev"):
+            return await route_auto_model(
+                self.engine.client,
+                router_model="gpt-4.1-mini",
+                responses_body=responses_body,
+                valves=valves,
+                tools=responses_body.tools or [],
+                event_emitter=event_emitter,
+            )
+
+        if openwebui_model_id.endswith(".gpt-5-auto"):
+            responses_body.model = "gpt-5-chat-latest"
+            await self.engine.emit_notification(
+                event_emitter,
+                content="Model router coming soon — using gpt-5-chat-latest (GPT-5 Fast).",
+                level="warning",
+            )
+        return responses_body
+
+    def _apply_reasoning_options(self, responses_body: Any, valves: PipeValves) -> None:
+        if supports("reasoning_summary", responses_body.model) and valves.REASONING_SUMMARY != "disabled":
+            reasoning_params = dict(responses_body.reasoning or {})
+            reasoning_params["summary"] = valves.REASONING_SUMMARY
+            responses_body.reasoning = reasoning_params
+
+        if (
+            supports("reasoning", responses_body.model)
+            and valves.PERSIST_REASONING_TOKENS != "disabled"
+            and responses_body.store is False
+        ):
+            responses_body.include = responses_body.include or []
+            if "reasoning.encrypted_content" not in responses_body.include:
+                responses_body.include.append("reasoning.encrypted_content")
+
+    def _apply_parallel_tool_policy(self, responses_body: Any, valves: PipeValves) -> None:
+        if any(
+            isinstance(tool, dict) and tool.get("type") == "web_search"
+            for tool in (responses_body.tools or [])
+        ):
+            responses_body.parallel_tool_calls = False
+            return
+        responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
 
 # fmt: on

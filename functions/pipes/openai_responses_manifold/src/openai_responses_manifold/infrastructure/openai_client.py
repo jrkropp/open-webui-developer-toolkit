@@ -10,8 +10,8 @@ import aiohttp
 import logging
 from pydantic import BaseModel
 
-from ..core.openai_response_events import StreamEvent, parse_event
-from ..utils import get_logger, truncate_for_log
+from openai_responses_manifold.domain.openai_events import StreamEvent, parse_event
+from openai_responses_manifold.infrastructure.logging import get_logger, truncate_for_log
 
 
 class OpenAIResponsesClient:

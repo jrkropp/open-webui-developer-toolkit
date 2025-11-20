@@ -1,12 +1,10 @@
-"""Single source of truth for OpenAI model capabilities.
-
-If you're adding or modifying supported models, edit this file.
-"""
+"""Single source of truth for OpenAI model IDs, aliases, and capabilities."""
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
-from typing import Any
+from typing import Any, Mapping
 
 EMPTY_FEATURES: frozenset[str] = frozenset()
 
@@ -53,11 +51,47 @@ MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
     "o4-mini-high": {"base_model": "o4-mini", "params": {"reasoning": {"effort": "high"}}},
 }
 
+_DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+_KNOWN_IDS = frozenset({*MODEL_FEATURES.keys(), *MODEL_ALIASES.keys()})
+
+def normalize(model_id: str) -> str:
+    """Normalize identifiers by lowercasing, trimming, and removing prefixes/dates."""
+
+    raw = (model_id or "").strip().lower()
+    if not raw:
+        return ""
+
+    no_date = _DATE_SUFFIX_RE.sub("", raw)
+    if no_date in _KNOWN_IDS:
+        return no_date
+
+    dot_index = no_date.find(".")
+    if dot_index != -1:
+        suffix = _DATE_SUFFIX_RE.sub("", no_date[dot_index + 1 :])
+        if suffix in _KNOWN_IDS:
+            return suffix
+
+    return no_date
+
+
+def base_model(
+    model_id: str,
+    alias_lookup: Mapping[str, Mapping[str, str | dict]] | None = None,
+) -> str:
+    """Return the canonical base model for a given identifier."""
+
+    alias_map = alias_lookup or MODEL_ALIASES
+    normalized = normalize(model_id)
+    alias_entry = alias_map.get(normalized)
+    if alias_entry:
+        base = alias_entry.get("base_model")
+        if isinstance(base, str):
+            return normalize(base)
+    return normalized
+
 
 def alias_defaults(model_id: str) -> dict[str, Any]:
     """Return default parameters defined for a pseudo-model alias."""
-
-    from .core.ids import normalize
 
     params = MODEL_ALIASES.get(normalize(model_id), {}).get("params")
     return deepcopy(params) if params else {}
@@ -65,8 +99,6 @@ def alias_defaults(model_id: str) -> dict[str, Any]:
 
 def features(model_id: str) -> frozenset[str]:
     """Return the capability set for the canonical base model."""
-
-    from .core.ids import base_model
 
     canonical = base_model(model_id, MODEL_ALIASES)
     return MODEL_FEATURES.get(canonical, EMPTY_FEATURES)
@@ -85,4 +117,6 @@ __all__ = [
     "alias_defaults",
     "features",
     "supports",
+    "normalize",
+    "base_model",
 ]

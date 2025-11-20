@@ -2,17 +2,17 @@
 >
 > ## Work Package Checklist
 >
-> * [ ] WP11.1 – Confirm current source layout and bundling behavior
-> * [ ] WP11.2 – Create new package folders and `__init__.py` skeletons
-> * [ ] WP11.3 – Move & refactor *domain* modules (models, IDs, markers, messages, errors)
-> * [ ] WP11.4 – Move OpenAI protocol types (requests + streaming events + client)
-> * [ ] WP11.5 – Move infrastructure modules (logging, OpenWebUI events, store)
-> * [ ] WP11.6 – Move application modules (engine, history, request builder, tools, tasks, routing)
-> * [ ] WP11.7 – Move and adapt the OpenWebUI `Pipe` adapter
-> * [ ] WP11.8 – Update all imports and the bundling script (`scripts/build.py`)
-> * [ ] WP11.9 – Run tests / smoke tests and fix any regressions
-> * [ ] WP11.10 – Update README / internal docs to explain the new architecture
-> * [ ] WP11.11 – Add any newly discovered tasks to this checklist and keep statuses updated
+> * [x] WP11.1 – Confirm current source layout and bundling behavior
+> * [x] WP11.2 – Create new package folders and `__init__.py` skeletons
+> * [x] WP11.3 – Move & refactor *domain* modules (models, IDs, markers, messages, errors)
+> * [x] WP11.4 – Move OpenAI protocol types (requests + streaming events + client)
+> * [x] WP11.5 – Move infrastructure modules (logging, OpenWebUI events, store)
+> * [x] WP11.6 – Move application modules (engine, history, request builder, tools, tasks, routing)
+> * [x] WP11.7 – Move and adapt the OpenWebUI `Pipe` adapter
+> * [x] WP11.8 – Update all imports and the bundling script (`scripts/build.py`)
+> * [x] WP11.9 – Run tests / smoke tests and fix any regressions
+> * [x] WP11.10 – Update README / internal docs to explain the new architecture
+> * [x] WP11.11 – Add any newly discovered tasks to this checklist and keep statuses updated
 
 ---
 
@@ -162,6 +162,11 @@ You will execute the following steps (mirroring the checklist):
   * how `build.py` expects to find them.
 * You add any deviations (if the local layout doesn’t perfectly match the header list) as notes to this work package if needed.
 
+**Status notes**
+
+* Current source layout matches the monolith header list: `model_catalog.py`, `settings.py`, `utils/logging.py`, `utils/openwebui_events.py`, `core/openai_response_events.py`, `core/openai_requests.py`, `core/ids.py`, `core/messages.py`, `core/markers.py`, `core/errors.py`, `main.py`, `engine.py`, `services/history.py`, `services/request_builder.py`, `services/tools.py`, `services/tasks.py`, `services/routing.py`, `infra/openwebui_store.py`, `infra/openai_client.py`.
+* `scripts/build.py` drives bundling via `MODULE_ORDER` (list above) and `_validate_module_order` requires every source module to be listed, so the order must be updated when files move or rename.
+
 ---
 
 ### WP11.2 – Create new package folders and `__init__.py` skeletons
@@ -186,6 +191,10 @@ You will execute the following steps (mirroring the checklist):
 
 * All new directories exist and are importable as packages.
 * No runtime behavior has changed yet; only new structure is present.
+
+**Status notes**
+
+* Created `config/`, `domain/`, `infrastructure/`, `application/`, `interface/` under `src/openai_responses_manifold/` with empty `__init__.py` files.
 
 ---
 
@@ -259,6 +268,12 @@ You will execute the following steps (mirroring the checklist):
   * `from openai_responses_manifold.domain.openai_events import ...`
 * There are no circular imports between domain modules.
 
+**Status notes**
+
+* Domain modules moved under `domain/` and imports updated across package/tests to reference the new paths.
+* `model_catalog` now contains normalization helpers from former `core/ids.py` and is the single source for alias/default logic; the old `core/` directory was removed.
+* OpenAI request/event definitions now live in `domain/openai_requests.py` and `domain/openai_events.py`.
+
 ---
 
 ### WP11.4 – Move OpenAI client (protocol IO) into infrastructure
@@ -277,6 +292,11 @@ You will execute the following steps (mirroring the checklist):
 
 * The `OpenAIResponsesClient` class is in `infrastructure/openai_client.py`.
 * All modules that previously imported it now use the new path.
+
+**Status notes**
+
+* `infra/openai_client.py` moved to `infrastructure/openai_client.py` with imports updated to use domain events and infrastructure logging.
+* Call sites now import `OpenAIResponsesClient` from the `infrastructure` package.
 
 ---
 
@@ -314,6 +334,11 @@ You will execute the following steps (mirroring the checklist):
 
 * All infrastructure modules live under `infrastructure/`.
 * No module imports from the old `utils.*` or `infra.*` paths.
+
+**Status notes**
+
+* Logging, OpenWebUI events, and store modules now live under `infrastructure/` with imports updated accordingly.
+* Legacy `utils/` and `infra/` directories were removed after the moves.
 
 ---
 
@@ -378,6 +403,11 @@ You will execute the following steps (mirroring the checklist):
 * All `services/*.py` modules have been removed or turned into thin shims that import from `application.*`.
 * Application code (engine, history, tools, tasks, routing, request_builder) lives entirely under `application/`.
 
+**Status notes**
+
+* Engine and service modules relocated under `application/` with imports updated to depend on `domain` and `infrastructure`.
+* Old `services/` directory removed after moves; tests now import from `application.*`.
+
 ---
 
 ### WP11.7 – Move and adapt the OpenWebUI `Pipe` adapter
@@ -408,6 +438,11 @@ You will execute the following steps (mirroring the checklist):
 * There is a single OpenWebUI adapter module: `interface/openwebui_pipe.py`.
 * The plugin still registers and behaves correctly in Open WebUI when built and loaded.
 
+**Status notes**
+
+* `main.py` renamed/moved to `interface/openwebui_pipe.py` with imports redirected to `config`, `application`, `domain`, and `infrastructure`.
+* Top-level package exports now reference the interface module and new layer paths.
+
 ---
 
 ### WP11.8 – Update all imports and bundling script
@@ -434,6 +469,11 @@ You will execute the following steps (mirroring the checklist):
 * The build script runs successfully and produces a monolithic file equivalent (in behavior) to the current one.
 * The monolith header comments can be updated to reflect the new layout (optional, but recommended).
 
+**Status notes**
+
+* Package imports now point to `config`, `domain`, `application`, `infrastructure`, and `interface`; legacy module paths were removed.
+* `scripts/build.py` `MODULE_ORDER` updated to the new layout and the bundle regenerated via `python3 scripts/build.py --skip-tests`.
+
 ---
 
 ### WP11.9 – Run tests / smoke tests
@@ -457,6 +497,10 @@ You will execute the following steps (mirroring the checklist):
 
 * No regressions in core functionality are observed.
 * Any test failures are either resolved or documented with rationale (and ideally fixed).
+
+**Status notes**
+
+* `python3 -m pytest` passes for the refactored package; bundle rebuild succeeded after tests.
 
 ---
 
@@ -487,6 +531,10 @@ You will execute the following steps (mirroring the checklist):
   * “Where do I adjust the OpenAI client?” → `infrastructure/openai_client.py`
   * “Where is the OpenWebUI Pipe?” → `interface/openwebui_pipe.py`
 
+**Status notes**
+
+* README, internal AGENTS guide, and Developer Guide updated to describe the new `config/domain/infrastructure/application/interface` layout and module locations.
+
 ---
 
 ### WP11.11 – Keep this work package / checklist current
@@ -497,6 +545,10 @@ As you execute this work package, you must:
 
   * Change `[ ]` → `[x]` when a task is completed.
   * Add new checklist items if you discover additional necessary work (e.g. WP11.12 for test refactors, WP11.13 for CI updates, etc.).
+
+**Status notes**
+
+* Checklist and notes refreshed through WP11 with no additional follow-up items identified so far.
 * If you need to adjust the target architecture based on discoveries (e.g. additional modules or constraints from `build.py`), add a brief note explaining the change and keep the structure description in sync.
 
 ---
