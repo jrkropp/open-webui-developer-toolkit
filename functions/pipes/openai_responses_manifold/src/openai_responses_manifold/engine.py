@@ -51,7 +51,7 @@ from .utils import (
 
 
 @dataclass
-class _StreamState:
+class TurnState:
     """Streaming scratch space for a single turn."""
 
     response_text: str = ""
@@ -71,7 +71,7 @@ class _StreamState:
         self.has_sent_status = False
 
 
-class _StreamSession:
+class TurnSession:
     """Consumes stream events while coordinating a single turn."""
 
     def __init__(
@@ -87,12 +87,36 @@ class _StreamSession:
         self.engine = engine
         self.body = body
         self.valves = valves
-        self.metadata = metadata
         self.emitter = EventEmitter(event_emitter)
         self.openwebui_tools = openwebui_tools
-        self.state = _StreamState()
         self.debug_enabled = engine.logger.isEnabledFor(logging.DEBUG)
+
+        self.chat_id = metadata.get("chat_id")
+        self.message_id = metadata.get("message_id")
+        self.model_id = (metadata.get("model") or {}).get("id")
+        self.can_persist_items = bool(self.chat_id and self.message_id and self.model_id)
+        self.persist_reasoning_tokens = getattr(
+            self.valves, "PERSIST_REASONING_TOKENS", "disabled"
+        ) == "conversation"
+        self.persist_tool_results = getattr(self.valves, "PERSIST_TOOL_RESULTS", True)
+
+        self.state = TurnState()
         self.state.thinking_tasks = self.engine._schedule_reasoning_statuses(body, self.emit_status)
+
+        self.event_dispatch: dict[type[Any], Callable[[Any], Awaitable[bool]]] = {
+            ResponseOutputTextDeltaEvent: self._on_text_delta,
+            ResponseOutputItemAddedEvent: self._on_item_added,
+            ResponseOutputItemDoneEvent: self._on_item_done,
+            ResponseReasoningSummaryTextDoneEvent: self._on_reasoning_summary,
+            ResponseOutputTextDoneEvent: self._on_text_done,
+            ResponseCompletedEvent: self._on_completed,
+            ResponseFailedEvent: self._on_error,
+            ResponseIncompleteEvent: self._on_error,
+            ErrorEvent: self._on_error,
+            ResponseCreatedEvent: self._on_progress,
+            ResponseInProgressEvent: self._on_progress,
+            ResponseQueuedEvent: self._on_progress,
+        }
 
     async def emit_status(
         self,
@@ -110,80 +134,38 @@ class _StreamSession:
     async def handle_event(self, event: Any) -> bool:
         """Process a single stream event. Returns True when the stream should stop."""
 
-        if isinstance(event, ResponseOutputTextDeltaEvent):
-            await self._handle_text_delta(event)
-            return False
-
-        if isinstance(event, ResponseOutputItemAddedEvent):
-            await self._handle_item_added(event)
-            return False
-
-        if isinstance(event, ResponseOutputItemDoneEvent):
-            await self._handle_item_done(event)
-            return False
-
-        if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
-            await self._handle_reasoning_summary(event)
-            return False
-
-        if isinstance(event, ResponseOutputTextDoneEvent):
-            await self._handle_text_done(event)
-            return False
-
-        if isinstance(event, ResponseCompletedEvent):
-            await self.engine._cancel_tasks(self.state.thinking_tasks)
-            self.state.completed_response = event.response
-            self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
-            if self.debug_enabled:
-                usage_keys = sorted((self.state.usage_summary or {}).keys())
-                self.engine.logger.debug("event=response.completed usage_keys=%s", usage_keys)
-            return True
-
-        if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent, ErrorEvent)):
-            await self.engine._cancel_tasks(self.state.thinking_tasks)
-            self.state.has_error = True
-            if isinstance(event, ErrorEvent):
-                self.state.error_message = event.message
-            else:
-                response_payload = event.response
-                self.state.error_message = (response_payload.get("error") or {}).get(
-                    "message", "OpenAI returned an error."
-                )
-            self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
-            await self.engine._handle_stream_error(self.emitter, self.state.error_message or "")
-            return True
-
-        if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
-            if self.debug_enabled:
-                self.engine.logger.debug(
-                    "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
-                )
-            return False
-
+        handler = self.event_dispatch.get(type(event))
+        if handler is not None:
+            return await handler(event)
         return False
 
-    async def collect_output_items(self) -> list[dict[str, Any]]:
-        if not self.state.completed_response:
-            return []
+    async def prepare_output_items_and_tool_calls(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Hydrate sanitized output items and return any requested tool calls."""
 
-        output_items = self.engine._sanitize_output_items(
-            (self.state.completed_response or {}).get("output") or [], store=self.body.store
-        )
+        response_payload = self.state.completed_response
+        if not response_payload:
+            return [], []
 
-        if output_items:
-            if isinstance(self.body.input, list):
-                self.body.input.extend(output_items)
-            else:
-                self.body.input = output_items
+        raw_output = response_payload.get("output") or []
+        if not raw_output:
+            return [], []
 
-        return output_items
+        output_items = self.engine._sanitize_output_items(raw_output, store=self.body.store)
+        if not output_items:
+            return [], []
 
-    def find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        call_items = output_items or (self.state.completed_response or {}).get("output", [])
-        tool_calls = [item for item in call_items if item.get("type") == "function_call"]
+        if isinstance(self.body.input, list):
+            self.body.input.extend(output_items)
+        else:
+            self.body.input = list(output_items)
+
+        tool_calls = [item for item in output_items if item.get("type") == "function_call"]
         if tool_calls:
             self.state.tool_calls_executed += len(tool_calls)
-        return tool_calls
+
+        return output_items, tool_calls
 
     async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not tool_calls:
@@ -208,7 +190,7 @@ class _StreamSession:
             return False
 
         self.state.last_tool_result = str(function_outputs[-1].get("output", ""))
-        if getattr(self.valves, "PERSIST_TOOL_RESULTS", True):
+        if self.persist_tool_results:
             await self._persist_items(function_outputs)
 
         for output in function_outputs:
@@ -222,44 +204,47 @@ class _StreamSession:
             self.body.input = list(function_outputs)
         return True
 
-    async def _handle_text_delta(self, event: ResponseOutputTextDeltaEvent) -> None:
+    async def _on_text_delta(self, event: ResponseOutputTextDeltaEvent) -> bool:
         delta_val = event.delta
         if delta_val:
             self.state.response_text += delta_val
             await self.emitter.delta(delta_val)
+        return False
 
-    async def _handle_item_added(self, event: ResponseOutputItemAddedEvent) -> None:
+    async def _on_item_added(self, event: ResponseOutputItemAddedEvent) -> bool:
         item = event.item or {}
         if item.get("type") == "message" and item.get("status") == "in_progress":
             await self.emit_status("Responding to the user…", require_previous=True)
+        return False
 
-    async def _handle_item_done(self, event: ResponseOutputItemDoneEvent) -> None:
+    async def _on_item_done(self, event: ResponseOutputItemDoneEvent) -> bool:
         item = event.item or {}
         item_type = item.get("type") or ""
 
-        should_persist = False
-        if item_type == "reasoning":
-            should_persist = getattr(self.valves, "PERSIST_REASONING_TOKENS", "disabled") == "conversation"
-        elif item_type in ("message", "web_search_call"):
-            should_persist = False
-        else:
-            should_persist = getattr(self.valves, "PERSIST_TOOL_RESULTS", True)
+        if item_type == "reasoning" and self.persist_reasoning_tokens:
+            await self._persist_items([item])
+            return False
 
-        if should_persist:
+        if item_type in ("message", "web_search_call"):
+            return False
+
+        if self.persist_tool_results:
             await self._persist_items([item])
 
         status_desc = self.engine._status_from_output_item(item)
         if status_desc:
             await self.emit_status(status_desc)
+        return False
 
-    async def _handle_reasoning_summary(self, event: ResponseReasoningSummaryTextDoneEvent) -> None:
+    async def _on_reasoning_summary(self, event: ResponseReasoningSummaryTextDoneEvent) -> bool:
         text_val = (event.text or "").strip()
         if text_val:
             title, content = self.engine._parse_reasoning_summary(text_val)
             await self.engine._cancel_tasks(self.state.thinking_tasks)
             await self.emit_status(f"{title}\n{content}")
+        return False
 
-    async def _handle_text_done(self, event: ResponseOutputTextDoneEvent) -> None:
+    async def _on_text_done(self, event: ResponseOutputTextDoneEvent) -> bool:
         text_val = event.text
         if self.debug_enabled:
             self.engine.logger.debug("event=response.output_text.done text_len=%d", len(text_val or ""))
@@ -267,25 +252,58 @@ class _StreamSession:
         if text_val and not self.state.response_text:
             self.state.response_text = text_val
         await self.emitter.replace(self.state.response_text or text_val)
+        return False
+
+    async def _on_completed(self, event: ResponseCompletedEvent) -> bool:
+        await self.engine._cancel_tasks(self.state.thinking_tasks)
+        self.state.completed_response = event.response
+        self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
+        if self.debug_enabled:
+            usage_keys = sorted((self.state.usage_summary or {}).keys())
+            self.engine.logger.debug("event=response.completed usage_keys=%s", usage_keys)
+        return True
+
+    async def _on_error(self, event: ErrorEvent | ResponseFailedEvent | ResponseIncompleteEvent) -> bool:
+        await self.engine._cancel_tasks(self.state.thinking_tasks)
+        self.state.has_error = True
+        if isinstance(event, ErrorEvent):
+            self.state.error_message = event.message
+        else:
+            response_payload = event.response
+            self.state.error_message = (response_payload.get("error") or {}).get(
+                "message", "OpenAI returned an error."
+            )
+        self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
+        await self.engine._handle_stream_error(self.emitter, self.state.error_message or "")
+        return True
+
+    async def _on_progress(
+        self, event: ResponseCreatedEvent | ResponseInProgressEvent | ResponseQueuedEvent
+    ) -> bool:
+        if self.debug_enabled:
+            self.engine.logger.debug(
+                "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
+            )
+        return False
 
     async def _persist_items(self, items: list[dict[str, Any]]) -> None:
-        chat_id = self.metadata.get("chat_id")
-        message_id = self.metadata.get("message_id")
-        model_id = (self.metadata.get("model") or {}).get("id")
-        if chat_id and message_id and model_id:
-            try:
-                hidden_markers = self.engine.history_persistence.persist_items_for_message(
-                    chat_id,
-                    message_id,
-                    items,
-                    model_id=model_id,
-                )
-            except Exception as exc:  # pragma: no cover
-                self.engine.logger.warning("Failed to persist output items: %s", exc)
-                hidden_markers = ""
-            if hidden_markers:
-                self.state.response_text += hidden_markers
-                await self.emitter.replace(self.state.response_text)
+        if not (items and self.can_persist_items):
+            return
+
+        try:
+            hidden_markers = self.engine.history_persistence.persist_items_for_message(
+                self.chat_id,
+                self.message_id,
+                items,
+                model_id=self.model_id,
+            )
+        except Exception as exc:  # pragma: no cover
+            self.engine.logger.warning("Failed to persist output items: %s", exc)
+            hidden_markers = ""
+
+        if hidden_markers:
+            self.state.response_text += hidden_markers
+            await self.emitter.replace(self.state.response_text)
 
 class ResponsesEngine:
     """Encapsulates streaming and tool orchestration."""
@@ -300,7 +318,9 @@ class ResponsesEngine:
     ) -> None:
         self.client = client or OpenAIResponsesClient()
         self.store = item_store or ItemStore()
-        self.history_persistence = history_persistence or HistoryPersistence(self.store)
+        self.history_persistence = history_persistence or HistoryPersistence.from_item_store(
+            self.store
+        )
         self.logger = logger or get_logger(__name__)
 
     async def run_streaming_turn(
@@ -312,7 +332,7 @@ class ResponsesEngine:
         event_emitter: EventEmitterFn,
         openwebui_tools: dict[str, dict[str, Any]] | None = None,
     ) -> str:
-        session = _StreamSession(
+        session = TurnSession(
             self,
             body,
             valves,
@@ -350,8 +370,7 @@ class ResponsesEngine:
                 if not function_calls_supported:
                     break
 
-                response_output_items = await session.collect_output_items()
-                tool_calls = session.find_tool_calls(response_output_items)
+                _, tool_calls = await session.prepare_output_items_and_tool_calls()
                 if not tool_calls:
                     break
 
@@ -564,7 +583,7 @@ class ResponsesEngine:
 
     async def _stream_response(
         self,
-        session: _StreamSession,
+        session: TurnSession,
         body: ResponseCreateParams,
         valves: Any,
     ) -> None:

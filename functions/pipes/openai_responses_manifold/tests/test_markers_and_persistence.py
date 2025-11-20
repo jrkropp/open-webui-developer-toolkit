@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import openai_responses_manifold as orm
 from openai_responses_manifold.infra.openwebui_store import ItemStore
-from openai_responses_manifold.services.history import HistoryBuilder, HistoryPersistence
+from openai_responses_manifold.services.history import (
+    HistoryBuilder,
+    HistoryPersistence,
+    HistoryRepository,
+)
 
 from .fakes import InMemoryChats
 
@@ -34,7 +38,7 @@ def test_history_persistence_and_builder(chat_store: InMemoryChats) -> None:
 
     chat_store.ensure("chat-123")
     store = ItemStore()
-    persistence = HistoryPersistence(store)
+    persistence = HistoryPersistence(HistoryRepository.from_item_store(store))
     items = [
         {"type": "reasoning", "content": [{"type": "output_text", "text": "thinking"}]},
     ]
@@ -48,18 +52,36 @@ def test_history_persistence_and_builder(chat_store: InMemoryChats) -> None:
     assert orm.contains_marker(marker_blob)
 
     builder = HistoryBuilder(
-        resolve_items=lambda item_ids, chat_id, model_id: store.load_items(
-            chat_id or "chat-123", item_ids, model_id=model_id
+        resolve_items=lambda item_ids: store.load_items(
+            "chat-123", item_ids, model_id="openai_responses.gpt-4o"
         )
     )
     messages = [
         {"role": "user", "content": "Hello"},
         {"role": "assistant", "content": f"I did this{marker_blob}"},
     ]
-    rebuilt = builder.build_input_from_messages(
-        messages,
-        chat_id="chat-123",
-        openwebui_model_id="openai_responses.gpt-4o",
-    )
+    rebuilt = builder.build_input_from_messages(messages)
 
     assert any(item.get("type") == "reasoning" for item in rebuilt)
+
+
+def test_history_persistence_store_and_render_split(chat_store: InMemoryChats) -> None:
+    """Storage and marker rendering can be exercised independently."""
+
+    chat_store.ensure("chat-abc")
+    store = ItemStore()
+    persistence = HistoryPersistence(HistoryRepository.from_item_store(store))
+
+    stored = persistence.store_items(
+        "chat-abc",
+        "msg-9",
+        [{"id": "server-id", "type": "output_text", "text": "hi"}],
+        model_id="openai_responses.gpt-4o",
+    )
+
+    assert stored and len(stored) == 1
+    stored_item = stored[0]
+    assert stored_item.id and "id" not in stored_item.item
+
+    rendered = persistence.render_hidden_markers(stored, model_id="openai_responses.gpt-4o")
+    assert orm.contains_marker(rendered)
