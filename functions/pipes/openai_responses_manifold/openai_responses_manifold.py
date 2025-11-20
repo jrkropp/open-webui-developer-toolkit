@@ -2257,14 +2257,19 @@ def _strictify_schema(schema: Any) -> dict[str, Any]:
                 props = {}
                 node["properties"] = props
 
+            original_required = set(node.get("required") or [])
             node["additionalProperties"] = False
-            required_keys = node.get("required")
-            if isinstance(required_keys, list):
-                node["required"] = [key for key in required_keys if key in props]
+            node["required"] = list(props.keys())
 
             for name, prop in props.items():
                 if not isinstance(prop, dict):
                     continue
+                if name not in original_required:
+                    ptype = prop.get("type")
+                    if isinstance(ptype, str) and ptype != "null":
+                        prop["type"] = [ptype, "null"]
+                    elif isinstance(ptype, list) and "null" not in ptype:
+                        prop["type"] = [*ptype, "null"]
                 _enforce(prop)
 
         items = node.get("items")
