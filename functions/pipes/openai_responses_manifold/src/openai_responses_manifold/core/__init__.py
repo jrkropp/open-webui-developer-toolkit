@@ -40,7 +40,6 @@ from openai_responses_manifold.core.messages import (  # noqa: F401
     user_blocks_to_responses_items,
 )
 from openai_responses_manifold.core.model_catalog import (  # noqa: F401
-    EMPTY_FEATURES,
     MODEL_ALIASES,
     MODEL_FEATURES,
     alias_defaults,
@@ -51,7 +50,6 @@ from openai_responses_manifold.core.model_catalog import (  # noqa: F401
 )
 
 __all__ = [
-    "EMPTY_FEATURES",
     "MODEL_FEATURES",
     "MODEL_ALIASES",
     "alias_defaults",

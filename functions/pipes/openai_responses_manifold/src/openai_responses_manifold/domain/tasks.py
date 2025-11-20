@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+from openai_responses_manifold.adapters.openai.requests import validate_response_create_params
 
 
 async def run_task_model(
@@ -19,19 +20,19 @@ async def run_task_model(
     want the final text output without streaming.
     """
 
-    task_body = {
-        "model": body.get("model"),
-        "instructions": body.get("instructions", ""),
-        "input": body.get("input", ""),
-        "stream": False,
-        "store": False,
-    }
+    responses_body = validate_response_create_params(body)
+    task_body = responses_body.model_dump(exclude_none=True)
+    task_body["stream"] = False
+    task_body["store"] = False
+
     response = await client.create(task_body, api_key=valves.API_KEY, base_url=valves.BASE_URL)
     text_parts: list[str] = []
     for item in response.get("output", []):
-        if item.get("type") != "message":
+        if not isinstance(item, dict) or item.get("type") != "message":
             continue
         for content in item.get("content", []):
+            if not isinstance(content, dict):
+                continue
             if content.get("type") == "output_text":
                 text_parts.append(content.get("text", ""))
     return "".join(text_parts)

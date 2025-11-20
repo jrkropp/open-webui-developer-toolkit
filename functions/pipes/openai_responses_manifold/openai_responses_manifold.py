@@ -7,7 +7,7 @@ git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/funct
 description: OpenAI Responses API Manifold
 required_open_webui_version: 0.6.28
 requirements: aiohttp, fastapi, pydantic>=2
-version: 0.9.7
+version: 1.0.0
 license: MIT
 
 NOTES - PLEASE READ:
@@ -53,7 +53,7 @@ from __future__ import annotations
 import os
 from typing import Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 _PIPE_LOG_LEVELS: tuple[Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], ...] = (
     "DEBUG",
@@ -71,6 +71,8 @@ DEFAULT_PIPE_LOG_LEVEL = cast(
 
 
 class PipeValves(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     BASE_URL: str = Field(
         default=((os.getenv("OPENAI_API_BASE_URL") or "").strip() or "https://api.openai.com/v1"),
         description="The base URL to use with the OpenAI SDK. Defaults to the official OpenAI API endpoint. Supports LiteLLM and other custom endpoints.",
@@ -184,6 +186,12 @@ class PipeValves(BaseModel):
 
 
 class UserValves(BaseModel):
+    """
+    User-level overrides. Currently only LOG_LEVEL is honored; all other settings are pipe-global.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"] = Field(
         default="INHERIT",
         description="Select logging level. 'INHERIT' uses the pipe default.",
@@ -441,42 +449,83 @@ __all__ = [
 ]
 
 # === core/model_catalog.py ===
-# =============================================================================
-# Change Log
-# 2025-11-20: Align model feature flags with current OpenAI docs (web search and
-#             image tool coverage), add gpt-5-pro entry, adjust deep-research
-#             capabilities to match API usage.
-# =============================================================================
 """Single source of truth for OpenAI model IDs, aliases, and capabilities."""
 
 import re
 from copy import deepcopy
 from typing import Any, Mapping
 
-EMPTY_FEATURES: frozenset[str] = frozenset()
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.logging import get_logger
+
+# =============================================================================
+# Change Log
+# 2025-11-20: Align model feature flags with current OpenAI docs (web search,
+#             file search, image generation, and code interpreter coverage),
+#             add gpt-5-pro and Codex models, adjust deep-research and chat
+#             model capabilities to match Responses API model cards.
+# =============================================================================
 
 # Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
-MODEL_FEATURES: dict[str, frozenset[str]] = {
-    "gpt-5-auto": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
-    "gpt-5.1": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
-    "gpt-5-pro": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
-    "gpt-5": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
-    "gpt-5-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
-    "gpt-5-nano": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "verbosity"}),
-    "gpt-4.1": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
-    "gpt-4.1-mini": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
-    "gpt-4.1-nano": frozenset({"function_calling", "image_gen_tool"}),
-    "gpt-4o": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
-    "gpt-4o-mini": frozenset({"function_calling", "web_search_tool", "image_gen_tool"}),
-    "o3": frozenset({"function_calling", "reasoning", "reasoning_summary"}),
-    "o3-mini": frozenset({"function_calling", "reasoning", "reasoning_summary"}),
-    "o3-pro": frozenset({"function_calling", "reasoning"}),
-    "o4-mini": frozenset({"function_calling", "reasoning", "reasoning_summary", "web_search_tool"}),
-    "o3-deep-research": frozenset({"reasoning", "reasoning_summary", "deep_research"}),
-    "o4-mini-deep-research": frozenset({"reasoning", "reasoning_summary", "deep_research"}),
-    "gpt-5.1-chat-latest": frozenset({"function_calling", "web_search_tool"}),
-    "gpt-5-chat-latest": frozenset({"function_calling", "web_search_tool"}),
-    "chatgpt-4o-latest": frozenset({"function_calling", "web_search_tool"}),
+#
+# Feature flags:
+# - function_calling       → Supports custom tools / function calling in Responses.
+# - reasoning              → Supports `reasoning` options (reasoning models).
+# - reasoning_summary      → Supports reasoning summaries / traces.
+# - web_search_tool        → Built-in Web search tool in Responses.
+# - file_search_tool       → Built-in File search / retrieval tool in Responses.
+# - image_gen_tool         → Built-in Image generation tool in Responses.
+# - code_interpreter_tool  → Built-in Code interpreter tool in Responses.
+# - deep_research          → Deep research orchestration models.
+# - verbosity              → Supports `text.verbosity` parameter.
+MODEL_FEATURES: dict[str, set[str]] = {
+    # -------------------------------------------------------------------------
+    # GPT‑5 family (reasoning + tools)
+    # -------------------------------------------------------------------------
+    "gpt-5-auto": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
+    "gpt-5.1": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
+    "gpt-5.1-pro": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
+    "gpt-5-pro": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
+    "gpt-5": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
+    "gpt-5-mini": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
+    "gpt-5-nano": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
+
+    # Codex variants (reasoning models, tool-heavy, no verbosity param)
+    "gpt-5.1-codex": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
+    "gpt-5.1-codex-max": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
+    "gpt-5.1-codex-mini": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
+    "gpt-5-codex": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
+    "codex-mini-latest": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
+
+    # Chat-tuned GPT‑5 models (non‑reasoning, supports tools)
+    "gpt-5.1-chat-latest": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
+    "gpt-5-chat-latest": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
+
+    # -------------------------------------------------------------------------
+    # GPT‑4.x family
+    # -------------------------------------------------------------------------
+    "gpt-4.1": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
+    "gpt-4.1-mini": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
+    "gpt-4.1-nano": {"function_calling", "image_gen_tool", "code_interpreter_tool"},
+    "gpt-4o": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
+    "gpt-4o-mini": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
+
+    # ChatGPT-branded 4o model (no tools / function calling in Responses)
+    "chatgpt-4o-latest": set(),
+
+    # -------------------------------------------------------------------------
+    # o‑series reasoning models
+    # -------------------------------------------------------------------------
+    "o3": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
+    "o3-mini": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
+    "o3-pro": {"function_calling", "reasoning", "web_search_tool", "file_search_tool", "image_gen_tool"},
+    "o4-mini": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
+
+    # -------------------------------------------------------------------------
+    # Deep research models
+    # -------------------------------------------------------------------------
+    "o3-deep-research": {"reasoning", "reasoning_summary", "deep_research", "web_search_tool", "file_search_tool"},
+    "o4-mini-deep-research": {"reasoning", "reasoning_summary", "deep_research", "web_search_tool", "file_search_tool"},
 }
 
 # Add entries to MODEL_ALIASES for any pseudo-model name users can pick.
@@ -501,6 +550,9 @@ MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
 
 _DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 _KNOWN_IDS = frozenset({*MODEL_FEATURES.keys(), *MODEL_ALIASES.keys()})
+_logger = get_logger(__name__)
+_UNKNOWN_LOGGED: set[str] = set()
+
 
 def normalize(model_id: str) -> str:
     """Normalize identifiers by lowercasing, trimming, and removing prefixes/dates."""
@@ -509,10 +561,13 @@ def normalize(model_id: str) -> str:
     if not raw:
         return ""
 
+    # Drop trailing date suffix if present (e.g. -2025-10-06).
     no_date = _DATE_SUFFIX_RE.sub("", raw)
     if no_date in _KNOWN_IDS:
         return no_date
 
+    # Some official IDs are like gpt-5.1-2025-11-13; if the portion
+    # after the first dot matches a known ID, use that.
     dot_index = no_date.find(".")
     if dot_index != -1:
         suffix = _DATE_SUFFIX_RE.sub("", no_date[dot_index + 1 :])
@@ -545,11 +600,16 @@ def alias_defaults(model_id: str) -> dict[str, Any]:
     return deepcopy(params) if params else {}
 
 
-def features(model_id: str) -> frozenset[str]:
+def features(model_id: str) -> set[str]:
     """Return the capability set for the canonical base model."""
 
     canonical = base_model(model_id, MODEL_ALIASES)
-    return MODEL_FEATURES.get(canonical, EMPTY_FEATURES)
+    feature_set = MODEL_FEATURES.get(canonical)
+    if feature_set is None and canonical and canonical not in _UNKNOWN_LOGGED:
+        _UNKNOWN_LOGGED.add(canonical)
+        _logger.warning("Unknown model_id in MODEL_FEATURES: %s (canonical=%s)", model_id, canonical)
+        return set()
+    return feature_set or set()
 
 
 def supports(feature: str, model_id: str) -> bool:
@@ -559,7 +619,6 @@ def supports(feature: str, model_id: str) -> bool:
 
 
 __all__ = [
-    "EMPTY_FEATURES",
     "MODEL_FEATURES",
     "MODEL_ALIASES",
     "alias_defaults",
@@ -1914,7 +1973,20 @@ class NullHistoryStore:
 
 
 class HistoryPersistence:
-    """Persist structured output items and emit hidden markers."""
+    """
+    Persist structured output items and emit hidden markers.
+
+    Protocol overview:
+    - When a structured output item (tool output, reasoning tokens, etc.) is finalized,
+      persist_items_for_message():
+        * deep-clones the payload and strips server-side IDs,
+        * saves the payload in the store keyed by a ULID,
+        * returns a concatenated string of hidden markers like
+          "[openai_responses:v2:<kind>:<ulid>?model=<model_id>]: #\n".
+    - Callers append that marker string to the assistant's text; the marker is invisible to end users.
+    - On later turns, HistoryBuilder scans assistant messages for markers, resolves ULIDs via the store,
+      and injects those stored payloads back into the Responses input list.
+    """
 
     def __init__(self, store: HistoryStore | None = None) -> None:
         self.store = store or NullHistoryStore()
@@ -2083,6 +2155,7 @@ from typing import Any
 # from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
 
 logger = get_logger(__name__)
+TOOL_CALL_TIMEOUT_SEC = 30
 
 
 async def resolve_tools(
@@ -2222,9 +2295,13 @@ async def execute_tool_calls(
 
         try:
             if inspect.iscoroutinefunction(fn):
-                result = await fn(**args)
+                coro = fn(**args)
             else:
-                result = await asyncio.to_thread(fn, **args)
+                coro = asyncio.to_thread(fn, **args)
+            result = await asyncio.wait_for(coro, timeout=TOOL_CALL_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            logger.warning("Tool %s timed out after %s seconds", name, TOOL_CALL_TIMEOUT_SEC)
+            return call, f"TimeoutError: tool '{name}' exceeded {TOOL_CALL_TIMEOUT_SEC}s"
         except Exception as exc:
             logger.warning("Tool %s raised an exception: %s", name, exc)
             return call, f"{type(exc).__name__}: {exc}"
@@ -2294,14 +2371,24 @@ def _strictify_schema(schema: Any) -> dict[str, Any]:
                 props = {}
                 node["properties"] = props
 
-            original_required = set(node.get("required") or [])
+            original_required = [
+                item for item in node.get("required") or [] if isinstance(item, str)
+            ]
+            merged_required: list[str] = []
+            for name in original_required:
+                if name not in merged_required:
+                    merged_required.append(name)
+            for name in props.keys():
+                if isinstance(name, str) and name not in merged_required:
+                    merged_required.append(name)
+            original_required_set = set(original_required)
             node["additionalProperties"] = False
-            node["required"] = list(props.keys())
+            node["required"] = merged_required
 
             for name, prop in props.items():
-                if not isinstance(prop, dict):
+                if not isinstance(prop, dict) or not isinstance(name, str):
                     continue
-                if name not in original_required:
+                if name not in original_required_set:
                     ptype = prop.get("type")
                     if isinstance(ptype, str) and ptype != "null":
                         prop["type"] = [ptype, "null"]
@@ -2536,6 +2623,7 @@ from typing import Any
 
 # [build.py] internal imports removed in monolith:
 # from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
+# from openai_responses_manifold.adapters.openai.requests import validate_response_create_params
 
 
 async def run_task_model(
@@ -2550,19 +2638,19 @@ async def run_task_model(
     want the final text output without streaming.
     """
 
-    task_body = {
-        "model": body.get("model"),
-        "instructions": body.get("instructions", ""),
-        "input": body.get("input", ""),
-        "stream": False,
-        "store": False,
-    }
+    responses_body = validate_response_create_params(body)
+    task_body = responses_body.model_dump(exclude_none=True)
+    task_body["stream"] = False
+    task_body["store"] = False
+
     response = await client.create(task_body, api_key=valves.API_KEY, base_url=valves.BASE_URL)
     text_parts: list[str] = []
     for item in response.get("output", []):
-        if item.get("type") != "message":
+        if not isinstance(item, dict) or item.get("type") != "message":
             continue
         for content in item.get("content", []):
+            if not isinstance(content, dict):
+                continue
             if content.get("type") == "output_text":
                 text_parts.append(content.get("text", ""))
     return "".join(text_parts)
@@ -3024,10 +3112,7 @@ class _StreamSession:
 
     def find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         call_items = output_items or (self.state.completed_response or {}).get("output", [])
-        tool_calls = [item for item in call_items if item.get("type") == "function_call"]
-        if tool_calls:
-            self.state.tool_calls_executed += len(tool_calls)
-        return tool_calls
+        return [item for item in call_items if item.get("type") == "function_call"]
 
     async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not tool_calls:
@@ -3066,6 +3151,43 @@ class _StreamSession:
             self.body.input = list(function_outputs)
         return True
 
+    def _capture_action_sources(self, item: dict[str, Any]) -> None:
+        action = item.get("action")
+        if not isinstance(action, dict):
+            return
+        sources = action.get("sources")
+        if not isinstance(sources, list):
+            return
+
+        item_type = item.get("type") or ""
+        provider_map = {
+            "web_search_call": "openai:web_search",
+            "file_search_call": "openai:file_search",
+            "mcp_call": "openai:mcp",
+            "code_interpreter_call": "openai:code_interpreter",
+        }
+        provider = provider_map.get(item_type, "openai:tool")
+        prefix = provider.split(":")[-1] or "source"
+
+        for idx, source in enumerate(sources, start=1):
+            if not isinstance(source, dict):
+                continue
+            url = source.get("url") or source.get("link")
+            if not url:
+                continue
+            title = source.get("title") or url
+            snippet = source.get("snippet") or source.get("content") or ""
+            self.state.citations.append(
+                {
+                    "provider": provider,
+                    "id": f"{prefix}-{len(self.state.citations) + 1}",
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                    "metadata": {"rank": idx, "item_type": item_type},
+                }
+            )
+
     async def _handle_text_delta(self, event: ResponseOutputTextDeltaEvent) -> None:
         delta_val = event.delta
         if delta_val:
@@ -3095,6 +3217,7 @@ class _StreamSession:
         status_desc = self.engine._status_from_output_item(item)
         if status_desc:
             await self.emit_status(status_desc)
+        self._capture_action_sources(item)
 
     async def _handle_reasoning_summary(self, event: ResponseReasoningSummaryTextDoneEvent) -> None:
         text_val = (event.text or "").strip()
@@ -3201,7 +3324,7 @@ class ResponsesEngine:
                 if not tool_calls:
                     break
 
-                new_calls = session.state.tool_calls_executed - executed_before
+                proposed_calls = len(tool_calls)
                 if body.max_tool_calls is not None:
                     remaining = max(body.max_tool_calls - executed_before, 0)
                     if remaining <= 0:
@@ -3210,9 +3333,9 @@ class ResponsesEngine:
                             require_previous=True,
                         )
                         break
-                    if new_calls > remaining:
+                    if proposed_calls > remaining:
                         tool_calls = tool_calls[:remaining]
-                        session.state.tool_calls_executed = executed_before + len(tool_calls)
+                        proposed_calls = len(tool_calls)
                         if not tool_calls:
                             await session.emit_status(
                                 "Tool call limit reached; ignoring further tool requests.",
@@ -3223,6 +3346,9 @@ class ResponsesEngine:
                 function_outputs = await session.execute_tool_calls(tool_calls)
                 if not function_outputs:
                     break
+
+                executed_count = len(function_outputs)
+                session.state.tool_calls_executed = executed_before + executed_count
 
                 if not await session.append_tool_outputs(function_outputs):
                     break
@@ -3907,7 +4033,12 @@ class ItemStore:
         items: list[dict[str, Any]],
         model_id: str,
     ) -> list[str]:
-        """Persist items and return the generated ULIDs."""
+        """
+        Persist items and return the generated ULIDs.
+
+        Note: ``model_id`` is the OpenWebUI model identifier (not the underlying OpenAI model id).
+        Items are filtered by this id on retrieval.
+        """
 
         if not items:
             return []
@@ -4145,7 +4276,7 @@ from open_webui.models.models import ModelForm, Models
 # from openai_responses_manifold.domain.engine import ResponsesEngine
 # from openai_responses_manifold.domain.events import RuntimeEvents
 # from openai_responses_manifold.domain.routing import route_auto_model
-# from openai_responses_manifold.domain.tools import build_tools
+# from openai_responses_manifold.domain.tools import resolve_tools
 
 
 class Pipe:
@@ -4212,35 +4343,27 @@ class Pipe:
             )
             provided_tools = __tools__ if __tools__ is not None else body.get("tools")
             extra_tools = getattr(completions_body, "extra_tools", None) or body.get("extra_tools")
-            tool_specs = build_tools(
+            if isinstance(provided_tools, list) and not provided_tools:
+                provided_tools = None
+            if provided_tools is not None and not isinstance(provided_tools, dict):
+                await self.engine.emit_error(
+                    runtime_events,
+                    (
+                        "Tools must be provided as a registry dict "
+                        "(name -> {spec, callable}); list-form specs are not supported."
+                    ),
+                    done=True,
+                )
+                return None
+            tools, tool_registry = await resolve_tools(
                 responses_body,
                 valves,
-                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
+                provided_tools,
                 features=features,
                 extra_tools=extra_tools if isinstance(extra_tools, list) else None,
             )
-            if tool_specs:
-                responses_body.tools = tool_specs
-            if (
-                isinstance(provided_tools, list)
-                and provided_tools
-                and not isinstance(provided_tools, dict)
-            ):
-                await self.engine.emit_notification(
-                    runtime_events,
-                    content=(
-                        "Tool specs were provided without an OpenWebUI tool registry; "
-                        "tool calls will be skipped locally."
-                    ),
-                    level="warning",
-                )
-
-            if __task__:
-                self.logger.info("Detected task model: %s", __task__)
-                task_body = responses_body.model_dump()
-                if isinstance(__task_body__, dict):
-                    task_body = {**task_body, **__task_body__}
-                return await self.engine.run_task_model(task_body, valves)
+            if tools:
+                responses_body.tools = tools
 
             try:
                 responses_body = await self._apply_model_policies(
@@ -4252,12 +4375,19 @@ class Pipe:
             except RuntimeError:
                 return None
 
+            if __task__:
+                self.logger.info("Detected task model: %s", __task__)
+                task_body = responses_body.model_dump()
+                if isinstance(__task_body__, dict):
+                    task_body = {**task_body, **__task_body__}
+                return await self.engine.run_task_model(task_body, valves)
+
             result = await self.engine.run_streaming_turn(
                 responses_body,
                 valves=valves,
                 metadata=__metadata__,
                 events=runtime_events,
-                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
+                openwebui_tools=tool_registry,
             )
 
             if result.citations and __metadata__.get("chat_id") and __metadata__.get("message_id"):

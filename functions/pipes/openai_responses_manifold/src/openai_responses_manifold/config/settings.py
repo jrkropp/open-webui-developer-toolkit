@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 _PIPE_LOG_LEVELS: tuple[Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], ...] = (
     "DEBUG",
@@ -23,6 +23,8 @@ DEFAULT_PIPE_LOG_LEVEL = cast(
 
 
 class PipeValves(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     BASE_URL: str = Field(
         default=((os.getenv("OPENAI_API_BASE_URL") or "").strip() or "https://api.openai.com/v1"),
         description="The base URL to use with the OpenAI SDK. Defaults to the official OpenAI API endpoint. Supports LiteLLM and other custom endpoints.",
@@ -136,6 +138,12 @@ class PipeValves(BaseModel):
 
 
 class UserValves(BaseModel):
+    """
+    User-level overrides. Currently only LOG_LEVEL is honored; all other settings are pipe-global.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"] = Field(
         default="INHERIT",
         description="Select logging level. 'INHERIT' uses the pipe default.",

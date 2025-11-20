@@ -15,6 +15,7 @@ from openai_responses_manifold.core.model_catalog import supports
 from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
 
 logger = get_logger(__name__)
+TOOL_CALL_TIMEOUT_SEC = 30
 
 
 async def resolve_tools(
@@ -154,9 +155,13 @@ async def execute_tool_calls(
 
         try:
             if inspect.iscoroutinefunction(fn):
-                result = await fn(**args)
+                coro = fn(**args)
             else:
-                result = await asyncio.to_thread(fn, **args)
+                coro = asyncio.to_thread(fn, **args)
+            result = await asyncio.wait_for(coro, timeout=TOOL_CALL_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            logger.warning("Tool %s timed out after %s seconds", name, TOOL_CALL_TIMEOUT_SEC)
+            return call, f"TimeoutError: tool '{name}' exceeded {TOOL_CALL_TIMEOUT_SEC}s"
         except Exception as exc:
             logger.warning("Tool %s raised an exception: %s", name, exc)
             return call, f"{type(exc).__name__}: {exc}"
@@ -226,14 +231,24 @@ def _strictify_schema(schema: Any) -> dict[str, Any]:
                 props = {}
                 node["properties"] = props
 
-            original_required = set(node.get("required") or [])
+            original_required = [
+                item for item in node.get("required") or [] if isinstance(item, str)
+            ]
+            merged_required: list[str] = []
+            for name in original_required:
+                if name not in merged_required:
+                    merged_required.append(name)
+            for name in props.keys():
+                if isinstance(name, str) and name not in merged_required:
+                    merged_required.append(name)
+            original_required_set = set(original_required)
             node["additionalProperties"] = False
-            node["required"] = list(props.keys())
+            node["required"] = merged_required
 
             for name, prop in props.items():
-                if not isinstance(prop, dict):
+                if not isinstance(prop, dict) or not isinstance(name, str):
                     continue
-                if name not in original_required:
+                if name not in original_required_set:
                     ptype = prop.get("type")
                     if isinstance(ptype, str) and ptype != "null":
                         prop["type"] = [ptype, "null"]

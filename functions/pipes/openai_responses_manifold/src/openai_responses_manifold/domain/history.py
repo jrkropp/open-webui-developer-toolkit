@@ -66,7 +66,20 @@ class NullHistoryStore:
 
 
 class HistoryPersistence:
-    """Persist structured output items and emit hidden markers."""
+    """
+    Persist structured output items and emit hidden markers.
+
+    Protocol overview:
+    - When a structured output item (tool output, reasoning tokens, etc.) is finalized,
+      persist_items_for_message():
+        * deep-clones the payload and strips server-side IDs,
+        * saves the payload in the store keyed by a ULID,
+        * returns a concatenated string of hidden markers like
+          "[openai_responses:v2:<kind>:<ulid>?model=<model_id>]: #\n".
+    - Callers append that marker string to the assistant's text; the marker is invisible to end users.
+    - On later turns, HistoryBuilder scans assistant messages for markers, resolves ULIDs via the store,
+      and injects those stored payloads back into the Responses input list.
+    """
 
     def __init__(self, store: HistoryStore | None = None) -> None:
         self.store = store or NullHistoryStore()

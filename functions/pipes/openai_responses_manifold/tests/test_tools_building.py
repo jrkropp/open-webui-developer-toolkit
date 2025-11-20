@@ -135,7 +135,7 @@ def test_strictifies_extra_function_tools_when_strict_enabled() -> None:
     assert fn["strict"] is True
     params = fn["parameters"]
     assert params["additionalProperties"] is False
-    assert set(params["required"]) == {"text", "count"}
+    assert params.get("required") == ["text", "count"]
     assert params["properties"]["text"]["type"] == ["string", "null"]
     assert params["properties"]["count"]["type"] == ["integer", "null"]
 

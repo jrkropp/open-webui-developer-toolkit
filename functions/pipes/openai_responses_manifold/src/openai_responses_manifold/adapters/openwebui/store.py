@@ -24,7 +24,12 @@ class ItemStore:
         items: list[dict[str, Any]],
         model_id: str,
     ) -> list[str]:
-        """Persist items and return the generated ULIDs."""
+        """
+        Persist items and return the generated ULIDs.
+
+        Note: ``model_id`` is the OpenWebUI model identifier (not the underlying OpenAI model id).
+        Items are filtered by this id on retrieval.
+        """
 
         if not items:
             return []

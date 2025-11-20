@@ -37,7 +37,6 @@ from openai_responses_manifold.core.markers import (
     wrap_marker,
 )
 from openai_responses_manifold.core.model_catalog import (
-    EMPTY_FEATURES,
     MODEL_ALIASES,
     MODEL_FEATURES,
     alias_defaults,
@@ -79,7 +78,6 @@ from openai_responses_manifold.domain.tools import (
 )
 
 __all__ = [
-    "EMPTY_FEATURES",
     "MODEL_FEATURES",
     "MODEL_ALIASES",
     "alias_defaults",

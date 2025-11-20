@@ -26,7 +26,7 @@ from openai_responses_manifold.adapters.openwebui.store import ItemStore
 from openai_responses_manifold.domain.engine import ResponsesEngine
 from openai_responses_manifold.domain.events import RuntimeEvents
 from openai_responses_manifold.domain.routing import route_auto_model
-from openai_responses_manifold.domain.tools import build_tools
+from openai_responses_manifold.domain.tools import resolve_tools
 
 
 class Pipe:
@@ -93,35 +93,27 @@ class Pipe:
             )
             provided_tools = __tools__ if __tools__ is not None else body.get("tools")
             extra_tools = getattr(completions_body, "extra_tools", None) or body.get("extra_tools")
-            tool_specs = build_tools(
+            if isinstance(provided_tools, list) and not provided_tools:
+                provided_tools = None
+            if provided_tools is not None and not isinstance(provided_tools, dict):
+                await self.engine.emit_error(
+                    runtime_events,
+                    (
+                        "Tools must be provided as a registry dict "
+                        "(name -> {spec, callable}); list-form specs are not supported."
+                    ),
+                    done=True,
+                )
+                return None
+            tools, tool_registry = await resolve_tools(
                 responses_body,
                 valves,
-                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
+                provided_tools,
                 features=features,
                 extra_tools=extra_tools if isinstance(extra_tools, list) else None,
             )
-            if tool_specs:
-                responses_body.tools = tool_specs
-            if (
-                isinstance(provided_tools, list)
-                and provided_tools
-                and not isinstance(provided_tools, dict)
-            ):
-                await self.engine.emit_notification(
-                    runtime_events,
-                    content=(
-                        "Tool specs were provided without an OpenWebUI tool registry; "
-                        "tool calls will be skipped locally."
-                    ),
-                    level="warning",
-                )
-
-            if __task__:
-                self.logger.info("Detected task model: %s", __task__)
-                task_body = responses_body.model_dump()
-                if isinstance(__task_body__, dict):
-                    task_body = {**task_body, **__task_body__}
-                return await self.engine.run_task_model(task_body, valves)
+            if tools:
+                responses_body.tools = tools
 
             try:
                 responses_body = await self._apply_model_policies(
@@ -133,12 +125,19 @@ class Pipe:
             except RuntimeError:
                 return None
 
+            if __task__:
+                self.logger.info("Detected task model: %s", __task__)
+                task_body = responses_body.model_dump()
+                if isinstance(__task_body__, dict):
+                    task_body = {**task_body, **__task_body__}
+                return await self.engine.run_task_model(task_body, valves)
+
             result = await self.engine.run_streaming_turn(
                 responses_body,
                 valves=valves,
                 metadata=__metadata__,
                 events=runtime_events,
-                openwebui_tools=provided_tools if isinstance(provided_tools, dict) else None,
+                openwebui_tools=tool_registry,
             )
 
             if result.citations and __metadata__.get("chat_id") and __metadata__.get("message_id"):

@@ -6,6 +6,8 @@ import re
 from copy import deepcopy
 from typing import Any, Mapping
 
+from openai_responses_manifold.core.logging import get_logger
+
 # =============================================================================
 # Change Log
 # 2025-11-20: Align model feature flags with current OpenAI docs (web search,
@@ -26,7 +28,7 @@ from typing import Any, Mapping
 # - code_interpreter_tool  → Built-in Code interpreter tool in Responses.
 # - deep_research          → Deep research orchestration models.
 # - verbosity              → Supports `text.verbosity` parameter.
-MODEL_FEATURES: dict[str, frozenset[str]] = {
+MODEL_FEATURES: dict[str, set[str]] = {
     # -------------------------------------------------------------------------
     # GPT‑5 family (reasoning + tools)
     # -------------------------------------------------------------------------
@@ -98,6 +100,8 @@ MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
 
 _DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 _KNOWN_IDS = frozenset({*MODEL_FEATURES.keys(), *MODEL_ALIASES.keys()})
+_logger = get_logger(__name__)
+_UNKNOWN_LOGGED: set[str] = set()
 
 
 def normalize(model_id: str) -> str:
@@ -146,11 +150,16 @@ def alias_defaults(model_id: str) -> dict[str, Any]:
     return deepcopy(params) if params else {}
 
 
-def features(model_id: str) -> frozenset[str]:
+def features(model_id: str) -> set[str]:
     """Return the capability set for the canonical base model."""
 
     canonical = base_model(model_id, MODEL_ALIASES)
-    return MODEL_FEATURES.get(canonical, EMPTY_FEATURES)
+    feature_set = MODEL_FEATURES.get(canonical)
+    if feature_set is None and canonical and canonical not in _UNKNOWN_LOGGED:
+        _UNKNOWN_LOGGED.add(canonical)
+        _logger.warning("Unknown model_id in MODEL_FEATURES: %s (canonical=%s)", model_id, canonical)
+        return set()
+    return feature_set or set()
 
 
 def supports(feature: str, model_id: str) -> bool:
@@ -160,7 +169,6 @@ def supports(feature: str, model_id: str) -> bool:
 
 
 __all__ = [
-    "EMPTY_FEATURES",
     "MODEL_FEATURES",
     "MODEL_ALIASES",
     "alias_defaults",

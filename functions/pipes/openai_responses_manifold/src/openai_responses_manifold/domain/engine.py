@@ -192,10 +192,7 @@ class _StreamSession:
 
     def find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         call_items = output_items or (self.state.completed_response or {}).get("output", [])
-        tool_calls = [item for item in call_items if item.get("type") == "function_call"]
-        if tool_calls:
-            self.state.tool_calls_executed += len(tool_calls)
-        return tool_calls
+        return [item for item in call_items if item.get("type") == "function_call"]
 
     async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not tool_calls:
@@ -234,6 +231,43 @@ class _StreamSession:
             self.body.input = list(function_outputs)
         return True
 
+    def _capture_action_sources(self, item: dict[str, Any]) -> None:
+        action = item.get("action")
+        if not isinstance(action, dict):
+            return
+        sources = action.get("sources")
+        if not isinstance(sources, list):
+            return
+
+        item_type = item.get("type") or ""
+        provider_map = {
+            "web_search_call": "openai:web_search",
+            "file_search_call": "openai:file_search",
+            "mcp_call": "openai:mcp",
+            "code_interpreter_call": "openai:code_interpreter",
+        }
+        provider = provider_map.get(item_type, "openai:tool")
+        prefix = provider.split(":")[-1] or "source"
+
+        for idx, source in enumerate(sources, start=1):
+            if not isinstance(source, dict):
+                continue
+            url = source.get("url") or source.get("link")
+            if not url:
+                continue
+            title = source.get("title") or url
+            snippet = source.get("snippet") or source.get("content") or ""
+            self.state.citations.append(
+                {
+                    "provider": provider,
+                    "id": f"{prefix}-{len(self.state.citations) + 1}",
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                    "metadata": {"rank": idx, "item_type": item_type},
+                }
+            )
+
     async def _handle_text_delta(self, event: ResponseOutputTextDeltaEvent) -> None:
         delta_val = event.delta
         if delta_val:
@@ -263,6 +297,7 @@ class _StreamSession:
         status_desc = self.engine._status_from_output_item(item)
         if status_desc:
             await self.emit_status(status_desc)
+        self._capture_action_sources(item)
 
     async def _handle_reasoning_summary(self, event: ResponseReasoningSummaryTextDoneEvent) -> None:
         text_val = (event.text or "").strip()
@@ -369,7 +404,7 @@ class ResponsesEngine:
                 if not tool_calls:
                     break
 
-                new_calls = session.state.tool_calls_executed - executed_before
+                proposed_calls = len(tool_calls)
                 if body.max_tool_calls is not None:
                     remaining = max(body.max_tool_calls - executed_before, 0)
                     if remaining <= 0:
@@ -378,9 +413,9 @@ class ResponsesEngine:
                             require_previous=True,
                         )
                         break
-                    if new_calls > remaining:
+                    if proposed_calls > remaining:
                         tool_calls = tool_calls[:remaining]
-                        session.state.tool_calls_executed = executed_before + len(tool_calls)
+                        proposed_calls = len(tool_calls)
                         if not tool_calls:
                             await session.emit_status(
                                 "Tool call limit reached; ignoring further tool requests.",
@@ -391,6 +426,9 @@ class ResponsesEngine:
                 function_outputs = await session.execute_tool_calls(tool_calls)
                 if not function_outputs:
                     break
+
+                executed_count = len(function_outputs)
+                session.state.tool_calls_executed = executed_before + executed_count
 
                 if not await session.append_tool_outputs(function_outputs):
                     break
