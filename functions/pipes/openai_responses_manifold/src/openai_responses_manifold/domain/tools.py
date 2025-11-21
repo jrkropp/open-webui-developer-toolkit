@@ -97,6 +97,35 @@ def build_tools(
             web_search_tool["external_web_access"] = external_web_access
         tools.append(web_search_tool)
 
+    allow_code_interpreter = (
+        supports("code_interpreter_tool", responses_body.model)
+        and (getattr(valves, "ENABLE_CODE_INTERPRETER_TOOL", False) or features.get("code_interpreter", False))
+    )
+    if allow_code_interpreter:
+        code_tool: dict[str, Any] = {"type": "code_interpreter"}
+
+        feature_cfg = features.get("code_interpreter") if isinstance(features, dict) else None
+        container_from_features = feature_cfg.get("container") if isinstance(feature_cfg, dict) else None
+        container_json = getattr(valves, "CODE_INTERPRETER_CONTAINER_JSON", None)
+
+        if container_from_features is not None:
+            code_tool["container"] = container_from_features
+        elif container_json:
+            try:
+                code_tool["container"] = json.loads(container_json)
+            except Exception as exc:
+                preview, truncated = truncate_for_log(container_json, limit=300)
+                logger.warning(
+                    "CODE_INTERPRETER_CONTAINER_JSON is not valid JSON; ignoring. truncated=%s value=%s error=%s",
+                    truncated,
+                    preview,
+                    exc,
+                )
+        else:
+            code_tool["container"] = {"type": "auto"}
+
+        tools.append(code_tool)
+
     remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
     if remote_mcp:
         tools.extend(_build_mcp_tools(remote_mcp))
