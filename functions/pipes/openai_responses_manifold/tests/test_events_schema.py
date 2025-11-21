@@ -65,3 +65,39 @@ def test_parse_event_handles_obfuscation_on_tool_calls() -> None:
 
     assert isinstance(event, ResponseFunctionCallArgumentsDeltaEvent)
     assert event.obfuscation == "xyz987"
+
+
+def test_parse_event_accepts_code_interpreter_aliases() -> None:
+    delta_evt = parse_event(
+        {
+            "type": "response.code_interpreter_call_code.delta",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item_id": "ci_123",
+            "delta": "print('hi')",
+        }
+    )
+    assert delta_evt.type.value == "response.code_interpreter_call.code.delta"
+
+    done_evt = parse_event(
+        {
+            "type": "response.code_interpreter_call_code.done",
+            "sequence_number": 2,
+            "output_index": 0,
+            "item_id": "ci_123",
+            "code": "print('hi')",
+        }
+    )
+    assert done_evt.type.value == "response.code_interpreter_call.code.done"
+
+
+def test_parse_event_accepts_code_interpreter_in_progress_without_payload() -> None:
+    evt = parse_event(
+        {
+            "type": "response.code_interpreter_call.in_progress",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item_id": "ci_123",
+        }
+    )
+    assert evt.type.value == "response.code_interpreter_call.in_progress"

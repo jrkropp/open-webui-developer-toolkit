@@ -49,7 +49,6 @@ class ResponseCreateParams(BaseModel):
     truncation: Literal["auto", "disabled"] | None = "disabled"
     text: dict[str, Any] | None = None
     model_router_result: dict[str, Any] | None = None
-    include_obfuscation: bool | None = False
     user: str | None = None  # deprecated upstream; kept for compatibility
 
     model_config = ConfigDict(extra="forbid")

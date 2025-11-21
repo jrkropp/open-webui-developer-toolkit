@@ -129,12 +129,6 @@ class PipeValves(BaseModel):
             "If unset, defaults to {'type': 'auto'}."
         ),
     )
-    CODE_INTERPRETER_INCLUDE_OUTPUTS: bool = Field(
-        default=True,
-        description=(
-            "Automatically include 'code_interpreter_call.outputs' when code interpreter is enabled."
-        ),
-    )
     REMOTE_MCP_SERVERS_JSON: str | None = Field(
         default=None,
         description=(

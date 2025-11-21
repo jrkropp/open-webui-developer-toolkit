@@ -226,7 +226,10 @@ class Pipe:
         events: RuntimeEvents,
     ) -> Any:
         tools = responses_body.tools or []
-        if not (tools and supports("function_calling", responses_body.model)):
+        has_function_tools = any(
+            isinstance(tool, dict) and tool.get("type") == "function" for tool in tools
+        )
+        if not (has_function_tools and supports("function_calling", responses_body.model)):
             return responses_body
         model = Models.get_model_by_id(openwebui_model_id)
         if not model:
@@ -297,10 +300,17 @@ class Pipe:
                 responses_body.include.append("reasoning.encrypted_content")
 
     def _apply_parallel_tool_policy(self, responses_body: Any, valves: PipeValves) -> None:
-        has_web_search = any(
-            isinstance(tool, dict) and tool.get("type") == "web_search"
-            for tool in (responses_body.tools or [])
+        tools = responses_body.tools or []
+        has_web_search = any(isinstance(tool, dict) and tool.get("type") == "web_search" for tool in tools)
+        has_code_interpreter = any(
+            isinstance(tool, dict) and tool.get("type") == "code_interpreter" for tool in tools
         )
+
+        if has_code_interpreter:
+            responses_body.include = responses_body.include or []
+            if "code_interpreter_call.outputs" not in responses_body.include:
+                responses_body.include.append("code_interpreter_call.outputs")
+
         if has_web_search:
             responses_body.parallel_tool_calls = False
             if getattr(valves, "WEB_SEARCH_INCLUDE_SOURCES", True):

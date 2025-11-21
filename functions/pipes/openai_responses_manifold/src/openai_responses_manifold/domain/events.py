@@ -14,6 +14,8 @@ class RuntimeEvents(Protocol):
 
     async def citation(self, data: dict[str, Any]) -> None: ...
 
+    async def files(self, files: list[dict[str, Any]]) -> None: ...
+
     async def chat_completion(self, data: dict[str, Any]) -> None: ...
 
     async def notification(
@@ -37,6 +39,9 @@ class NullRuntimeEvents:
         return None
 
     async def citation(self, data: dict[str, Any]) -> None:
+        return None
+
+    async def files(self, files: list[dict[str, Any]]) -> None:
         return None
 
     async def chat_completion(self, data: dict[str, Any]) -> None:

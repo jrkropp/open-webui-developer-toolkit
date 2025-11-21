@@ -504,7 +504,8 @@ class ResponseMCPListToolsFailedEvent(ResponseMCPListToolsEvent):
 
 class ResponseCodeInterpreterCallEvent(BaseStreamEvent):
     output_index: int
-    code_interpreter_call: dict[str, Any]
+    item_id: str
+    code_interpreter_call: dict[str, Any] | None = Field(default_factory=dict)
 
 
 class ResponseCodeInterpreterCallInProgressEvent(ResponseCodeInterpreterCallEvent):
@@ -538,6 +539,7 @@ class ResponseCodeInterpreterCallCodeDeltaEvent(BaseStreamEvent):
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA
     )
     output_index: int
+    item_id: str
     delta: str
 
 
@@ -548,6 +550,7 @@ class ResponseCodeInterpreterCallCodeDoneEvent(BaseStreamEvent):
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE
     )
     output_index: int
+    item_id: str
     code: str
 
 
@@ -618,6 +621,16 @@ _STREAM_EVENT_ADAPTER = TypeAdapter(StreamEvent)
 
 def parse_event(payload: Mapping[str, Any]) -> StreamEvent:
     """Validate and cast a raw SSE payload into a typed event model."""
+
+    raw_type = payload.get("type")
+    # Some transports emit code interpreter code events without the dot separator.
+    alias_map = {
+        "response.code_interpreter_call_code.delta": EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA,
+        "response.code_interpreter_call_code.done": EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE,
+    }
+    if isinstance(raw_type, str) and raw_type in alias_map:
+        payload = dict(payload)
+        payload["type"] = alias_map[raw_type]
 
     try:
         return _STREAM_EVENT_ADAPTER.validate_python(payload)

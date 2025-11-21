@@ -48,6 +48,11 @@ from openai_responses_manifold.core.logging import (
 from openai_responses_manifold.core.model_catalog import supports
 from openai_responses_manifold.domain.events import NullRuntimeEvents, RuntimeEvents
 from openai_responses_manifold.domain.history import HistoryPersistence, HistoryStore
+from openai_responses_manifold.domain.code_interpreter import (
+    handle_code_interpreter_event,
+    handle_code_interpreter_item,
+    emit_pending_code_interpreter_result,
+)
 from openai_responses_manifold.domain.tasks import run_task_model
 from openai_responses_manifold.domain.tools import execute_tool_calls, tool_summaries_for_log
 
@@ -67,11 +72,19 @@ class _StreamState:
     has_sent_status: bool = False
     has_any_status: bool = False
     thinking_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
+    code_snippets: dict[int, str] = field(default_factory=dict)
+    last_code_output_index: int | None = None
+    pending_ci_results: set[int] = field(default_factory=set)
+    pending_ci_code_snippets: dict[int, str] = field(default_factory=dict)
 
     def reset_for_next_response(self) -> None:
         self.completed_response = None
         self.usage_summary = None
         self.has_sent_status = False
+        self.code_snippets.clear()
+        self.last_code_output_index = None
+        self.pending_ci_results.clear()
+        self.pending_ci_code_snippets.clear()
 
 
 @dataclass
@@ -143,6 +156,15 @@ class _StreamSession:
         if isinstance(event, ResponseOutputTextDoneEvent):
             await self._handle_text_done(event)
             return False
+
+        handled_ci = await handle_code_interpreter_event(
+            event,
+            self.state,
+            self.emit_status,
+            self.engine.logger,
+        )
+        if handled_ci:
+            return True
 
         if isinstance(event, ResponseCompletedEvent):
             await self.engine._cancel_tasks(self.state.thinking_tasks)
@@ -308,6 +330,16 @@ class _StreamSession:
         if should_persist:
             await self._persist_items([item])
 
+        if item_type == "code_interpreter_call":
+            await handle_code_interpreter_item(
+                item,
+                self.state,
+                self.events,
+                self.engine.logger,
+                self.emit_status,
+                output_index=event.output_index,
+            )
+
         status_desc = self.engine._status_from_output_item(item)
         if status_desc:
             await self.emit_status(status_desc)
@@ -328,6 +360,12 @@ class _StreamSession:
         if text_val and not self.state.response_text:
             self.state.response_text = text_val
         await self.events.replace(self.state.response_text or text_val)
+        await emit_pending_code_interpreter_result(
+            self.state,
+            self.events,
+            self.engine.logger,
+            assistant_text=text_val,
+        )
 
     async def _persist_items(self, items: list[dict[str, Any]]) -> None:
         chat_id = self.metadata.get("chat_id")

@@ -25,6 +25,9 @@ class OpenWebUIRuntimeEvents(RuntimeEvents):
     async def citation(self, data: dict[str, Any]) -> None:
         await self._emitter.citation(data)
 
+    async def files(self, files: list[dict[str, Any]]) -> None:
+        await self._emitter.files(files)
+
     async def chat_completion(self, data: dict[str, Any]) -> None:
         await self._emitter.chat_completion(data)
 

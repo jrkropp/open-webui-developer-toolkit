@@ -135,9 +135,9 @@ def test_strictifies_extra_function_tools_when_strict_enabled() -> None:
     assert fn["strict"] is True
     params = fn["parameters"]
     assert params["additionalProperties"] is False
-    assert params.get("required") == ["text", "count"]
-    assert params["properties"]["text"]["type"] == ["string", "null"]
-    assert params["properties"]["count"]["type"] == ["integer", "null"]
+    assert sorted(params.get("required") or []) == ["count", "text"]
+    assert params["properties"]["text"]["type"] == "string"
+    assert params["properties"]["count"]["type"] == "integer"
 
 
 def test_tool_summaries_for_log_captures_web_search_details() -> None:
@@ -214,3 +214,34 @@ def test_apply_parallel_tool_policy_allows_opt_out_of_sources() -> None:
     pipe._apply_parallel_tool_policy(body, valves)
 
     assert body.include is None
+
+
+def test_apply_parallel_tool_policy_adds_code_interpreter_outputs() -> None:
+    pipe = orm.Pipe()
+    valves = pipe.Valves()
+    body = _responses_body()
+    body.tools = [{"type": "code_interpreter"}]
+
+    pipe._apply_parallel_tool_policy(body, valves)
+
+    assert body.parallel_tool_calls is True
+    assert "code_interpreter_call.outputs" in (body.include or [])
+
+
+def test_build_tools_includes_code_interpreter_when_enabled() -> None:
+    valves = orm.Pipe.Valves(ENABLE_CODE_INTERPRETER_TOOL=True)
+    tools = orm.build_tools(_responses_body(), valves)
+
+    ci_tool = next(tool for tool in tools if tool["type"] == "code_interpreter")
+    assert ci_tool["container"] == {"type": "auto"}
+
+
+def test_build_tools_respects_container_override_and_features() -> None:
+    valves = orm.Pipe.Valves(
+        ENABLE_CODE_INTERPRETER_TOOL=True,
+        CODE_INTERPRETER_CONTAINER_JSON='{"type": "legacy"}',
+    )
+    tools = orm.build_tools(_responses_body(), valves, features={"code_interpreter": {"container": {"type": "feat"}}})
+
+    ci_tool = next(tool for tool in tools if tool["type"] == "code_interpreter")
+    assert ci_tool["container"] == {"type": "feat"}

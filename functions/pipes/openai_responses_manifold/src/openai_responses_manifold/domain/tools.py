@@ -13,6 +13,7 @@ from openai_responses_manifold.core.logging import get_logger, truncate_for_log
 from openai_responses_manifold.core.errors import ToolExecutionError
 from openai_responses_manifold.core.model_catalog import supports
 from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+from openai_responses_manifold.domain.web_search import build_web_search_tool
 
 logger = get_logger(__name__)
 TOOL_CALL_TIMEOUT_SEC = 30
@@ -66,36 +67,8 @@ def build_tools(
         )
     )
 
-    reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
-    effort = reasoning.get("effort")
-    effort_level = effort.lower() if isinstance(effort, str) else ""
-    # 2025-11-20: Web search is not available for gpt-5 with minimal reasoning and for gpt-4.1-nano.
-    allow_web = (
-        supports("web_search_tool", responses_body.model)
-        and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
-        and effort_level != "minimal"
-    )
-    if allow_web:
-        web_search_tool: dict[str, Any] = {"type": "web_search"}
-        user_location = getattr(valves, "WEB_SEARCH_USER_LOCATION", None)
-        if user_location:
-            try:
-                web_search_tool["user_location"] = json.loads(user_location)
-            except Exception as exc:
-                preview, truncated = truncate_for_log(user_location, limit=300)
-                logger.warning(
-                    "WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring. truncated=%s value=%s error=%s",
-                    truncated,
-                    preview,
-                    exc,
-                )
-        allowed_domains = _parse_allowed_domains(getattr(valves, "WEB_SEARCH_ALLOWED_DOMAINS", None))
-        if allowed_domains:
-            web_search_tool["filters"] = {"allowed_domains": allowed_domains}
-        external_web_access = getattr(valves, "WEB_SEARCH_EXTERNAL_WEB_ACCESS", None)
-        if isinstance(external_web_access, bool):
-            web_search_tool["external_web_access"] = external_web_access
-        tools.append(web_search_tool)
+    # web_search
+    tools.extend(build_web_search_tool(responses_body, valves, features))
 
     allow_code_interpreter = (
         supports("code_interpreter_tool", responses_body.model)
@@ -271,19 +244,12 @@ def _strictify_schema(schema: Any) -> dict[str, Any]:
             for name in props.keys():
                 if isinstance(name, str) and name not in merged_required:
                     merged_required.append(name)
-            original_required_set = set(original_required)
-            node["additionalProperties"] = False
             node["required"] = merged_required
+            node["additionalProperties"] = False
 
             for name, prop in props.items():
                 if not isinstance(prop, dict) or not isinstance(name, str):
                     continue
-                if name not in original_required_set:
-                    ptype = prop.get("type")
-                    if isinstance(ptype, str) and ptype != "null":
-                        prop["type"] = [ptype, "null"]
-                    elif isinstance(ptype, list) and "null" not in ptype:
-                        prop["type"] = [*ptype, "null"]
                 _enforce(prop)
 
         items = node.get("items")
@@ -332,59 +298,6 @@ def _maybe_strictify_extra_tools(
         strictified.append(clone)
 
     return strictified
-
-
-def _parse_allowed_domains(raw: Any) -> list[str]:
-    """
-    Normalize allowed domain inputs for the web_search tool.
-
-    Accepts JSON (list or string) or comma-separated strings. Removes protocols and trailing slashes.
-    Caps the allow-list at 20 entries, preserving order.
-    """
-
-    if raw is None:
-        return []
-
-    candidates: list[Any] = []
-    if isinstance(raw, str):
-        raw = raw.strip()
-        if not raw:
-            return []
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            parsed = None
-        if isinstance(parsed, list):
-            candidates = parsed
-        elif isinstance(parsed, str):
-            candidates = [parsed]
-        elif parsed is None:
-            candidates = raw.split(",")
-    elif isinstance(raw, list):
-        candidates = raw
-    else:
-        return []
-
-    normalized: list[str] = []
-    for cand in candidates:
-        if not isinstance(cand, str):
-            continue
-        domain = _normalize_domain(cand)
-        if not domain or domain in normalized:
-            continue
-        normalized.append(domain)
-        if len(normalized) >= 20:
-            break
-    return normalized
-
-
-def _normalize_domain(domain: str) -> str:
-    """Strip protocol/path and whitespace from a domain string."""
-
-    cleaned = domain.strip()
-    cleaned = re.sub(r"^https?://", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.split("/")[0]
-    return cleaned.rstrip("/")
 
 
 def tool_summaries_for_log(tools: list[dict[str, Any]]) -> list[str]:

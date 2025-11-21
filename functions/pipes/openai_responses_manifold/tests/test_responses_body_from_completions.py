@@ -34,7 +34,7 @@ async def test_responses_body_from_completions_maps_reasoning_and_tokens() -> No
     assert responses.reasoning.get("effort") == "minimal"
     assert responses.instructions == "Act helpful"
     assert responses.truncation == "auto"
-    assert responses.include_obfuscation is False
+    assert "include_obfuscation" not in responses.model_dump()
     assert responses.tools in (None, [])
 
 

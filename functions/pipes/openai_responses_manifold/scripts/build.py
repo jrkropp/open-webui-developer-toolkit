@@ -59,6 +59,8 @@ MODULE_ORDER: list[str] = [
     "adapters/openai/client.py",
     "domain/events.py",
     "domain/history.py",
+    "domain/code_interpreter.py",
+    "domain/web_search.py",
     "domain/tools.py",
     "domain/tasks.py",
     "domain/routing.py",

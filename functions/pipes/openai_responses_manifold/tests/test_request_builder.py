@@ -57,3 +57,24 @@ async def test_build_responses_body_prefers_explicit_instructions_over_system() 
     assert body.instructions == "explicit instructions"
     assert body.truncation == "auto"
     assert body.tools in (None, [])
+
+
+@pytest.mark.asyncio()
+async def test_build_responses_body_passes_through_tool_choice_and_include() -> None:
+    valves = type("V", (), {"TRUNCATION": "auto", "PARALLEL_TOOL_CALLS": True})()
+    owui_request = {
+        "model": "gpt-4o",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
+        "tool_choice": "required",
+        "include": ["code_interpreter_call.outputs"],
+        "store": True,
+        "metadata": {"foo": "bar"},
+    }
+    body = await build_responses_body(
+        owui_request, valves=valves, metadata={}, item_store=ItemStore()
+    )
+
+    assert body.tool_choice == "required"
+    assert body.include == ["code_interpreter_call.outputs"]
+    assert body.store is True
+    assert body.metadata == {"foo": "bar"}

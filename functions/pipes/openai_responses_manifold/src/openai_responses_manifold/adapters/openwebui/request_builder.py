@@ -59,7 +59,6 @@ async def build_responses_body(
         "conversation",
         "prompt",
         "stream_options",
-        "include_obfuscation",
     ]
     for key in passthrough_keys:
         if key in owui_request:

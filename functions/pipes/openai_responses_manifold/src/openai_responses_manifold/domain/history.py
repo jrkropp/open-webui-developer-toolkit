@@ -173,7 +173,9 @@ class HistoryBuilder:
                             marker = parse_marker(segment["marker"])
                             payload = resolved.get(marker["ulid"])
                             if payload:
-                                openai_input.append(payload)
+                                payload_copy = json.loads(json.dumps(payload))
+                                payload_copy.setdefault("id", marker["ulid"])
+                                openai_input.append(payload_copy)
                         elif segment["type"] == "text":
                             text_segment = segment.get("text", "").strip()
                             if text_segment:

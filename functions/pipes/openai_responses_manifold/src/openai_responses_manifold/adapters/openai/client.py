@@ -178,6 +178,7 @@ class OpenAIResponsesClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
+
     async def _get_or_init_http_session(self) -> aiohttp.ClientSession:
         if self._session is not None and not self._session.closed:
             self._logger.debug("Reusing existing aiohttp session")

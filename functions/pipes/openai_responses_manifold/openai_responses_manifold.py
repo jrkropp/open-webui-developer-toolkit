@@ -32,6 +32,8 @@ Use the version in the alpha-preview or main branches instead.
 # - adapters/openai/client.py              aiohttp-backed client for the OpenAI Responses API.
 # - domain/events.py                       UI-agnostic interface for runtime events consumed by the engine.
 # - domain/history.py                      Persistence and reconstruction services for Responses items.
+# - domain/code_interpreter.py             Helpers for handling code interpreter events and output items.
+# - domain/web_search.py                   Helpers for web_search tool construction and request policy.
 # - domain/tools.py                        Tool declaration and execution helpers.
 # - domain/tasks.py                        Helpers for running non-streamed task models.
 # - domain/routing.py                      Helper model routing for auto variants.
@@ -161,6 +163,20 @@ class PipeValves(BaseModel):
         description=(
             "Automatically request web_search_call.action.sources when a web_search tool is present, "
             "surfacing the full list of consulted URLs alongside inline citations."
+        ),
+    )
+    ENABLE_CODE_INTERPRETER_TOOL: bool = Field(
+        default=False,
+        description=(
+            "Enable OpenAI's built-in 'code_interpreter' tool when supported by the model. "
+            "Docs: https://platform.openai.com/docs/assistants/tools/code-interpreter"
+        ),
+    )
+    CODE_INTERPRETER_CONTAINER_JSON: str | None = Field(
+        default=None,
+        description=(
+            "Optional JSON for the code_interpreter tool's 'container' field. "
+            "If unset, defaults to {'type': 'auto'}."
         ),
     )
     REMOTE_MCP_SERVERS_JSON: str | None = Field(
@@ -869,7 +885,6 @@ class ResponseCreateParams(BaseModel):
     truncation: Literal["auto", "disabled"] | None = "disabled"
     text: dict[str, Any] | None = None
     model_router_result: dict[str, Any] | None = None
-    include_obfuscation: bool | None = False
     user: str | None = None  # deprecated upstream; kept for compatibility
 
     model_config = ConfigDict(extra="forbid")
@@ -1468,7 +1483,8 @@ class ResponseMCPListToolsFailedEvent(ResponseMCPListToolsEvent):
 
 class ResponseCodeInterpreterCallEvent(BaseStreamEvent):
     output_index: int
-    code_interpreter_call: dict[str, Any]
+    item_id: str
+    code_interpreter_call: dict[str, Any] | None = Field(default_factory=dict)
 
 
 class ResponseCodeInterpreterCallInProgressEvent(ResponseCodeInterpreterCallEvent):
@@ -1502,6 +1518,7 @@ class ResponseCodeInterpreterCallCodeDeltaEvent(BaseStreamEvent):
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA
     )
     output_index: int
+    item_id: str
     delta: str
 
 
@@ -1512,6 +1529,7 @@ class ResponseCodeInterpreterCallCodeDoneEvent(BaseStreamEvent):
         EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE
     )
     output_index: int
+    item_id: str
     code: str
 
 
@@ -1582,6 +1600,16 @@ _STREAM_EVENT_ADAPTER = TypeAdapter(StreamEvent)
 
 def parse_event(payload: Mapping[str, Any]) -> StreamEvent:
     """Validate and cast a raw SSE payload into a typed event model."""
+
+    raw_type = payload.get("type")
+    # Some transports emit code interpreter code events without the dot separator.
+    alias_map = {
+        "response.code_interpreter_call_code.delta": EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA,
+        "response.code_interpreter_call_code.done": EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE,
+    }
+    if isinstance(raw_type, str) and raw_type in alias_map:
+        payload = dict(payload)
+        payload["type"] = alias_map[raw_type]
 
     try:
         return _STREAM_EVENT_ADAPTER.validate_python(payload)
@@ -1835,6 +1863,7 @@ class OpenAIResponsesClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
+
     async def _get_or_init_http_session(self) -> aiohttp.ClientSession:
         if self._session is not None and not self._session.closed:
             self._logger.debug("Reusing existing aiohttp session")
@@ -1889,6 +1918,8 @@ class RuntimeEvents(Protocol):
 
     async def citation(self, data: dict[str, Any]) -> None: ...
 
+    async def files(self, files: list[dict[str, Any]]) -> None: ...
+
     async def chat_completion(self, data: dict[str, Any]) -> None: ...
 
     async def notification(
@@ -1912,6 +1943,9 @@ class NullRuntimeEvents:
         return None
 
     async def citation(self, data: dict[str, Any]) -> None:
+        return None
+
+    async def files(self, files: list[dict[str, Any]]) -> None:
         return None
 
     async def chat_completion(self, data: dict[str, Any]) -> None:
@@ -2103,7 +2137,9 @@ class HistoryBuilder:
                             marker = parse_marker(segment["marker"])
                             payload = resolved.get(marker["ulid"])
                             if payload:
-                                openai_input.append(payload)
+                                payload_copy = json.loads(json.dumps(payload))
+                                payload_copy.setdefault("id", marker["ulid"])
+                                openai_input.append(payload_copy)
                         elif segment["type"] == "text":
                             text_segment = segment.get("text", "").strip()
                             if text_segment:
@@ -2169,6 +2205,418 @@ class HistoryService:
 
 __all__ = ["HistoryBuilder", "HistoryPersistence", "HistoryService", "HistoryStore", "NullHistoryStore"]
 
+# === domain/code_interpreter.py ===
+"""Helpers for handling code interpreter events and output items."""
+
+import logging
+from typing import Any, Awaitable, Callable
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.adapters.openai.events import (
+#     ResponseCodeInterpreterCallCodeDeltaEvent,
+#     ResponseCodeInterpreterCallCodeDoneEvent,
+#     ResponseCodeInterpreterCallCompletedEvent,
+#     ResponseCodeInterpreterCallInProgressEvent,
+#     ResponseCodeInterpreterCallInterpretingEvent,
+# )
+# from openai_responses_manifold.domain.events import RuntimeEvents
+# from openai_responses_manifold.core.logging import truncate_for_log
+
+EmitStatusFn = Callable[[str], Awaitable[Any]]
+
+
+async def handle_code_interpreter_event(
+    event: Any,
+    state: Any,
+    emit_status: Callable[[str], Awaitable[Any]],
+    logger: logging.Logger,
+) -> bool:
+    """Handle streaming code interpreter events. Returns True if the stream should stop."""
+
+    if isinstance(event, ResponseCodeInterpreterCallInProgressEvent):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("code_interpreter.event in_progress output_index=%s", event.output_index)
+        state.last_code_output_index = event.output_index
+        await emit_status("Starting code interpreter…")
+        return False
+
+    if isinstance(event, ResponseCodeInterpreterCallInterpretingEvent):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("code_interpreter.event interpreting output_index=%s", event.output_index)
+        await emit_status("Running Python code in the sandbox…")
+        return False
+
+    if isinstance(event, ResponseCodeInterpreterCallCodeDeltaEvent):
+        return False
+
+    if isinstance(event, ResponseCodeInterpreterCallCodeDoneEvent):
+        code = (event.code or "").strip()
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "code_interpreter.event code_done output_index=%s code_len=%d",
+                event.output_index,
+                len(code),
+            )
+        if event.output_index is not None:
+            state.code_snippets[event.output_index] = code or state.code_snippets.get(event.output_index)
+            state.last_code_output_index = event.output_index
+        if code:
+            await emit_status(
+                f"Executed Python:\n```python\n{code}\n```",
+                hidden=True,
+                require_previous=True,
+            )
+        return False
+
+    if isinstance(event, ResponseCodeInterpreterCallCompletedEvent):
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("code_interpreter.event completed output_index=%s", event.output_index)
+        await emit_status("Code interpreter run finished.", require_previous=True)
+        return False
+
+    return False
+
+
+async def handle_code_interpreter_item(
+    item: dict[str, Any],
+    state: Any,
+    events: RuntimeEvents,
+    logger: logging.Logger,
+    emit_status: Callable[..., Awaitable[Any]],
+    *,
+    output_index: int | None = None,
+) -> None:
+    """Handle a completed code_interpreter_call output item."""
+
+    # Support both the OpenAI item shape (flat fields) and the previously nested shape
+    ci_payload = item.get("code_interpreter_call") if isinstance(item.get("code_interpreter_call"), dict) else item
+    outputs = (ci_payload.get("outputs") if isinstance(ci_payload, dict) else None) or item.get("outputs") or []
+    run_index = output_index if output_index is not None else state.last_code_output_index
+    log_chunks: list[str] = []
+    other_outputs: list[str] = []
+    for output in outputs:
+        if not isinstance(output, dict):
+            continue
+        output_type = output.get("type")
+        if output_type == "logs":
+            logs = output.get("logs")
+            if isinstance(logs, str) and logs.strip():
+                log_chunks.append(logs.strip())
+            continue
+
+        if output_type == "image":
+            image = output.get("image") or {}
+            file_id = image.get("file_id") or output.get("file_id") or output.get("file")
+            filename = image.get("filename")
+            desc = f"image: file_id={file_id}" if file_id else "image output"
+            if filename:
+                desc += f" ({filename})"
+            other_outputs.append(desc)
+            continue
+
+        if output_type == "file":
+            file_id = output.get("file_id") or output.get("file")
+            filename = output.get("filename")
+            desc = f"file: file_id={file_id}" if file_id else "file output"
+            if filename:
+                desc += f" ({filename})"
+            other_outputs.append(desc)
+            continue
+
+        if output_type in ("text", "result", "data"):
+            data_val = output.get("text") or output.get("result") or output.get("data")
+            if data_val is not None:
+                preview, truncated = truncate_for_log(data_val, 400)
+                suffix = " …(truncated)" if truncated else ""
+                other_outputs.append(f"{output_type}: {preview}{suffix}")
+            continue
+
+        keys = ", ".join(sorted(k for k in output.keys() if k != "type"))
+        other_outputs.append(f"{output_type or 'output'} ({keys})")
+
+    if log_chunks:
+        logs_snippet = "\n".join(log_chunks)
+        await emit_status(
+            "Code interpreter logs:\n" + logs_snippet,
+            hidden=True,
+            require_previous=True,
+        )
+
+    code_snippet = (ci_payload.get("code") or item.get("code") or "").strip()
+    if not code_snippet and run_index is not None:
+        cached_code = state.code_snippets.get(run_index)
+        if cached_code:
+            code_snippet = cached_code
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "code_interpreter_call using fallback code snippet output_index=%s len=%d",
+                    run_index,
+                    len(code_snippet),
+                )
+
+    assistant_answer = (state.response_text or "").strip()
+    pending_result = not (log_chunks or other_outputs or assistant_answer)
+
+    # Emit a consolidated citation so users see logs/outputs/code (and result text if already present).
+    snippet_parts: list[str] = []
+    if log_chunks:
+        snippet_parts.append("Logs:\n" + "\n".join(log_chunks))
+    if other_outputs:
+        snippet_parts.append("Outputs:\n- " + "\n- ".join(other_outputs))
+    if assistant_answer and not pending_result:
+        snippet_parts.append("Result:\n" + assistant_answer)
+    if code_snippet:
+        snippet_parts.append("Code:\n" + code_snippet)
+    if not snippet_parts:
+        snippet_parts.append(
+            "Code interpreter returned no structured outputs yet. The assistant will share the result in text."
+        )
+
+    result_snippet = "\n\n".join(snippet_parts)
+    citation = {
+        "provider": "openai:code_interpreter",
+        "id": f"ci-{len(state.citations) + 1}",
+        "title": "Code interpreter run",
+        "snippet": result_snippet,
+        "metadata": {
+            "item_type": "code_interpreter_call",
+            "kind": "run",
+            "has_logs": bool(log_chunks),
+            "has_code": bool(code_snippet),
+            "has_outputs": bool(other_outputs),
+            "has_result_text": bool(assistant_answer and not pending_result),
+            "pending_result_text": pending_result,
+            "output_index": run_index,
+        },
+    }
+    state.citations.append(citation)
+    await events.citation(
+        {
+            "document": [result_snippet],
+            "metadata": [citation["metadata"]],
+            "source": {"name": citation["title"]},
+        }
+    )
+
+    # Track pending results per run so we can emit a second citation once the assistant text arrives.
+    if run_index is not None:
+        if pending_result:
+            state.pending_ci_results.add(run_index)
+            if code_snippet:
+                state.pending_ci_code_snippets[run_index] = code_snippet
+        else:
+            state.pending_ci_results.discard(run_index)
+            state.pending_ci_code_snippets.pop(run_index, None)
+
+        # Clear cached snippet after consumption (the pending copy, if any, is stored above)
+        state.code_snippets.pop(run_index, None)
+
+    if (
+        not log_chunks
+        and not code_snippet
+        and logger.isEnabledFor(logging.DEBUG)
+    ):
+        logger.debug(
+            "code_interpreter_call item had no logs/code; outputs_len=%d",
+            len(outputs),
+        )
+
+
+async def emit_pending_code_interpreter_result(
+    state: Any,
+    events: RuntimeEvents,
+    logger: logging.Logger,
+    assistant_text: str | None = None,
+) -> None:
+    """Emit a follow-up citation with the assistant's result text when no structured outputs were returned."""
+
+    if not getattr(state, "pending_ci_results", None):
+        return
+
+    result_text = (assistant_text or state.response_text or "").strip()
+    if not result_text:
+        return
+
+    pending_indices = list(state.pending_ci_results)
+    for run_index in pending_indices:
+        code_snippet = state.pending_ci_code_snippets.get(run_index)
+        snippet_parts = [f"Result:\n{result_text}"]
+        if code_snippet:
+            snippet_parts.append(f"Code:\n{code_snippet}")
+
+        snippet = "\n\n".join(snippet_parts)
+        citation = {
+            "provider": "openai:code_interpreter",
+            "id": f"ci-{len(state.citations) + 1}",
+            "title": "Code interpreter result",
+            "snippet": snippet,
+            "metadata": {
+                "item_type": "code_interpreter_call",
+                "kind": "result",
+                "has_logs": False,
+                "has_code": bool(code_snippet),
+                "has_outputs": False,
+                "has_result_text": True,
+                "pending_result_text": False,
+                "output_index": run_index,
+            },
+        }
+        state.citations.append(citation)
+        await events.citation(
+            {
+                "document": [snippet],
+                "metadata": [citation["metadata"]],
+                "source": {"name": citation["title"]},
+            }
+        )
+
+        state.pending_ci_results.discard(run_index)
+        state.pending_ci_code_snippets.pop(run_index, None)
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("code_interpreter result citation emitted len=%d", len(snippet))
+
+
+__all__ = [
+    "handle_code_interpreter_event",
+    "handle_code_interpreter_item",
+    "emit_pending_code_interpreter_result",
+]
+
+# === domain/web_search.py ===
+"""Helpers for web_search tool construction and request policy."""
+
+import json
+import logging
+import re
+from typing import Any
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.logging import get_logger, truncate_for_log
+# from openai_responses_manifold.core.model_catalog import supports
+
+logger = get_logger(__name__)
+
+
+def build_web_search_tool(
+    responses_body: Any,
+    valves: Any,
+    features: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Return a list with a web_search tool if enabled/supported, otherwise []."""
+
+    features = features or {}
+    reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
+    effort = reasoning.get("effort")
+    effort_level = effort.lower() if isinstance(effort, str) else ""
+    allow_web = (
+        supports("web_search_tool", responses_body.model)
+        and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
+        and effort_level != "minimal"
+    )
+    if not allow_web:
+        return []
+
+    web_search_tool: dict[str, Any] = {"type": "web_search"}
+    user_location = getattr(valves, "WEB_SEARCH_USER_LOCATION", None)
+    if user_location:
+        try:
+            web_search_tool["user_location"] = json.loads(user_location)
+        except Exception as exc:
+            preview, truncated = truncate_for_log(user_location, limit=300)
+            logger.warning(
+                "WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring. truncated=%s value=%s error=%s",
+                truncated,
+                preview,
+                exc,
+            )
+    allowed_domains = _parse_allowed_domains(getattr(valves, "WEB_SEARCH_ALLOWED_DOMAINS", None))
+    if allowed_domains:
+        web_search_tool["filters"] = {"allowed_domains": allowed_domains}
+    external_web_access = getattr(valves, "WEB_SEARCH_EXTERNAL_WEB_ACCESS", None)
+    if isinstance(external_web_access, bool):
+        web_search_tool["external_web_access"] = external_web_access
+
+    return [web_search_tool]
+
+
+def apply_web_search_policy(responses_body: Any, valves: Any) -> bool:
+    """
+    Enforce parallel/tool include policy for web_search.
+
+    Returns True if web_search is present and policy applied.
+    """
+
+    has_web_search = any(
+        isinstance(tool, dict) and tool.get("type") == "web_search"
+        for tool in (responses_body.tools or [])
+    )
+    if not has_web_search:
+        return False
+
+    responses_body.parallel_tool_calls = False
+    if getattr(valves, "WEB_SEARCH_INCLUDE_SOURCES", True):
+        responses_body.include = responses_body.include or []
+        if "web_search_call.action.sources" not in responses_body.include:
+            responses_body.include.append("web_search_call.action.sources")
+    return True
+
+
+def _parse_allowed_domains(raw: Any) -> list[str]:
+    """
+    Normalize allowed domain inputs for the web_search tool.
+
+    Accepts JSON (list or string) or comma-separated strings. Removes protocols and trailing slashes.
+    Caps the allow-list at 20 entries, preserving order.
+    """
+
+    if raw is None:
+        return []
+
+    candidates: list[Any] = []
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            candidates = parsed
+        elif isinstance(parsed, str):
+            candidates = [parsed]
+        elif parsed is None:
+            candidates = raw.split(",")
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        return []
+
+    normalized: list[str] = []
+    for cand in candidates:
+        if not isinstance(cand, str):
+            continue
+        domain = _normalize_domain(cand)
+        if not domain or domain in normalized:
+            continue
+        normalized.append(domain)
+        if len(normalized) >= 20:
+            break
+    return normalized
+
+
+def _normalize_domain(domain: str) -> str:
+    """Strip protocol/path and whitespace from a domain string."""
+
+    cleaned = domain.strip()
+    cleaned = re.sub(r"^https?://", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.split("/")[0]
+    return cleaned.rstrip("/")
+
+
+__all__ = ["build_web_search_tool", "apply_web_search_policy"]
+
 # === domain/tools.py ===
 """Tool declaration and execution helpers."""
 
@@ -2184,6 +2632,7 @@ from typing import Any
 # from openai_responses_manifold.core.errors import ToolExecutionError
 # from openai_responses_manifold.core.model_catalog import supports
 # from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+# from openai_responses_manifold.domain.web_search import build_web_search_tool
 
 logger = get_logger(__name__)
 TOOL_CALL_TIMEOUT_SEC = 30
@@ -2237,36 +2686,37 @@ def build_tools(
         )
     )
 
-    reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
-    effort = reasoning.get("effort")
-    effort_level = effort.lower() if isinstance(effort, str) else ""
-    # 2025-11-20: Web search is not available for gpt-5 with minimal reasoning and for gpt-4.1-nano.
-    allow_web = (
-        supports("web_search_tool", responses_body.model)
-        and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
-        and effort_level != "minimal"
+    # web_search
+    tools.extend(build_web_search_tool(responses_body, valves, features))
+
+    allow_code_interpreter = (
+        supports("code_interpreter_tool", responses_body.model)
+        and (getattr(valves, "ENABLE_CODE_INTERPRETER_TOOL", False) or features.get("code_interpreter", False))
     )
-    if allow_web:
-        web_search_tool: dict[str, Any] = {"type": "web_search"}
-        user_location = getattr(valves, "WEB_SEARCH_USER_LOCATION", None)
-        if user_location:
+    if allow_code_interpreter:
+        code_tool: dict[str, Any] = {"type": "code_interpreter"}
+
+        feature_cfg = features.get("code_interpreter") if isinstance(features, dict) else None
+        container_from_features = feature_cfg.get("container") if isinstance(feature_cfg, dict) else None
+        container_json = getattr(valves, "CODE_INTERPRETER_CONTAINER_JSON", None)
+
+        if container_from_features is not None:
+            code_tool["container"] = container_from_features
+        elif container_json:
             try:
-                web_search_tool["user_location"] = json.loads(user_location)
+                code_tool["container"] = json.loads(container_json)
             except Exception as exc:
-                preview, truncated = truncate_for_log(user_location, limit=300)
+                preview, truncated = truncate_for_log(container_json, limit=300)
                 logger.warning(
-                    "WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring. truncated=%s value=%s error=%s",
+                    "CODE_INTERPRETER_CONTAINER_JSON is not valid JSON; ignoring. truncated=%s value=%s error=%s",
                     truncated,
                     preview,
                     exc,
                 )
-        allowed_domains = _parse_allowed_domains(getattr(valves, "WEB_SEARCH_ALLOWED_DOMAINS", None))
-        if allowed_domains:
-            web_search_tool["filters"] = {"allowed_domains": allowed_domains}
-        external_web_access = getattr(valves, "WEB_SEARCH_EXTERNAL_WEB_ACCESS", None)
-        if isinstance(external_web_access, bool):
-            web_search_tool["external_web_access"] = external_web_access
-        tools.append(web_search_tool)
+        else:
+            code_tool["container"] = {"type": "auto"}
+
+        tools.append(code_tool)
 
     remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
     if remote_mcp:
@@ -2413,19 +2863,12 @@ def _strictify_schema(schema: Any) -> dict[str, Any]:
             for name in props.keys():
                 if isinstance(name, str) and name not in merged_required:
                     merged_required.append(name)
-            original_required_set = set(original_required)
-            node["additionalProperties"] = False
             node["required"] = merged_required
+            node["additionalProperties"] = False
 
             for name, prop in props.items():
                 if not isinstance(prop, dict) or not isinstance(name, str):
                     continue
-                if name not in original_required_set:
-                    ptype = prop.get("type")
-                    if isinstance(ptype, str) and ptype != "null":
-                        prop["type"] = [ptype, "null"]
-                    elif isinstance(ptype, list) and "null" not in ptype:
-                        prop["type"] = [*ptype, "null"]
                 _enforce(prop)
 
         items = node.get("items")
@@ -2474,59 +2917,6 @@ def _maybe_strictify_extra_tools(
         strictified.append(clone)
 
     return strictified
-
-
-def _parse_allowed_domains(raw: Any) -> list[str]:
-    """
-    Normalize allowed domain inputs for the web_search tool.
-
-    Accepts JSON (list or string) or comma-separated strings. Removes protocols and trailing slashes.
-    Caps the allow-list at 20 entries, preserving order.
-    """
-
-    if raw is None:
-        return []
-
-    candidates: list[Any] = []
-    if isinstance(raw, str):
-        raw = raw.strip()
-        if not raw:
-            return []
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            parsed = None
-        if isinstance(parsed, list):
-            candidates = parsed
-        elif isinstance(parsed, str):
-            candidates = [parsed]
-        elif parsed is None:
-            candidates = raw.split(",")
-    elif isinstance(raw, list):
-        candidates = raw
-    else:
-        return []
-
-    normalized: list[str] = []
-    for cand in candidates:
-        if not isinstance(cand, str):
-            continue
-        domain = _normalize_domain(cand)
-        if not domain or domain in normalized:
-            continue
-        normalized.append(domain)
-        if len(normalized) >= 20:
-            break
-    return normalized
-
-
-def _normalize_domain(domain: str) -> str:
-    """Strip protocol/path and whitespace from a domain string."""
-
-    cleaned = domain.strip()
-    cleaned = re.sub(r"^https?://", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.split("/")[0]
-    return cleaned.rstrip("/")
 
 
 def tool_summaries_for_log(tools: list[dict[str, Any]]) -> list[str]:
@@ -2999,6 +3389,11 @@ except Exception:  # pragma: no cover
 # from openai_responses_manifold.core.model_catalog import supports
 # from openai_responses_manifold.domain.events import NullRuntimeEvents, RuntimeEvents
 # from openai_responses_manifold.domain.history import HistoryPersistence, HistoryStore
+# from openai_responses_manifold.domain.code_interpreter import (
+#     handle_code_interpreter_event,
+#     handle_code_interpreter_item,
+#     emit_pending_code_interpreter_result,
+# )
 # from openai_responses_manifold.domain.tasks import run_task_model
 # from openai_responses_manifold.domain.tools import execute_tool_calls, tool_summaries_for_log
 
@@ -3018,11 +3413,19 @@ class _StreamState:
     has_sent_status: bool = False
     has_any_status: bool = False
     thinking_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
+    code_snippets: dict[int, str] = field(default_factory=dict)
+    last_code_output_index: int | None = None
+    pending_ci_results: set[int] = field(default_factory=set)
+    pending_ci_code_snippets: dict[int, str] = field(default_factory=dict)
 
     def reset_for_next_response(self) -> None:
         self.completed_response = None
         self.usage_summary = None
         self.has_sent_status = False
+        self.code_snippets.clear()
+        self.last_code_output_index = None
+        self.pending_ci_results.clear()
+        self.pending_ci_code_snippets.clear()
 
 
 @dataclass
@@ -3094,6 +3497,15 @@ class _StreamSession:
         if isinstance(event, ResponseOutputTextDoneEvent):
             await self._handle_text_done(event)
             return False
+
+        handled_ci = await handle_code_interpreter_event(
+            event,
+            self.state,
+            self.emit_status,
+            self.engine.logger,
+        )
+        if handled_ci:
+            return True
 
         if isinstance(event, ResponseCompletedEvent):
             await self.engine._cancel_tasks(self.state.thinking_tasks)
@@ -3259,6 +3671,16 @@ class _StreamSession:
         if should_persist:
             await self._persist_items([item])
 
+        if item_type == "code_interpreter_call":
+            await handle_code_interpreter_item(
+                item,
+                self.state,
+                self.events,
+                self.engine.logger,
+                self.emit_status,
+                output_index=event.output_index,
+            )
+
         status_desc = self.engine._status_from_output_item(item)
         if status_desc:
             await self.emit_status(status_desc)
@@ -3279,6 +3701,12 @@ class _StreamSession:
         if text_val and not self.state.response_text:
             self.state.response_text = text_val
         await self.events.replace(self.state.response_text or text_val)
+        await emit_pending_code_interpreter_result(
+            self.state,
+            self.events,
+            self.engine.logger,
+            assistant_text=text_val,
+        )
 
     async def _persist_items(self, items: list[dict[str, Any]]) -> None:
         chat_id = self.metadata.get("chat_id")
@@ -4202,6 +4630,25 @@ async def build_responses_body(
     elif "max_tokens" in owui_request:
         payload["max_output_tokens"] = owui_request.get("max_tokens")
 
+    passthrough_keys = [
+        "tool_choice",
+        "store",
+        "background",
+        "include",
+        "metadata",
+        "text",
+        "service_tier",
+        "prompt_cache_key",
+        "prompt_cache_retention",
+        "previous_response_id",
+        "conversation",
+        "prompt",
+        "stream_options",
+    ]
+    for key in passthrough_keys:
+        if key in owui_request:
+            payload[key] = owui_request[key]
+
     messages = owui_request.get("messages") or []
     provided_input = owui_request.get("input")
     instructions = owui_request.get("instructions") or _extract_system_instructions(messages)
@@ -4287,6 +4734,9 @@ class OpenWebUIRuntimeEvents(RuntimeEvents):
 
     async def citation(self, data: dict[str, Any]) -> None:
         await self._emitter.citation(data)
+
+    async def files(self, files: list[dict[str, Any]]) -> None:
+        await self._emitter.files(files)
 
     async def chat_completion(self, data: dict[str, Any]) -> None:
         await self._emitter.chat_completion(data)
@@ -4525,7 +4975,10 @@ class Pipe:
         events: RuntimeEvents,
     ) -> Any:
         tools = responses_body.tools or []
-        if not (tools and supports("function_calling", responses_body.model)):
+        has_function_tools = any(
+            isinstance(tool, dict) and tool.get("type") == "function" for tool in tools
+        )
+        if not (has_function_tools and supports("function_calling", responses_body.model)):
             return responses_body
         model = Models.get_model_by_id(openwebui_model_id)
         if not model:
@@ -4596,10 +5049,17 @@ class Pipe:
                 responses_body.include.append("reasoning.encrypted_content")
 
     def _apply_parallel_tool_policy(self, responses_body: Any, valves: PipeValves) -> None:
-        has_web_search = any(
-            isinstance(tool, dict) and tool.get("type") == "web_search"
-            for tool in (responses_body.tools or [])
+        tools = responses_body.tools or []
+        has_web_search = any(isinstance(tool, dict) and tool.get("type") == "web_search" for tool in tools)
+        has_code_interpreter = any(
+            isinstance(tool, dict) and tool.get("type") == "code_interpreter" for tool in tools
         )
+
+        if has_code_interpreter:
+            responses_body.include = responses_body.include or []
+            if "code_interpreter_call.outputs" not in responses_body.include:
+                responses_body.include.append("code_interpreter_call.outputs")
+
         if has_web_search:
             responses_body.parallel_tool_calls = False
             if getattr(valves, "WEB_SEARCH_INCLUDE_SOURCES", True):
