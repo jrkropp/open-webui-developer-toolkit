@@ -7,6 +7,17 @@ import pytest
 from openai_responses_manifold import CompletionCreateParams
 from openai_responses_manifold.adapters.openwebui.store import ItemStore
 from openai_responses_manifold.adapters.openwebui.request_builder import build_responses_body
+from openai_responses_manifold.domain.turn_context import TurnContext
+
+
+def _ctx(valves: object, metadata: dict[str, object] | None = None) -> TurnContext:
+    return TurnContext(
+        valves=valves,
+        metadata=metadata or {},
+        user_identifier=None,
+        owui_model_id=(metadata or {}).get("model", {}).get("id", "") if metadata else "",
+        features={},
+    )
 
 
 @pytest.mark.asyncio()
@@ -24,8 +35,7 @@ async def test_responses_body_from_completions_maps_reasoning_and_tokens() -> No
 
     responses = await build_responses_body(
         completions.model_dump(),
-        valves=type("V", (), {"TRUNCATION": "auto", "PARALLEL_TOOL_CALLS": True})(),
-        metadata={},
+        ctx=_ctx(type("V", (), {"TRUNCATION": "auto", "PARALLEL_TOOL_CALLS": True})()),
         item_store=ItemStore(),
     )
 
@@ -60,8 +70,7 @@ async def test_responses_body_from_completions_converts_messages() -> None:
 
     responses = await build_responses_body(
         completions.model_dump(),
-        valves=type("V", (), {})(),
-        metadata={},
+        ctx=_ctx(type("V", (), {})()),
         item_store=ItemStore(),
     )
 
@@ -88,8 +97,7 @@ async def test_responses_body_prefers_history_input_when_provided() -> None:
     ]
     responses = await build_responses_body(
         {"model": "gpt-4o", "input": history_input},
-        valves=type("V", (), {})(),
-        metadata={},
+        ctx=_ctx(type("V", (), {})()),
         item_store=ItemStore(),
     )
     assert responses.input == history_input

@@ -28,7 +28,7 @@ Holds the conversation request. Typical keys include:
 * `stream` – `true` for partial streaming.
 * `model` – the model identifier, e.g. `"openai_responses.gpt-4.1"`.
 * `messages` – list of `{role, content}` chat messages.
-* `stream_options` – options such as `include_usage: true`.
+* `stream_options` – options such as `include_obfuscation: false` (only when `stream: true`).
 * `tools` – list of tool/function definitions. This field is **only** present
   when native function calling is enabled for the selected model. When filled in,
   each entry matches the OpenAI Completions API schema so it can be sent
@@ -44,7 +44,7 @@ Example:
     {"role": "system", "content": "System prompt text..."},
     {"role": "user", "content": "User question..."}
   ],
-  "stream_options": {"include_usage": true},
+  "stream_options": {"include_obfuscation": false},
   "tools": [
     {
       "type": "function",

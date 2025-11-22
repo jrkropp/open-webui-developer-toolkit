@@ -18,10 +18,9 @@ async def test_pipes_listing_and_pipe_smoke(monkeypatch: pytest.MonkeyPatch) -> 
         self: orm.ResponsesEngine,
         body: orm.ResponseCreateParams,
         *,
-        valves: orm.Pipe.Valves,
-        metadata: dict[str, Any],
+        ctx: orm.TurnContext,
         events: orm.RuntimeEvents,
-        openwebui_tools=None,
+        tool_registry=None,
         **_: Any,
     ) -> orm.TurnResult:
         await events.replace("stub")

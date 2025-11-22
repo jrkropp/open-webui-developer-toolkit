@@ -37,7 +37,6 @@ from openai_responses_manifold.adapters.openai.events import (
     ResponseReasoningSummaryTextDoneEvent,
 )
 from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
-from openai_responses_manifold.core.errors import ToolExecutionError
 from openai_responses_manifold.core.logging import (
     OWUI_SESSION_ID,
     clear_session_logs,
@@ -53,8 +52,9 @@ from openai_responses_manifold.domain.code_interpreter import (
     handle_code_interpreter_item,
     emit_pending_code_interpreter_result,
 )
+from openai_responses_manifold.domain.turn_context import TurnContext
 from openai_responses_manifold.domain.tasks import run_task_model
-from openai_responses_manifold.domain.tools import execute_tool_calls, tool_summaries_for_log
+from openai_responses_manifold.domain.tools import ToolExecutor, tool_summaries_for_log
 
 
 @dataclass
@@ -97,6 +97,18 @@ class TurnResult:
     error_message: str | None = None
 
 
+@dataclass
+class StreamOutcome:
+    """Result of a single Responses stream."""
+
+    text: str
+    output_items: list[dict[str, Any]]
+    usage: dict[str, Any] | None
+    citations: list[dict[str, Any]]
+    error: str | None = None
+    last_tool_result: str | None = None
+
+
 class _StreamSession:
     """Consumes stream events while coordinating a single turn."""
 
@@ -104,19 +116,17 @@ class _StreamSession:
         self,
         engine: ResponsesEngine,
         body: ResponseCreateParams,
-        valves: Any,
-        metadata: dict[str, Any],
+        ctx: TurnContext,
         events: RuntimeEvents,
         *,
-        openwebui_tools: dict[str, dict[str, Any]] | None,
+        state: _StreamState | None = None,
     ) -> None:
         self.engine = engine
         self.body = body
-        self.valves = valves
-        self.metadata = metadata
+        self.valves = ctx.valves
+        self.metadata = ctx.metadata
         self.events = events or NullRuntimeEvents()
-        self.openwebui_tools = openwebui_tools
-        self.state = _StreamState()
+        self.state = state or _StreamState()
         self.debug_enabled = engine.logger.isEnabledFor(logging.DEBUG)
         self.state.thinking_tasks = self.engine._schedule_reasoning_statuses(body, self.emit_status)
 
@@ -196,9 +206,7 @@ class _StreamSession:
             if self.debug_enabled:
                 usage_keys = sorted((self.state.usage_summary or {}).keys())
                 self.engine.logger.debug("event=response.incomplete usage_keys=%s", usage_keys)
-            await self.emit_status(
-                "Response was incomplete (e.g., max_output_tokens or content filter)."
-            )
+            await self.emit_status("Response was incomplete (e.g., max_output_tokens or content filter).")
             return True
 
         if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
@@ -225,28 +233,6 @@ class _StreamSession:
                 self.body.input = output_items
 
         return output_items
-
-    def find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        call_items = output_items or (self.state.completed_response or {}).get("output", [])
-        return [item for item in call_items if item.get("type") == "function_call"]
-
-    async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not tool_calls:
-            return []
-
-        if not self.openwebui_tools:
-            self.engine.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
-            await self.emit_status("Tool execution skipped: no tool registry available.")
-            return []
-
-        try:
-            function_outputs = await execute_tool_calls(tool_calls, self.openwebui_tools)
-        except ToolExecutionError as exc:
-            self.engine.logger.warning("Skipping malformed tool arguments: %s", exc)
-            await self.emit_status("Skipping malformed tool arguments.")
-            return []
-
-        return function_outputs
 
     async def append_tool_outputs(self, function_outputs: list[dict[str, Any]]) -> bool:
         if not function_outputs:
@@ -386,6 +372,139 @@ class _StreamSession:
                 self.state.response_text += hidden_markers
                 await self.events.replace(self.state.response_text)
 
+
+class SSEStreamRunner:
+    """Run a single Responses stream and return structured outcome."""
+
+    def __init__(self, engine: ResponsesEngine, *, logger: logging.Logger | None = None) -> None:
+        self.engine = engine
+        self.logger = logger or get_logger(__name__)
+        self.state = _StreamState()
+        self.session: _StreamSession | None = None
+
+    async def stream(
+        self,
+        body: ResponseCreateParams,
+        ctx: TurnContext,
+        events: RuntimeEvents,
+    ) -> StreamOutcome:
+        self.state.reset_for_next_response()
+        self.session = _StreamSession(self.engine, body, ctx, events, state=self.state)
+        await self.engine._stream_response(self.session, body, ctx.valves)
+
+        if self.session.debug_enabled and self.state.completed_response:
+            try:
+                payload_str = json.dumps(self.state.completed_response, ensure_ascii=False)
+                preview, truncated = truncate_for_log(payload_str, limit=1000)
+                self.logger.debug(
+                    "response.payload_preview enabled=true truncated=%s len=%d payload=%s",
+                    truncated,
+                    len(payload_str),
+                    preview,
+                )
+            except Exception:
+                pass
+
+        output_items = await self.session.collect_output_items()
+        error_message = self.state.error_message if self.state.has_error else None
+        return StreamOutcome(
+            text=self.state.response_text,
+            output_items=output_items,
+            usage=self.state.usage_summary,
+            citations=list(self.state.citations),
+            error=error_message,
+            last_tool_result=self.state.last_tool_result,
+        )
+
+
+class ToolLoop:
+    """Loop streaming + tool execution until no more tool calls or limits hit."""
+
+    def __init__(
+        self,
+        runner: SSEStreamRunner,
+        executor: ToolExecutor,
+        *,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.runner = runner
+        self.executor = executor
+        self.logger = logger or get_logger(__name__)
+
+    async def run_turn(
+        self,
+        body: ResponseCreateParams,
+        ctx: TurnContext,
+        events: RuntimeEvents,
+        tool_registry: dict[str, dict[str, Any]],
+        *,
+        max_loops: int,
+        function_calls_supported: bool,
+    ) -> TurnResult:
+        citations: list[dict[str, Any]] = []
+        last_text = ""
+        last_error: str | None = None
+        usage: dict[str, Any] | None = None
+
+        for _ in range(max_loops):
+            outcome = await self.runner.stream(body, ctx, events)
+            citations = outcome.citations
+            last_text = outcome.text
+            usage = outcome.usage
+            last_error = outcome.error
+
+            if outcome.error or not function_calls_supported:
+                break
+
+            output_items = outcome.output_items or []
+            tool_calls = self._find_tool_calls(output_items)
+            if not tool_calls:
+                break
+
+            executed_before = self.runner.state.tool_calls_executed
+            if body.max_tool_calls is not None:
+                remaining = max(body.max_tool_calls - executed_before, 0)
+                if remaining <= 0:
+                    await self._emit_status("Tool call limit reached; ignoring further tool requests.")
+                    break
+                if len(tool_calls) > remaining:
+                    tool_calls = tool_calls[:remaining]
+                    if not tool_calls:
+                        await self._emit_status("Tool call limit reached; ignoring further tool requests.")
+                        break
+
+            outputs = await self.executor.run(
+                tool_calls,
+                tool_registry,
+                emit_status=self._emit_status,
+                valves=ctx.valves,
+            )
+            if not outputs:
+                break
+
+            self.runner.state.tool_calls_executed = executed_before + len(outputs)
+            session = self.runner.session
+            appended = False
+            if session:
+                appended = await session.append_tool_outputs(outputs)
+            if not appended:
+                break
+
+        return TurnResult(
+            text=last_text,
+            usage=usage,
+            citations=citations,
+            error_message=last_error,
+        )
+
+    def _find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [item for item in output_items if item.get("type") == "function_call"]
+
+    async def _emit_status(self, description: str) -> None:
+        session = self.runner.session
+        if session:
+            await session.emit_status(description)
+
 class ResponsesEngine:
     """Encapsulates streaming and tool orchestration."""
 
@@ -405,27 +524,22 @@ class ResponsesEngine:
         self,
         body: ResponseCreateParams,
         *,
-        valves: Any,
-        metadata: dict[str, Any],
+        ctx: TurnContext,
         events: RuntimeEvents | None,
-        openwebui_tools: dict[str, dict[str, Any]] | None = None,
+        tool_registry: dict[str, dict[str, Any]] | None = None,
     ) -> TurnResult:
         runtime_events = events or NullRuntimeEvents()
-        session = _StreamSession(
-            self,
-            body,
-            valves,
-            metadata,
-            runtime_events,
-            openwebui_tools=openwebui_tools,
-        )
+        tool_registry = tool_registry or {}
+        runner = SSEStreamRunner(self, logger=self.logger)
+        executor = ToolExecutor(self.logger)
+        loop = ToolLoop(runner, executor, logger=self.logger)
         self._log_tool_summaries(body.tools or [], logging.DEBUG, reason="request")
 
         model_router_result = body.model_router_result
         if model_router_result:
             body.model_router_result = None
-            explanation = model_router_result.get('explanation', '')
-            await session.emit_status(
+            explanation = model_router_result.get("explanation", "")
+            await runtime_events.status(
                 description=(
                     f"Routing to {model_router_result.get('model')} "
                     f"(effort: {model_router_result.get('reasoning_effort')})\n"
@@ -433,98 +547,47 @@ class ResponsesEngine:
                 )
             )
 
-        self.logger.info('turn.start model=%s task=chat', body.model)
+        self.logger.info("turn.start model=%s task=chat", body.model)
         start_time = perf_counter()
-        function_calls_supported = supports('function_calling', body.model)
+        function_calls_supported = supports("function_calling", body.model)
 
         try:
-            max_loops = getattr(valves, 'MAX_FUNCTION_CALL_LOOPS', 10)
-            for _ in range(max_loops):
-                session.state.reset_for_next_response()
+            loop_result = await loop.run_turn(
+                body,
+                ctx,
+                runtime_events,
+                tool_registry,
+                max_loops=getattr(ctx.valves, "MAX_FUNCTION_CALL_LOOPS", 10),
+                function_calls_supported=function_calls_supported,
+            )
+            runner_state = runner.state
 
-                await self._stream_response(session, body, valves)
-
-                if session.state.has_error or not session.state.completed_response:
-                    break
-
-                if not function_calls_supported:
-                    break
-
-                response_output_items = await session.collect_output_items()
-                executed_before = session.state.tool_calls_executed
-                tool_calls = session.find_tool_calls(response_output_items)
-                if not tool_calls:
-                    break
-
-                proposed_calls = len(tool_calls)
-                if body.max_tool_calls is not None:
-                    remaining = max(body.max_tool_calls - executed_before, 0)
-                    if remaining <= 0:
-                        await session.emit_status(
-                            "Tool call limit reached; ignoring further tool requests.",
-                            require_previous=True,
-                        )
-                        break
-                    if proposed_calls > remaining:
-                        tool_calls = tool_calls[:remaining]
-                        proposed_calls = len(tool_calls)
-                        if not tool_calls:
-                            await session.emit_status(
-                                "Tool call limit reached; ignoring further tool requests.",
-                                require_previous=True,
-                            )
-                            break
-
-                function_outputs = await session.execute_tool_calls(tool_calls)
-                if not function_outputs:
-                    break
-
-                executed_count = len(function_outputs)
-                session.state.tool_calls_executed = executed_before + executed_count
-
-                if not await session.append_tool_outputs(function_outputs):
-                    break
-
-            if session.debug_enabled and session.state.completed_response:
-                try:
-                    payload_str = json.dumps(session.state.completed_response, ensure_ascii=False)
-                    preview, truncated = truncate_for_log(payload_str, limit=1000)
-                    self.logger.debug(
-                        'response.payload_preview enabled=true truncated=%s len=%d payload=%s',
-                        truncated,
-                        len(payload_str),
-                        preview,
-                    )
-                except Exception:
-                    pass
-
-            usage_summary = session.state.usage_summary or {}
-            tokens_in = usage_summary.get('input_tokens')
-            tokens_out = usage_summary.get('output_tokens')
+            usage_summary = loop_result.usage or runner_state.usage_summary or {}
+            tokens_in = usage_summary.get("input_tokens")
+            tokens_out = usage_summary.get("output_tokens")
             respond_time = perf_counter() - start_time
             summary_kwargs = {
-                'status': 'error' if session.state.has_error else 'ok',
-                'model': body.model,
-                'duration_sec': respond_time,
-                'tool_calls': session.state.tool_calls_executed,
-                'citations': len(session.state.citations),
-                'input_tokens': tokens_in,
-                'output_tokens': tokens_out,
+                "status": "error" if loop_result.error_message else "ok",
+                "model": body.model,
+                "duration_sec": respond_time,
+                "tool_calls": runner_state.tool_calls_executed,
+                "citations": len(loop_result.citations),
+                "input_tokens": tokens_in,
+                "output_tokens": tokens_out,
             }
-            if session.state.error_message:
-                summary_kwargs['last_error'] = session.state.error_message
+            if loop_result.error_message:
+                summary_kwargs["last_error"] = loop_result.error_message
             self.logger.info(
-                'Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f '
-                'tool_calls=%(tool_calls)d citations=%(citations)d '
-                'input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s'
-                + (' last_error=%(last_error)s' if session.state.error_message else ''),
+                "Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f "
+                "tool_calls=%(tool_calls)d citations=%(citations)d "
+                "input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s"
+                + (" last_error=%(last_error)s" if loop_result.error_message else ""),
                 summary_kwargs,
             )
-
         except ClientResponseError as exc:
-            await self._cancel_tasks(session.state.thinking_tasks)
-            session.state.has_error = True
-            session.state.error_message = f"{exc.status} {exc.message}"
+            await self._cancel_tasks(runner.state.thinking_tasks)
+            runner.state.has_error = True
+            runner.state.error_message = f"{exc.status} {exc.message}"
             request_url = ""
             try:
                 request_url = str(exc.request_info.real_url) if exc.request_info else ""
@@ -537,39 +600,51 @@ class ResponsesEngine:
                 exc.message,
             )
             self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
-            await self._handle_stream_error(runtime_events, session.state.error_message)
-
-        except Exception as exc:  # pragma: no cover
-            await self._cancel_tasks(session.state.thinking_tasks)
-            session.state.has_error = True
-            session.state.error_message = str(exc)
-            self.logger.error('turn.error type=%s message=%s', type(exc).__name__, session.state.error_message)
-            self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
-            await self._handle_stream_error(runtime_events, session.state.error_message)
-
-        finally:
-            await self._emit_log_citation(runtime_events, session.state.citations)
-            if not session.state.response_text and not session.state.has_error and session.state.last_tool_result:
-                session.state.response_text = session.state.last_tool_result
-            usage_for_completion = (
-                session.state.usage_summary
-                or self._extract_usage_from_final_response(session.state.completed_response or {})
-                or None
+            await self._handle_stream_error(runtime_events, runner.state.error_message or "")
+            loop_result = TurnResult(
+                text="",
+                usage=None,
+                citations=runner.state.citations,
+                error_message=runner.state.error_message,
             )
-            await session.emit_status('Done', done=True, hidden=False, require_previous=True)
-            completion_payload: dict[str, Any] = {'done': True}
-            if session.state.has_error:
-                if session.state.error_message:
-                    completion_payload['error'] = {'message': session.state.error_message}
-            else:
-                completion_payload.update({'content': session.state.response_text, 'usage': usage_for_completion})
-            await runtime_events.chat_completion(completion_payload)
+        except Exception as exc:  # pragma: no cover
+            await self._cancel_tasks(runner.state.thinking_tasks)
+            runner.state.has_error = True
+            runner.state.error_message = str(exc)
+            self.logger.error("turn.error type=%s message=%s", type(exc).__name__, runner.state.error_message)
+            self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
+            await self._handle_stream_error(runtime_events, runner.state.error_message or "")
+            loop_result = TurnResult(
+                text="",
+                usage=None,
+                citations=runner.state.citations,
+                error_message=runner.state.error_message,
+            )
+
+        # Finalize and emit completion
+        await self._emit_log_citation(runtime_events, loop_result.citations)
+        if not loop_result.text and not loop_result.error_message and runner.state.last_tool_result:
+            loop_result.text = runner.state.last_tool_result
+        usage_for_completion = (
+            loop_result.usage
+            or runner.state.usage_summary
+            or self._extract_usage_from_final_response(runner.state.completed_response or {})
+            or None
+        )
+        if runner.session:
+            await runner.session.emit_status("Done", done=True, hidden=False, require_previous=True)
+        completion_payload: dict[str, Any] = {"done": True}
+        if loop_result.error_message:
+            completion_payload["error"] = {"message": loop_result.error_message}
+        else:
+            completion_payload.update({"content": loop_result.text, "usage": usage_for_completion})
+        await runtime_events.chat_completion(completion_payload)
 
         return TurnResult(
-            text=session.state.response_text,
+            text=loop_result.text,
             usage=usage_for_completion,
-            citations=session.state.citations if session.state.citations else [],
-            error_message=session.state.error_message,
+            citations=loop_result.citations if loop_result.citations else [],
+            error_message=loop_result.error_message,
         )
 
     async def run_task_model(

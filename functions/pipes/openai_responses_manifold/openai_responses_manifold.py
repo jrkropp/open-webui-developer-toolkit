@@ -31,6 +31,7 @@ Use the version in the alpha-preview or main branches instead.
 # - adapters/openai/events.py              Typed schemas for documented OpenAI Responses streaming events.
 # - adapters/openai/client.py              aiohttp-backed client for the OpenAI Responses API.
 # - domain/events.py                       UI-agnostic interface for runtime events consumed by the engine.
+# - domain/turn_context.py                 Shared turn-level context passed across engine, tools, and history.
 # - domain/history.py                      Persistence and reconstruction services for Responses items.
 # - domain/code_interpreter.py             Helpers for handling code interpreter events and output items.
 # - domain/web_search.py                   Helpers for web_search tool construction and request policy.
@@ -849,7 +850,7 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 class StreamOptions(BaseModel):
     """Streaming options for responses."""
 
-    include_usage: bool | None = None
+    include_obfuscation: bool | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1962,10 +1963,32 @@ class NullRuntimeEvents:
 
 __all__ = ["RuntimeEvents", "NullRuntimeEvents"]
 
+# === domain/turn_context.py ===
+"""Shared turn-level context passed across engine, tools, and history."""
+
+from dataclasses import dataclass
+from typing import Any
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.config.settings import PipeValves
+
+
+@dataclass
+class TurnContext:
+    valves: PipeValves
+    metadata: dict[str, Any]
+    user_identifier: str | None
+    owui_model_id: str
+    features: dict[str, Any]
+
+
+__all__ = ["TurnContext"]
+
 # === domain/history.py ===
 """Persistence and reconstruction services for Responses items."""
 
 import json
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 # [build.py] internal imports removed in monolith:
@@ -1985,9 +2008,29 @@ from typing import Any, Callable, Protocol
 #     normalize_user_blocks,
 #     user_blocks_to_responses_items,
 # )
+# from openai_responses_manifold.domain.turn_context import TurnContext
 
 Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
 logger = get_logger(__name__)
+
+
+@dataclass
+class HistoryResult:
+    """Structured result for reconstructed input items and instructions."""
+
+    input_items: list[dict[str, Any]]
+    instructions: str | None = None
+
+
+def extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
+    """Return the most recent system message content, if present."""
+
+    for message in reversed(messages):
+        if message.get("role") == "system":
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+    return None
 
 
 class HistoryStore(Protocol):
@@ -2160,21 +2203,16 @@ class HistoryService:
     def __init__(self, store: HistoryStore | None = None) -> None:
         self.store = store or NullHistoryStore()
 
-    def build_input_and_instructions(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        metadata: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], str | None]:
-        resolver = self._resolver(metadata)
+    def build_input_and_instructions(self, messages: list[dict[str, Any]], *, ctx: TurnContext) -> HistoryResult:
+        resolver = self._resolver(ctx.metadata)
         builder = HistoryBuilder(resolve_items=resolver)
         input_items = builder.build_input_from_messages(
             messages,
-            chat_id=metadata.get("chat_id"),
-            openwebui_model_id=metadata.get("model", {}).get("id"),
+            chat_id=ctx.metadata.get("chat_id"),
+            openwebui_model_id=ctx.metadata.get("model", {}).get("id"),
         )
-        instructions = self._extract_system_instructions(messages)
-        return input_items, instructions
+        instructions = extract_system_instructions(messages)
+        return HistoryResult(input_items=input_items, instructions=instructions)
 
     def _resolver(self, metadata: dict[str, Any]) -> Resolver:
         chat_id = metadata.get("chat_id")
@@ -2191,19 +2229,17 @@ class HistoryService:
 
         return _resolve
 
-    @staticmethod
-    def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
-        """Return the most recent system message content, if present."""
 
-        for message in reversed(messages):
-            if message.get("role") == "system":
-                content = message.get("content")
-                if isinstance(content, str) and content.strip():
-                    return content
-        return None
-
-
-__all__ = ["HistoryBuilder", "HistoryPersistence", "HistoryService", "HistoryStore", "NullHistoryStore"]
+__all__ = [
+    "HistoryBuilder",
+    "HistoryResult",
+    "HistoryPersistence",
+    "HistoryService",
+    "HistoryStore",
+    "NullHistoryStore",
+    "extract_system_instructions",
+    "TurnContext",
+]
 
 # === domain/code_interpreter.py ===
 """Helpers for handling code interpreter events and output items."""
@@ -2625,17 +2661,19 @@ import inspect
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 # [build.py] internal imports removed in monolith:
 # from openai_responses_manifold.core.logging import get_logger, truncate_for_log
 # from openai_responses_manifold.core.errors import ToolExecutionError
 # from openai_responses_manifold.core.model_catalog import supports
 # from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
-# from openai_responses_manifold.domain.web_search import build_web_search_tool
+# from openai_responses_manifold.domain.turn_context import TurnContext
+# from openai_responses_manifold.domain.web_search import apply_web_search_policy, build_web_search_tool
 
 logger = get_logger(__name__)
 TOOL_CALL_TIMEOUT_SEC = 30
+CODE_INTERPRETER_OUTPUTS_INCLUDE = "code_interpreter_call.outputs"
 
 
 async def resolve_tools(
@@ -2662,6 +2700,27 @@ async def resolve_tools(
         extra_tools=extra_tools,
     )
     return tools, tool_registry or {}
+
+
+class ToolSpecBuilder:
+    """Build tool specs and runtime registry for a turn."""
+
+    async def build_for_turn(
+        self,
+        responses_body: ResponseCreateParams,
+        ctx: TurnContext,
+        provided_tools: list[dict[str, Any]] | dict[str, Any] | asyncio.Future | None,
+        *,
+        extra_tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        tools, registry = await resolve_tools(
+            responses_body,
+            ctx.valves,
+            provided_tools,
+            features=ctx.features,
+            extra_tools=extra_tools,
+        )
+        return tools, registry
 
 
 def build_tools(
@@ -2734,6 +2793,59 @@ def build_tools(
             "; ".join(summaries) if summaries else "none",
         )
     return deduped
+
+
+def apply_tool_policy(responses_body: Any, valves: Any) -> None:
+    """
+    Normalize include/parallel settings across tool types.
+    """
+
+    tools = responses_body.tools or []
+    has_code_interpreter = any(
+        isinstance(tool, dict) and tool.get("type") == "code_interpreter" for tool in tools
+    )
+
+    web_search_applied = apply_web_search_policy(responses_body, valves)
+
+    if has_code_interpreter:
+        responses_body.include = responses_body.include or []
+        if CODE_INTERPRETER_OUTPUTS_INCLUDE not in responses_body.include:
+            responses_body.include.append(CODE_INTERPRETER_OUTPUTS_INCLUDE)
+
+    if not web_search_applied:
+        responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
+
+
+class ToolExecutor:
+    """Execute tool calls with status/error signaling."""
+
+    def __init__(self, logger: logging.Logger | None = None) -> None:
+        self.logger = logger or get_logger(__name__)
+
+    async def run(
+        self,
+        tool_calls: list[dict[str, Any]],
+        registry: dict[str, dict[str, Any]],
+        *,
+        emit_status: Callable[[str], Awaitable[Any]] | None = None,
+        valves: Any,
+    ) -> list[dict[str, Any]]:
+        if not tool_calls:
+            return []
+
+        if not registry:
+            self.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
+            if emit_status:
+                await emit_status("Tool execution skipped: no tool registry available.")
+            return []
+
+        try:
+            return await execute_tool_calls(tool_calls, registry)
+        except ToolExecutionError as exc:
+            self.logger.warning("Skipping malformed tool arguments: %s", exc)
+            if emit_status:
+                await emit_status("Skipping malformed tool arguments.")
+            return []
 
 
 async def execute_tool_calls(
@@ -3034,6 +3146,10 @@ def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
 
 __all__ = [
     "build_tools",
+    "apply_tool_policy",
+    "CODE_INTERPRETER_OUTPUTS_INCLUDE",
+    "ToolExecutor",
+    "ToolSpecBuilder",
     "execute_tool_calls",
     "resolve_tools",
 ]
@@ -3378,7 +3494,6 @@ except Exception:  # pragma: no cover
 #     ResponseReasoningSummaryTextDoneEvent,
 # )
 # from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
-# from openai_responses_manifold.core.errors import ToolExecutionError
 # from openai_responses_manifold.core.logging import (
 #     OWUI_SESSION_ID,
 #     clear_session_logs,
@@ -3394,8 +3509,9 @@ except Exception:  # pragma: no cover
 #     handle_code_interpreter_item,
 #     emit_pending_code_interpreter_result,
 # )
+# from openai_responses_manifold.domain.turn_context import TurnContext
 # from openai_responses_manifold.domain.tasks import run_task_model
-# from openai_responses_manifold.domain.tools import execute_tool_calls, tool_summaries_for_log
+# from openai_responses_manifold.domain.tools import ToolExecutor, tool_summaries_for_log
 
 
 @dataclass
@@ -3438,6 +3554,18 @@ class TurnResult:
     error_message: str | None = None
 
 
+@dataclass
+class StreamOutcome:
+    """Result of a single Responses stream."""
+
+    text: str
+    output_items: list[dict[str, Any]]
+    usage: dict[str, Any] | None
+    citations: list[dict[str, Any]]
+    error: str | None = None
+    last_tool_result: str | None = None
+
+
 class _StreamSession:
     """Consumes stream events while coordinating a single turn."""
 
@@ -3445,19 +3573,17 @@ class _StreamSession:
         self,
         engine: ResponsesEngine,
         body: ResponseCreateParams,
-        valves: Any,
-        metadata: dict[str, Any],
+        ctx: TurnContext,
         events: RuntimeEvents,
         *,
-        openwebui_tools: dict[str, dict[str, Any]] | None,
+        state: _StreamState | None = None,
     ) -> None:
         self.engine = engine
         self.body = body
-        self.valves = valves
-        self.metadata = metadata
+        self.valves = ctx.valves
+        self.metadata = ctx.metadata
         self.events = events or NullRuntimeEvents()
-        self.openwebui_tools = openwebui_tools
-        self.state = _StreamState()
+        self.state = state or _StreamState()
         self.debug_enabled = engine.logger.isEnabledFor(logging.DEBUG)
         self.state.thinking_tasks = self.engine._schedule_reasoning_statuses(body, self.emit_status)
 
@@ -3537,9 +3663,7 @@ class _StreamSession:
             if self.debug_enabled:
                 usage_keys = sorted((self.state.usage_summary or {}).keys())
                 self.engine.logger.debug("event=response.incomplete usage_keys=%s", usage_keys)
-            await self.emit_status(
-                "Response was incomplete (e.g., max_output_tokens or content filter)."
-            )
+            await self.emit_status("Response was incomplete (e.g., max_output_tokens or content filter).")
             return True
 
         if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
@@ -3566,28 +3690,6 @@ class _StreamSession:
                 self.body.input = output_items
 
         return output_items
-
-    def find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        call_items = output_items or (self.state.completed_response or {}).get("output", [])
-        return [item for item in call_items if item.get("type") == "function_call"]
-
-    async def execute_tool_calls(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not tool_calls:
-            return []
-
-        if not self.openwebui_tools:
-            self.engine.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
-            await self.emit_status("Tool execution skipped: no tool registry available.")
-            return []
-
-        try:
-            function_outputs = await execute_tool_calls(tool_calls, self.openwebui_tools)
-        except ToolExecutionError as exc:
-            self.engine.logger.warning("Skipping malformed tool arguments: %s", exc)
-            await self.emit_status("Skipping malformed tool arguments.")
-            return []
-
-        return function_outputs
 
     async def append_tool_outputs(self, function_outputs: list[dict[str, Any]]) -> bool:
         if not function_outputs:
@@ -3727,6 +3829,139 @@ class _StreamSession:
                 self.state.response_text += hidden_markers
                 await self.events.replace(self.state.response_text)
 
+
+class SSEStreamRunner:
+    """Run a single Responses stream and return structured outcome."""
+
+    def __init__(self, engine: ResponsesEngine, *, logger: logging.Logger | None = None) -> None:
+        self.engine = engine
+        self.logger = logger or get_logger(__name__)
+        self.state = _StreamState()
+        self.session: _StreamSession | None = None
+
+    async def stream(
+        self,
+        body: ResponseCreateParams,
+        ctx: TurnContext,
+        events: RuntimeEvents,
+    ) -> StreamOutcome:
+        self.state.reset_for_next_response()
+        self.session = _StreamSession(self.engine, body, ctx, events, state=self.state)
+        await self.engine._stream_response(self.session, body, ctx.valves)
+
+        if self.session.debug_enabled and self.state.completed_response:
+            try:
+                payload_str = json.dumps(self.state.completed_response, ensure_ascii=False)
+                preview, truncated = truncate_for_log(payload_str, limit=1000)
+                self.logger.debug(
+                    "response.payload_preview enabled=true truncated=%s len=%d payload=%s",
+                    truncated,
+                    len(payload_str),
+                    preview,
+                )
+            except Exception:
+                pass
+
+        output_items = await self.session.collect_output_items()
+        error_message = self.state.error_message if self.state.has_error else None
+        return StreamOutcome(
+            text=self.state.response_text,
+            output_items=output_items,
+            usage=self.state.usage_summary,
+            citations=list(self.state.citations),
+            error=error_message,
+            last_tool_result=self.state.last_tool_result,
+        )
+
+
+class ToolLoop:
+    """Loop streaming + tool execution until no more tool calls or limits hit."""
+
+    def __init__(
+        self,
+        runner: SSEStreamRunner,
+        executor: ToolExecutor,
+        *,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.runner = runner
+        self.executor = executor
+        self.logger = logger or get_logger(__name__)
+
+    async def run_turn(
+        self,
+        body: ResponseCreateParams,
+        ctx: TurnContext,
+        events: RuntimeEvents,
+        tool_registry: dict[str, dict[str, Any]],
+        *,
+        max_loops: int,
+        function_calls_supported: bool,
+    ) -> TurnResult:
+        citations: list[dict[str, Any]] = []
+        last_text = ""
+        last_error: str | None = None
+        usage: dict[str, Any] | None = None
+
+        for _ in range(max_loops):
+            outcome = await self.runner.stream(body, ctx, events)
+            citations = outcome.citations
+            last_text = outcome.text
+            usage = outcome.usage
+            last_error = outcome.error
+
+            if outcome.error or not function_calls_supported:
+                break
+
+            output_items = outcome.output_items or []
+            tool_calls = self._find_tool_calls(output_items)
+            if not tool_calls:
+                break
+
+            executed_before = self.runner.state.tool_calls_executed
+            if body.max_tool_calls is not None:
+                remaining = max(body.max_tool_calls - executed_before, 0)
+                if remaining <= 0:
+                    await self._emit_status("Tool call limit reached; ignoring further tool requests.")
+                    break
+                if len(tool_calls) > remaining:
+                    tool_calls = tool_calls[:remaining]
+                    if not tool_calls:
+                        await self._emit_status("Tool call limit reached; ignoring further tool requests.")
+                        break
+
+            outputs = await self.executor.run(
+                tool_calls,
+                tool_registry,
+                emit_status=self._emit_status,
+                valves=ctx.valves,
+            )
+            if not outputs:
+                break
+
+            self.runner.state.tool_calls_executed = executed_before + len(outputs)
+            session = self.runner.session
+            appended = False
+            if session:
+                appended = await session.append_tool_outputs(outputs)
+            if not appended:
+                break
+
+        return TurnResult(
+            text=last_text,
+            usage=usage,
+            citations=citations,
+            error_message=last_error,
+        )
+
+    def _find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [item for item in output_items if item.get("type") == "function_call"]
+
+    async def _emit_status(self, description: str) -> None:
+        session = self.runner.session
+        if session:
+            await session.emit_status(description)
+
 class ResponsesEngine:
     """Encapsulates streaming and tool orchestration."""
 
@@ -3746,27 +3981,22 @@ class ResponsesEngine:
         self,
         body: ResponseCreateParams,
         *,
-        valves: Any,
-        metadata: dict[str, Any],
+        ctx: TurnContext,
         events: RuntimeEvents | None,
-        openwebui_tools: dict[str, dict[str, Any]] | None = None,
+        tool_registry: dict[str, dict[str, Any]] | None = None,
     ) -> TurnResult:
         runtime_events = events or NullRuntimeEvents()
-        session = _StreamSession(
-            self,
-            body,
-            valves,
-            metadata,
-            runtime_events,
-            openwebui_tools=openwebui_tools,
-        )
+        tool_registry = tool_registry or {}
+        runner = SSEStreamRunner(self, logger=self.logger)
+        executor = ToolExecutor(self.logger)
+        loop = ToolLoop(runner, executor, logger=self.logger)
         self._log_tool_summaries(body.tools or [], logging.DEBUG, reason="request")
 
         model_router_result = body.model_router_result
         if model_router_result:
             body.model_router_result = None
-            explanation = model_router_result.get('explanation', '')
-            await session.emit_status(
+            explanation = model_router_result.get("explanation", "")
+            await runtime_events.status(
                 description=(
                     f"Routing to {model_router_result.get('model')} "
                     f"(effort: {model_router_result.get('reasoning_effort')})\n"
@@ -3774,98 +4004,47 @@ class ResponsesEngine:
                 )
             )
 
-        self.logger.info('turn.start model=%s task=chat', body.model)
+        self.logger.info("turn.start model=%s task=chat", body.model)
         start_time = perf_counter()
-        function_calls_supported = supports('function_calling', body.model)
+        function_calls_supported = supports("function_calling", body.model)
 
         try:
-            max_loops = getattr(valves, 'MAX_FUNCTION_CALL_LOOPS', 10)
-            for _ in range(max_loops):
-                session.state.reset_for_next_response()
+            loop_result = await loop.run_turn(
+                body,
+                ctx,
+                runtime_events,
+                tool_registry,
+                max_loops=getattr(ctx.valves, "MAX_FUNCTION_CALL_LOOPS", 10),
+                function_calls_supported=function_calls_supported,
+            )
+            runner_state = runner.state
 
-                await self._stream_response(session, body, valves)
-
-                if session.state.has_error or not session.state.completed_response:
-                    break
-
-                if not function_calls_supported:
-                    break
-
-                response_output_items = await session.collect_output_items()
-                executed_before = session.state.tool_calls_executed
-                tool_calls = session.find_tool_calls(response_output_items)
-                if not tool_calls:
-                    break
-
-                proposed_calls = len(tool_calls)
-                if body.max_tool_calls is not None:
-                    remaining = max(body.max_tool_calls - executed_before, 0)
-                    if remaining <= 0:
-                        await session.emit_status(
-                            "Tool call limit reached; ignoring further tool requests.",
-                            require_previous=True,
-                        )
-                        break
-                    if proposed_calls > remaining:
-                        tool_calls = tool_calls[:remaining]
-                        proposed_calls = len(tool_calls)
-                        if not tool_calls:
-                            await session.emit_status(
-                                "Tool call limit reached; ignoring further tool requests.",
-                                require_previous=True,
-                            )
-                            break
-
-                function_outputs = await session.execute_tool_calls(tool_calls)
-                if not function_outputs:
-                    break
-
-                executed_count = len(function_outputs)
-                session.state.tool_calls_executed = executed_before + executed_count
-
-                if not await session.append_tool_outputs(function_outputs):
-                    break
-
-            if session.debug_enabled and session.state.completed_response:
-                try:
-                    payload_str = json.dumps(session.state.completed_response, ensure_ascii=False)
-                    preview, truncated = truncate_for_log(payload_str, limit=1000)
-                    self.logger.debug(
-                        'response.payload_preview enabled=true truncated=%s len=%d payload=%s',
-                        truncated,
-                        len(payload_str),
-                        preview,
-                    )
-                except Exception:
-                    pass
-
-            usage_summary = session.state.usage_summary or {}
-            tokens_in = usage_summary.get('input_tokens')
-            tokens_out = usage_summary.get('output_tokens')
+            usage_summary = loop_result.usage or runner_state.usage_summary or {}
+            tokens_in = usage_summary.get("input_tokens")
+            tokens_out = usage_summary.get("output_tokens")
             respond_time = perf_counter() - start_time
             summary_kwargs = {
-                'status': 'error' if session.state.has_error else 'ok',
-                'model': body.model,
-                'duration_sec': respond_time,
-                'tool_calls': session.state.tool_calls_executed,
-                'citations': len(session.state.citations),
-                'input_tokens': tokens_in,
-                'output_tokens': tokens_out,
+                "status": "error" if loop_result.error_message else "ok",
+                "model": body.model,
+                "duration_sec": respond_time,
+                "tool_calls": runner_state.tool_calls_executed,
+                "citations": len(loop_result.citations),
+                "input_tokens": tokens_in,
+                "output_tokens": tokens_out,
             }
-            if session.state.error_message:
-                summary_kwargs['last_error'] = session.state.error_message
+            if loop_result.error_message:
+                summary_kwargs["last_error"] = loop_result.error_message
             self.logger.info(
-                'Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f '
-                'tool_calls=%(tool_calls)d citations=%(citations)d '
-                'input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s'
-                + (' last_error=%(last_error)s' if session.state.error_message else ''),
+                "Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f "
+                "tool_calls=%(tool_calls)d citations=%(citations)d "
+                "input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s"
+                + (" last_error=%(last_error)s" if loop_result.error_message else ""),
                 summary_kwargs,
             )
-
         except ClientResponseError as exc:
-            await self._cancel_tasks(session.state.thinking_tasks)
-            session.state.has_error = True
-            session.state.error_message = f"{exc.status} {exc.message}"
+            await self._cancel_tasks(runner.state.thinking_tasks)
+            runner.state.has_error = True
+            runner.state.error_message = f"{exc.status} {exc.message}"
             request_url = ""
             try:
                 request_url = str(exc.request_info.real_url) if exc.request_info else ""
@@ -3878,39 +4057,51 @@ class ResponsesEngine:
                 exc.message,
             )
             self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
-            await self._handle_stream_error(runtime_events, session.state.error_message)
-
-        except Exception as exc:  # pragma: no cover
-            await self._cancel_tasks(session.state.thinking_tasks)
-            session.state.has_error = True
-            session.state.error_message = str(exc)
-            self.logger.error('turn.error type=%s message=%s', type(exc).__name__, session.state.error_message)
-            self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
-            await self._handle_stream_error(runtime_events, session.state.error_message)
-
-        finally:
-            await self._emit_log_citation(runtime_events, session.state.citations)
-            if not session.state.response_text and not session.state.has_error and session.state.last_tool_result:
-                session.state.response_text = session.state.last_tool_result
-            usage_for_completion = (
-                session.state.usage_summary
-                or self._extract_usage_from_final_response(session.state.completed_response or {})
-                or None
+            await self._handle_stream_error(runtime_events, runner.state.error_message or "")
+            loop_result = TurnResult(
+                text="",
+                usage=None,
+                citations=runner.state.citations,
+                error_message=runner.state.error_message,
             )
-            await session.emit_status('Done', done=True, hidden=False, require_previous=True)
-            completion_payload: dict[str, Any] = {'done': True}
-            if session.state.has_error:
-                if session.state.error_message:
-                    completion_payload['error'] = {'message': session.state.error_message}
-            else:
-                completion_payload.update({'content': session.state.response_text, 'usage': usage_for_completion})
-            await runtime_events.chat_completion(completion_payload)
+        except Exception as exc:  # pragma: no cover
+            await self._cancel_tasks(runner.state.thinking_tasks)
+            runner.state.has_error = True
+            runner.state.error_message = str(exc)
+            self.logger.error("turn.error type=%s message=%s", type(exc).__name__, runner.state.error_message)
+            self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
+            await self._handle_stream_error(runtime_events, runner.state.error_message or "")
+            loop_result = TurnResult(
+                text="",
+                usage=None,
+                citations=runner.state.citations,
+                error_message=runner.state.error_message,
+            )
+
+        # Finalize and emit completion
+        await self._emit_log_citation(runtime_events, loop_result.citations)
+        if not loop_result.text and not loop_result.error_message and runner.state.last_tool_result:
+            loop_result.text = runner.state.last_tool_result
+        usage_for_completion = (
+            loop_result.usage
+            or runner.state.usage_summary
+            or self._extract_usage_from_final_response(runner.state.completed_response or {})
+            or None
+        )
+        if runner.session:
+            await runner.session.emit_status("Done", done=True, hidden=False, require_previous=True)
+        completion_payload: dict[str, Any] = {"done": True}
+        if loop_result.error_message:
+            completion_payload["error"] = {"message": loop_result.error_message}
+        else:
+            completion_payload.update({"content": loop_result.text, "usage": usage_for_completion})
+        await runtime_events.chat_completion(completion_payload)
 
         return TurnResult(
-            text=session.state.response_text,
+            text=loop_result.text,
             usage=usage_for_completion,
-            citations=session.state.citations if session.state.citations else [],
-            error_message=session.state.error_message,
+            citations=loop_result.citations if loop_result.citations else [],
+            error_message=loop_result.error_message,
         )
 
     async def run_task_model(
@@ -4592,7 +4783,8 @@ from typing import Any
 # from openai_responses_manifold.core.logging import get_logger
 # from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
 # from openai_responses_manifold.adapters.openwebui.store import ItemStore
-# from openai_responses_manifold.domain.history import HistoryService
+# from openai_responses_manifold.domain.history import HistoryResult, HistoryService, extract_system_instructions
+# from openai_responses_manifold.domain.turn_context import TurnContext
 
 logger = get_logger(__name__)
 
@@ -4600,9 +4792,7 @@ logger = get_logger(__name__)
 async def build_responses_body(
     owui_request: dict[str, Any],
     *,
-    valves: Any,
-    metadata: dict[str, Any],
-    user_identifier: str | None = None,
+    ctx: TurnContext,
     item_store: ItemStore,
 ) -> ResponseCreateParams:
     """
@@ -4610,6 +4800,9 @@ async def build_responses_body(
     """
 
     payload: dict[str, Any] = {"stream": True, "store": False}
+
+    valves = ctx.valves
+    metadata = ctx.metadata
 
     default_model = getattr(valves, "MODEL_ID", "") or ""
     default_model = default_model.split(",")[0].strip() if default_model else ""
@@ -4643,24 +4836,34 @@ async def build_responses_body(
         "previous_response_id",
         "conversation",
         "prompt",
-        "stream_options",
     ]
     for key in passthrough_keys:
         if key in owui_request:
             payload[key] = owui_request[key]
 
+    raw_stream_options = owui_request.get("stream_options")
+    if isinstance(raw_stream_options, dict):
+        stream_options: dict[str, Any] = {}
+        if "include_obfuscation" in raw_stream_options:
+            stream_options["include_obfuscation"] = raw_stream_options.get("include_obfuscation")
+        if stream_options:
+            payload["stream_options"] = stream_options
+
     messages = owui_request.get("messages") or []
     provided_input = owui_request.get("input")
-    instructions = owui_request.get("instructions") or _extract_system_instructions(messages)
+    instructions = owui_request.get("instructions")
+    history_result: HistoryResult | None = None
 
     if provided_input is None and messages:
         history_service = HistoryService(item_store)
-        provided_input, inferred_instructions = history_service.build_input_and_instructions(
-            messages,
-            metadata=metadata,
-        )
-        if not instructions:
-            instructions = inferred_instructions
+        history_result = history_service.build_input_and_instructions(messages, ctx=ctx)
+        provided_input = history_result.input_items
+
+    if instructions is None:
+        if history_result:
+            instructions = history_result.instructions
+        else:
+            instructions = extract_system_instructions(messages)
 
     payload["input"] = provided_input
     if payload["input"] is None:
@@ -4680,8 +4883,8 @@ async def build_responses_body(
     elif getattr(valves, "MAX_TOOL_CALLS", None) is not None:
         payload["max_tool_calls"] = valves.MAX_TOOL_CALLS
 
-    if user_identifier:
-        payload["user"] = user_identifier
+    if ctx.user_identifier:
+        payload["user"] = ctx.user_identifier
     elif metadata.get("user_id"):
         payload["user"] = metadata["user_id"]
 
@@ -4692,17 +4895,6 @@ async def build_responses_body(
         raise
 
     return responses_body
-
-
-def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
-    """Return the most recent system message content, if present."""
-
-    for message in reversed(messages):
-        if message.get("role") == "system":
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return content
-    return None
 
 
 __all__ = ["build_responses_body"]
@@ -4775,7 +4967,8 @@ from open_webui.models.models import ModelForm, Models
 # from openai_responses_manifold.domain.engine import ResponsesEngine
 # from openai_responses_manifold.domain.events import RuntimeEvents
 # from openai_responses_manifold.domain.routing import route_auto_model
-# from openai_responses_manifold.domain.tools import resolve_tools
+# from openai_responses_manifold.domain.tools import ToolSpecBuilder, apply_tool_policy
+# from openai_responses_manifold.domain.turn_context import TurnContext
 
 
 class Pipe:
@@ -4820,6 +5013,13 @@ class Pipe:
         openwebui_model_id = __metadata__.get("model", {}).get("id", "")
         user_identifier = __user__.get(valves.PROMPT_CACHE_KEY) or __user__.get("id")
         features = __metadata__.get("features", {}).get("openai_responses", {})
+        ctx = TurnContext(
+            valves=valves,
+            metadata=__metadata__,
+            user_identifier=user_identifier,
+            owui_model_id=openwebui_model_id,
+            features=features,
+        )
 
         with logging_context(
             __metadata__.get("session_id"),
@@ -4835,9 +5035,7 @@ class Pipe:
             completions_body = CompletionCreateParams.model_validate(body)
             responses_body = await build_responses_body(
                 completions_body.model_dump(),
-                valves=valves,
-                metadata=__metadata__,
-                user_identifier=user_identifier,
+                ctx=ctx,
                 item_store=self.store,
             )
             provided_tools = __tools__ if __tools__ is not None else body.get("tools")
@@ -4864,11 +5062,11 @@ class Pipe:
                     done=True,
                 )
                 return None
-            tools, tool_registry = await resolve_tools(
+            spec_builder = ToolSpecBuilder()
+            tools, tool_registry = await spec_builder.build_for_turn(
                 responses_body,
-                valves,
+                ctx,
                 provided_tools,
-                features=features,
                 extra_tools=extra_tools if isinstance(extra_tools, list) else None,
             )
             if tools:
@@ -4886,6 +5084,8 @@ class Pipe:
 
             if __task__:
                 self.logger.info("Detected task model: %s", __task__)
+                # Task models are simple, non-streamed calls; avoid sending tool specs.
+                responses_body.tools = None
                 task_body = responses_body.model_dump()
                 if isinstance(__task_body__, dict):
                     task_body = {**task_body, **__task_body__}
@@ -4893,10 +5093,9 @@ class Pipe:
 
             result = await self.engine.run_streaming_turn(
                 responses_body,
-                valves=valves,
-                metadata=__metadata__,
+                ctx=ctx,
                 events=runtime_events,
-                openwebui_tools=tool_registry,
+                tool_registry=tool_registry,
             )
 
             if result.citations and __metadata__.get("chat_id") and __metadata__.get("message_id"):
@@ -5049,24 +5248,6 @@ class Pipe:
                 responses_body.include.append("reasoning.encrypted_content")
 
     def _apply_parallel_tool_policy(self, responses_body: Any, valves: PipeValves) -> None:
-        tools = responses_body.tools or []
-        has_web_search = any(isinstance(tool, dict) and tool.get("type") == "web_search" for tool in tools)
-        has_code_interpreter = any(
-            isinstance(tool, dict) and tool.get("type") == "code_interpreter" for tool in tools
-        )
-
-        if has_code_interpreter:
-            responses_body.include = responses_body.include or []
-            if "code_interpreter_call.outputs" not in responses_body.include:
-                responses_body.include.append("code_interpreter_call.outputs")
-
-        if has_web_search:
-            responses_body.parallel_tool_calls = False
-            if getattr(valves, "WEB_SEARCH_INCLUDE_SOURCES", True):
-                responses_body.include = responses_body.include or []
-                if "web_search_call.action.sources" not in responses_body.include:
-                    responses_body.include.append("web_search_call.action.sources")
-            return
-        responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
+        apply_tool_policy(responses_body, valves)
 
 # fmt: on

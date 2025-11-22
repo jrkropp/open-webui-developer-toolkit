@@ -7,7 +7,8 @@ from typing import Any
 from openai_responses_manifold.core.logging import get_logger
 from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
 from openai_responses_manifold.adapters.openwebui.store import ItemStore
-from openai_responses_manifold.domain.history import HistoryService
+from openai_responses_manifold.domain.history import HistoryResult, HistoryService, extract_system_instructions
+from openai_responses_manifold.domain.turn_context import TurnContext
 
 logger = get_logger(__name__)
 
@@ -15,9 +16,7 @@ logger = get_logger(__name__)
 async def build_responses_body(
     owui_request: dict[str, Any],
     *,
-    valves: Any,
-    metadata: dict[str, Any],
-    user_identifier: str | None = None,
+    ctx: TurnContext,
     item_store: ItemStore,
 ) -> ResponseCreateParams:
     """
@@ -25,6 +24,9 @@ async def build_responses_body(
     """
 
     payload: dict[str, Any] = {"stream": True, "store": False}
+
+    valves = ctx.valves
+    metadata = ctx.metadata
 
     default_model = getattr(valves, "MODEL_ID", "") or ""
     default_model = default_model.split(",")[0].strip() if default_model else ""
@@ -58,24 +60,34 @@ async def build_responses_body(
         "previous_response_id",
         "conversation",
         "prompt",
-        "stream_options",
     ]
     for key in passthrough_keys:
         if key in owui_request:
             payload[key] = owui_request[key]
 
+    raw_stream_options = owui_request.get("stream_options")
+    if isinstance(raw_stream_options, dict):
+        stream_options: dict[str, Any] = {}
+        if "include_obfuscation" in raw_stream_options:
+            stream_options["include_obfuscation"] = raw_stream_options.get("include_obfuscation")
+        if stream_options:
+            payload["stream_options"] = stream_options
+
     messages = owui_request.get("messages") or []
     provided_input = owui_request.get("input")
-    instructions = owui_request.get("instructions") or _extract_system_instructions(messages)
+    instructions = owui_request.get("instructions")
+    history_result: HistoryResult | None = None
 
     if provided_input is None and messages:
         history_service = HistoryService(item_store)
-        provided_input, inferred_instructions = history_service.build_input_and_instructions(
-            messages,
-            metadata=metadata,
-        )
-        if not instructions:
-            instructions = inferred_instructions
+        history_result = history_service.build_input_and_instructions(messages, ctx=ctx)
+        provided_input = history_result.input_items
+
+    if instructions is None:
+        if history_result:
+            instructions = history_result.instructions
+        else:
+            instructions = extract_system_instructions(messages)
 
     payload["input"] = provided_input
     if payload["input"] is None:
@@ -95,8 +107,8 @@ async def build_responses_body(
     elif getattr(valves, "MAX_TOOL_CALLS", None) is not None:
         payload["max_tool_calls"] = valves.MAX_TOOL_CALLS
 
-    if user_identifier:
-        payload["user"] = user_identifier
+    if ctx.user_identifier:
+        payload["user"] = ctx.user_identifier
     elif metadata.get("user_id"):
         payload["user"] = metadata["user_id"]
 
@@ -107,17 +119,6 @@ async def build_responses_body(
         raise
 
     return responses_body
-
-
-def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
-    """Return the most recent system message content, if present."""
-
-    for message in reversed(messages):
-        if message.get("role") == "system":
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return content
-    return None
 
 
 __all__ = ["build_responses_body"]

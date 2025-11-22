@@ -13,6 +13,11 @@ from openai_responses_manifold.adapters.openai.events import (
 )
 
 
+def _ctx(valves: orm.Pipe.Valves) -> orm.TurnContext:
+    meta = {"chat_id": "chat-1", "message_id": "msg-1", "model": {"id": "gpt-4o"}}
+    return orm.TurnContext(valves=valves, metadata=meta, user_identifier=None, owui_model_id="gpt-4o", features={})
+
+
 @pytest.mark.asyncio()
 async def test_event_handler_tracks_text_and_completion(
     monkeypatch: pytest.MonkeyPatch,
@@ -28,10 +33,8 @@ async def test_event_handler_tracks_text_and_completion(
     handler = orm_engine._StreamSession(
         engine,
         body,
-        valves,
-        {"chat_id": "chat-1", "message_id": "msg-1", "model": {"id": "gpt-4o"}},
+        _ctx(valves),
         runtime_events,
-        openwebui_tools=None,
     )
 
     await handler.handle_event(ResponseOutputTextDeltaEvent(delta="Hello"))
@@ -57,10 +60,8 @@ async def test_event_handler_executes_tools_with_registry(
     handler = orm_engine._StreamSession(
         engine,
         body,
-        valves,
-        {"chat_id": "chat-1", "message_id": "msg-1", "model": {"id": "gpt-4o"}},
+        _ctx(valves),
         runtime_events,
-        openwebui_tools={},
     )
 
     tool_calls = [
@@ -71,7 +72,8 @@ async def test_event_handler_executes_tools_with_registry(
         }
     ]
 
-    outputs = await handler.execute_tool_calls(tool_calls)
+    executor = orm.ToolExecutor(engine.logger)
+    outputs = await executor.run(tool_calls, {}, emit_status=handler.emit_status, valves=valves)
     assert outputs == []
     assert spy_event_emitter.types() == ["status"]
 
@@ -99,10 +101,8 @@ async def test_code_interpreter_items_emit_citation_and_status(
     handler = orm_engine._StreamSession(
         engine,
         body,
-        valves,
-        {"chat_id": "chat-1", "message_id": "msg-1", "model": {"id": "gpt-4o"}},
+        _ctx(valves),
         runtime_events,
-        openwebui_tools=None,
     )
 
     item = {
@@ -140,10 +140,8 @@ async def test_code_interpreter_item_uses_fallback_code_when_no_outputs(
     handler = orm_engine._StreamSession(
         engine,
         body,
-        valves,
-        {"chat_id": "chat-1", "message_id": "msg-1", "model": {"id": "gpt-4o"}},
+        _ctx(valves),
         runtime_events,
-        openwebui_tools=None,
     )
 
     # simulate code_done event before item arrives
@@ -185,10 +183,8 @@ async def test_code_interpreter_result_citation_uses_final_text(
     handler = orm_engine._StreamSession(
         engine,
         body,
-        valves,
-        {"chat_id": "chat-1", "message_id": "msg-1", "model": {"id": "gpt-4o"}},
+        _ctx(valves),
         runtime_events,
-        openwebui_tools=None,
     )
 
     # simulate code_interpreter_call with no outputs/logs
@@ -228,10 +224,8 @@ async def test_event_handler_emits_statuses_for_code_interpreter(
     handler = orm_engine._StreamSession(
         engine,
         body,
-        valves,
-        {"chat_id": "chat-1", "message_id": "msg-1", "model": {"id": "gpt-4o"}},
+        _ctx(valves),
         runtime_events,
-        openwebui_tools=None,
     )
 
     await handler.handle_event(

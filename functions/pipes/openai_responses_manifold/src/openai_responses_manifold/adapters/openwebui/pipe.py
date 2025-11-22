@@ -26,7 +26,8 @@ from openai_responses_manifold.adapters.openwebui.store import ItemStore
 from openai_responses_manifold.domain.engine import ResponsesEngine
 from openai_responses_manifold.domain.events import RuntimeEvents
 from openai_responses_manifold.domain.routing import route_auto_model
-from openai_responses_manifold.domain.tools import resolve_tools
+from openai_responses_manifold.domain.tools import ToolSpecBuilder, apply_tool_policy
+from openai_responses_manifold.domain.turn_context import TurnContext
 
 
 class Pipe:
@@ -71,6 +72,13 @@ class Pipe:
         openwebui_model_id = __metadata__.get("model", {}).get("id", "")
         user_identifier = __user__.get(valves.PROMPT_CACHE_KEY) or __user__.get("id")
         features = __metadata__.get("features", {}).get("openai_responses", {})
+        ctx = TurnContext(
+            valves=valves,
+            metadata=__metadata__,
+            user_identifier=user_identifier,
+            owui_model_id=openwebui_model_id,
+            features=features,
+        )
 
         with logging_context(
             __metadata__.get("session_id"),
@@ -86,9 +94,7 @@ class Pipe:
             completions_body = CompletionCreateParams.model_validate(body)
             responses_body = await build_responses_body(
                 completions_body.model_dump(),
-                valves=valves,
-                metadata=__metadata__,
-                user_identifier=user_identifier,
+                ctx=ctx,
                 item_store=self.store,
             )
             provided_tools = __tools__ if __tools__ is not None else body.get("tools")
@@ -115,11 +121,11 @@ class Pipe:
                     done=True,
                 )
                 return None
-            tools, tool_registry = await resolve_tools(
+            spec_builder = ToolSpecBuilder()
+            tools, tool_registry = await spec_builder.build_for_turn(
                 responses_body,
-                valves,
+                ctx,
                 provided_tools,
-                features=features,
                 extra_tools=extra_tools if isinstance(extra_tools, list) else None,
             )
             if tools:
@@ -137,6 +143,8 @@ class Pipe:
 
             if __task__:
                 self.logger.info("Detected task model: %s", __task__)
+                # Task models are simple, non-streamed calls; avoid sending tool specs.
+                responses_body.tools = None
                 task_body = responses_body.model_dump()
                 if isinstance(__task_body__, dict):
                     task_body = {**task_body, **__task_body__}
@@ -144,10 +152,9 @@ class Pipe:
 
             result = await self.engine.run_streaming_turn(
                 responses_body,
-                valves=valves,
-                metadata=__metadata__,
+                ctx=ctx,
                 events=runtime_events,
-                openwebui_tools=tool_registry,
+                tool_registry=tool_registry,
             )
 
             if result.citations and __metadata__.get("chat_id") and __metadata__.get("message_id"):
@@ -300,22 +307,4 @@ class Pipe:
                 responses_body.include.append("reasoning.encrypted_content")
 
     def _apply_parallel_tool_policy(self, responses_body: Any, valves: PipeValves) -> None:
-        tools = responses_body.tools or []
-        has_web_search = any(isinstance(tool, dict) and tool.get("type") == "web_search" for tool in tools)
-        has_code_interpreter = any(
-            isinstance(tool, dict) and tool.get("type") == "code_interpreter" for tool in tools
-        )
-
-        if has_code_interpreter:
-            responses_body.include = responses_body.include or []
-            if "code_interpreter_call.outputs" not in responses_body.include:
-                responses_body.include.append("code_interpreter_call.outputs")
-
-        if has_web_search:
-            responses_body.parallel_tool_calls = False
-            if getattr(valves, "WEB_SEARCH_INCLUDE_SOURCES", True):
-                responses_body.include = responses_body.include or []
-                if "web_search_call.action.sources" not in responses_body.include:
-                    responses_body.include.append("web_search_call.action.sources")
-            return
-        responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
+        apply_tool_policy(responses_body, valves)

@@ -56,4 +56,4 @@ Quick reference for the OpenAI Responses SSE event types that the manifold consu
 - `response.code_interpreter_call_code.delta` / `done` – Streaming/final code string emitted by the interpreter; payload: `delta` or `code`.
 
 ## Usage counters
-- Usage is only present on `response.completed` when `stream_options.include_usage` is set; no separate usage event exists today.
+- Usage is included on `response.completed`; there is no separate usage event today.

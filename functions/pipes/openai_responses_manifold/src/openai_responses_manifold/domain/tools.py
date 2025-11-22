@@ -7,16 +7,18 @@ import inspect
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from openai_responses_manifold.core.logging import get_logger, truncate_for_log
 from openai_responses_manifold.core.errors import ToolExecutionError
 from openai_responses_manifold.core.model_catalog import supports
 from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
-from openai_responses_manifold.domain.web_search import build_web_search_tool
+from openai_responses_manifold.domain.turn_context import TurnContext
+from openai_responses_manifold.domain.web_search import apply_web_search_policy, build_web_search_tool
 
 logger = get_logger(__name__)
 TOOL_CALL_TIMEOUT_SEC = 30
+CODE_INTERPRETER_OUTPUTS_INCLUDE = "code_interpreter_call.outputs"
 
 
 async def resolve_tools(
@@ -43,6 +45,27 @@ async def resolve_tools(
         extra_tools=extra_tools,
     )
     return tools, tool_registry or {}
+
+
+class ToolSpecBuilder:
+    """Build tool specs and runtime registry for a turn."""
+
+    async def build_for_turn(
+        self,
+        responses_body: ResponseCreateParams,
+        ctx: TurnContext,
+        provided_tools: list[dict[str, Any]] | dict[str, Any] | asyncio.Future | None,
+        *,
+        extra_tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        tools, registry = await resolve_tools(
+            responses_body,
+            ctx.valves,
+            provided_tools,
+            features=ctx.features,
+            extra_tools=extra_tools,
+        )
+        return tools, registry
 
 
 def build_tools(
@@ -115,6 +138,59 @@ def build_tools(
             "; ".join(summaries) if summaries else "none",
         )
     return deduped
+
+
+def apply_tool_policy(responses_body: Any, valves: Any) -> None:
+    """
+    Normalize include/parallel settings across tool types.
+    """
+
+    tools = responses_body.tools or []
+    has_code_interpreter = any(
+        isinstance(tool, dict) and tool.get("type") == "code_interpreter" for tool in tools
+    )
+
+    web_search_applied = apply_web_search_policy(responses_body, valves)
+
+    if has_code_interpreter:
+        responses_body.include = responses_body.include or []
+        if CODE_INTERPRETER_OUTPUTS_INCLUDE not in responses_body.include:
+            responses_body.include.append(CODE_INTERPRETER_OUTPUTS_INCLUDE)
+
+    if not web_search_applied:
+        responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
+
+
+class ToolExecutor:
+    """Execute tool calls with status/error signaling."""
+
+    def __init__(self, logger: logging.Logger | None = None) -> None:
+        self.logger = logger or get_logger(__name__)
+
+    async def run(
+        self,
+        tool_calls: list[dict[str, Any]],
+        registry: dict[str, dict[str, Any]],
+        *,
+        emit_status: Callable[[str], Awaitable[Any]] | None = None,
+        valves: Any,
+    ) -> list[dict[str, Any]]:
+        if not tool_calls:
+            return []
+
+        if not registry:
+            self.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
+            if emit_status:
+                await emit_status("Tool execution skipped: no tool registry available.")
+            return []
+
+        try:
+            return await execute_tool_calls(tool_calls, registry)
+        except ToolExecutionError as exc:
+            self.logger.warning("Skipping malformed tool arguments: %s", exc)
+            if emit_status:
+                await emit_status("Skipping malformed tool arguments.")
+            return []
 
 
 async def execute_tool_calls(
@@ -415,6 +491,10 @@ def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
 
 __all__ = [
     "build_tools",
+    "apply_tool_policy",
+    "CODE_INTERPRETER_OUTPUTS_INCLUDE",
+    "ToolExecutor",
+    "ToolSpecBuilder",
     "execute_tool_calls",
     "resolve_tools",
 ]

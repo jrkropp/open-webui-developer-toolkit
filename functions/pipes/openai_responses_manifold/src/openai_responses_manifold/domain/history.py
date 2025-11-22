@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 from openai_responses_manifold.core.logging import get_logger
@@ -21,9 +22,29 @@ from openai_responses_manifold.core.messages import (
     normalize_user_blocks,
     user_blocks_to_responses_items,
 )
+from openai_responses_manifold.domain.turn_context import TurnContext
 
 Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
 logger = get_logger(__name__)
+
+
+@dataclass
+class HistoryResult:
+    """Structured result for reconstructed input items and instructions."""
+
+    input_items: list[dict[str, Any]]
+    instructions: str | None = None
+
+
+def extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
+    """Return the most recent system message content, if present."""
+
+    for message in reversed(messages):
+        if message.get("role") == "system":
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+    return None
 
 
 class HistoryStore(Protocol):
@@ -196,21 +217,16 @@ class HistoryService:
     def __init__(self, store: HistoryStore | None = None) -> None:
         self.store = store or NullHistoryStore()
 
-    def build_input_and_instructions(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        metadata: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], str | None]:
-        resolver = self._resolver(metadata)
+    def build_input_and_instructions(self, messages: list[dict[str, Any]], *, ctx: TurnContext) -> HistoryResult:
+        resolver = self._resolver(ctx.metadata)
         builder = HistoryBuilder(resolve_items=resolver)
         input_items = builder.build_input_from_messages(
             messages,
-            chat_id=metadata.get("chat_id"),
-            openwebui_model_id=metadata.get("model", {}).get("id"),
+            chat_id=ctx.metadata.get("chat_id"),
+            openwebui_model_id=ctx.metadata.get("model", {}).get("id"),
         )
-        instructions = self._extract_system_instructions(messages)
-        return input_items, instructions
+        instructions = extract_system_instructions(messages)
+        return HistoryResult(input_items=input_items, instructions=instructions)
 
     def _resolver(self, metadata: dict[str, Any]) -> Resolver:
         chat_id = metadata.get("chat_id")
@@ -227,16 +243,14 @@ class HistoryService:
 
         return _resolve
 
-    @staticmethod
-    def _extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
-        """Return the most recent system message content, if present."""
 
-        for message in reversed(messages):
-            if message.get("role") == "system":
-                content = message.get("content")
-                if isinstance(content, str) and content.strip():
-                    return content
-        return None
-
-
-__all__ = ["HistoryBuilder", "HistoryPersistence", "HistoryService", "HistoryStore", "NullHistoryStore"]
+__all__ = [
+    "HistoryBuilder",
+    "HistoryResult",
+    "HistoryPersistence",
+    "HistoryService",
+    "HistoryStore",
+    "NullHistoryStore",
+    "extract_system_instructions",
+    "TurnContext",
+]

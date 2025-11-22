@@ -13,7 +13,7 @@ from openai_responses_manifold.core.model_catalog import MODEL_ALIASES, alias_de
 class StreamOptions(BaseModel):
     """Streaming options for responses."""
 
-    include_usage: bool | None = None
+    include_obfuscation: bool | None = None
 
     model_config = ConfigDict(extra="forbid")
 

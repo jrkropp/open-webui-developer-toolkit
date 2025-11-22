@@ -16,6 +16,16 @@ def runtime_events(emitter: SpyEventEmitter) -> orm.RuntimeEvents:
     return orm.OpenWebUIRuntimeEvents(orm.EventEmitter(emitter))
 
 
+def turn_ctx(valves: orm.Pipe.Valves, metadata: dict[str, object]) -> orm.TurnContext:
+    return orm.TurnContext(
+        valves=valves,
+        metadata=metadata,
+        user_identifier=None,
+        owui_model_id=metadata.get("model", {}).get("id", "") if isinstance(metadata, dict) else "",
+        features={},
+    )
+
+
 @pytest.mark.asyncio()
 async def test_streaming_flow_emits_single_completion(
     fake_responses_client: FakeResponsesClient,
@@ -58,10 +68,9 @@ async def test_streaming_flow_emits_single_completion(
 
     result = await runner.run_streaming_turn(
         responses_body_factory(),
-        valves=valves,
-        metadata=metadata,
+        ctx=turn_ctx(valves, metadata),
         events=runtime_events(spy_event_emitter),
-        openwebui_tools={},
+        tool_registry={},
     )
 
     assert result.text == "Hello world"
@@ -141,10 +150,9 @@ async def test_function_call_loop_executes_local_tools(
 
     await runner.run_streaming_turn(
         responses_body_factory(model="gpt-4o", store=False),
-        valves=valves,
-        metadata=metadata,
+        ctx=turn_ctx(valves, metadata),
         events=runtime_events(spy_event_emitter),
-        openwebui_tools={"echo": {"callable": echo}},
+        tool_registry={"echo": {"callable": echo}},
     )
 
     assert len(fake_responses_client.stream_calls) == 2, "runner should retry after tool output"
@@ -193,10 +201,9 @@ async def test_errors_emit_log_citation(
 
         await runner.run_streaming_turn(
             responses_body_factory(),
-            valves=valves,
-            metadata=metadata,
+            ctx=turn_ctx(valves, metadata),
             events=runtime_events(spy_event_emitter),
-            openwebui_tools={},
+            tool_registry={},
         )
     finally:
         orm.pop_logging_context(tokens)
@@ -248,10 +255,9 @@ async def test_usage_backfills_from_final_response(
 
     await runner.run_streaming_turn(
         responses_body_factory(),
-        valves=valves,
-        metadata=metadata_factory(),
+        ctx=turn_ctx(valves, metadata_factory()),
         events=runtime_events(spy_event_emitter),
-        openwebui_tools={},
+        tool_registry={},
     )
 
     completion_events = [
@@ -309,10 +315,9 @@ async def test_function_call_arguments_delta_handles_bad_json(
 
     result = await runner.run_streaming_turn(
         responses_body_factory(),
-        valves=valves,
-        metadata=metadata_factory(),
+        ctx=turn_ctx(valves, metadata_factory()),
         events=runtime_events(spy_event_emitter),
-        openwebui_tools={"broken_tool": {"callable": lambda **_: None}},
+        tool_registry={"broken_tool": {"callable": lambda **_: None}},
     )
 
     assert result.text == "Done"

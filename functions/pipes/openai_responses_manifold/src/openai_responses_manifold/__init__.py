@@ -70,8 +70,11 @@ from openai_responses_manifold.adapters.openwebui.pipe import Pipe
 from openai_responses_manifold.domain.engine import ResponsesEngine, TurnResult
 from openai_responses_manifold.domain.events import NullRuntimeEvents, RuntimeEvents
 from openai_responses_manifold.domain.routing import route_auto_model
+from openai_responses_manifold.domain.turn_context import TurnContext
 from openai_responses_manifold.domain.tools import (
+    ToolExecutor,
     build_tools,
+    apply_tool_policy,
     execute_tool_calls,
     resolve_tools,
     tool_summaries_for_log,
@@ -113,12 +116,15 @@ __all__ = [
     "TurnResult",
     "RuntimeEvents",
     "NullRuntimeEvents",
+    "TurnContext",
     "EventEmitter",
     "EventEmitterFn",
     "EventCall",
     "EventCallerFn",
     "ItemStore",
     "OpenWebUIRuntimeEvents",
+    "ToolExecutor",
+    "apply_tool_policy",
     "build_tools",
     "execute_tool_calls",
     "resolve_tools",
