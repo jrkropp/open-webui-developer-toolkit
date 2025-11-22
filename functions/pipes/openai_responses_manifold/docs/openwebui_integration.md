@@ -26,6 +26,8 @@ It complements:
 * `web_search_and_citations.md`
 * `config_and_valves.md`
 
+> **Legacy note:** `src_old/` and `tests_old/` contain the prior monolithic implementation and its tests. Keep them untouched; all changes should target the layered source under `src/` and the new tests under `tests/`.
+
 ---
 
 ## 1. Big picture: where this manifold sits

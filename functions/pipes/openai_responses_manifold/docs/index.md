@@ -32,6 +32,8 @@ If you’re new to this manifold:
 
 > **Read `manifold_refactor.md` first**, then come back here and jump to the deep‑dive doc that matches what you’re editing.
 
+For a quick architectural walkthrough of how the layered source maps to the single-file bundle, see **`developer_overview.md`** below.
+
 ---
 
 ## 2. Deep‑dive documents
@@ -40,6 +42,23 @@ Each supporting document focuses on one critical part of the manifold. They are 
 
 Paths below are relative to
 `functions/pipes/openai_responses_manifold/docs/`.
+
+---
+
+### 2.0 Developer overview & architecture map
+
+**File:** `developer_overview.md`
+
+**Focus:**
+
+* High-level tour of the layered source tree and how it collapses into `openai_responses_manifold.py`.
+* Request flow from Open WebUI → Pipe → engine → OpenAI Responses API → persistence.
+* Dev loop expectations (tests, bundling) and the legacy directories that are reference-only.
+
+**Read this when:**
+
+* You need a quick refresher on the architecture before diving into a subsystem doc.
+* You are onboarding someone new and want a single page to set context.
 
 ---
 
@@ -217,6 +236,8 @@ Paths below are relative to
 * You debug frontend integration.
 * You adjust which events are emitted and when.
 * You change how the Pipe reads/writes via `Chats` or `Models`.
+
+> **Legacy note:** `src_old/` and `tests_old/` hold the previous monolithic implementation and tests. Keep them unchanged; all new work belongs under `src/` and `tests/`.
 
 ---
 

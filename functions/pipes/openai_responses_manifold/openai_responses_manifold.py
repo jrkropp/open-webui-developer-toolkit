@@ -21,202 +21,153 @@ Use the version in the alpha-preview or main branches instead.
 # For the development layout and more details, see README.md.
 #
 # Logical module layout (source → sections below):
-# - config/settings.py                     Shared pipe settings and defaults.
-# - core/logging.py                        Session-aware logging helpers in a single, readable module.
-# - core/errors.py                         Typed exceptions referenced throughout the manifold.
-# - core/model_catalog.py                  Single source of truth for OpenAI model IDs, aliases, and capabilities.
-# - core/messages.py                       Helpers for converting OpenWebUI message blocks to Responses items.
-# - core/markers.py                        Helpers for encoding/decoding hidden response markers.
-# - adapters/openai/requests.py            Request DTOs and helpers for OpenAI Responses and Chat Completions.
-# - adapters/openai/events.py              Typed schemas for documented OpenAI Responses streaming events.
-# - adapters/openai/client.py              aiohttp-backed client for the OpenAI Responses API.
-# - domain/events.py                       UI-agnostic interface for runtime events consumed by the engine.
-# - domain/turn_context.py                 Shared turn-level context passed across engine, tools, and history.
-# - domain/history.py                      Persistence and reconstruction services for Responses items.
-# - domain/code_interpreter.py             Helpers for handling code interpreter events and output items.
-# - domain/web_search.py                   Helpers for web_search tool construction and request policy.
-# - domain/tools.py                        Tool declaration and execution helpers.
-# - domain/tasks.py                        Helpers for running non-streamed task models.
-# - domain/routing.py                      Helper model routing for auto variants.
-# - domain/engine.py                       Streaming orchestration and tool loop for the Responses manifold.
-# - adapters/openwebui/events.py           Minimal Open WebUI event helpers matching the documented event catalog.
-# - adapters/openwebui/store.py            Persistence helpers for storing Responses items in OpenWebUI.
-# - adapters/openwebui/request_builder.py  Build ResponseCreateParams from OpenWebUI-style inputs.
-# - adapters/openwebui/runtime_events.py   Adapter that maps the domain RuntimeEvents protocol to Open WebUI's emitter.
-# - adapters/openwebui/pipe.py             Open WebUI pipe implementation that delegates to the Responses engine.
+# - core/config.py              Configuration models for the OpenAI Responses manifold.
+# - core/logging.py             Session-aware logging helpers for the manifold.
+# - core/model_catalog.py       Model catalog helpers for the OpenAI Responses manifold.
+# - core/markers.py             Helpers for encoding and parsing invisible history markers.
+# - openai_api/types.py         Typed models for the OpenAI Responses API.
+# - openai_api/client.py        Thin aiohttp-based client for the OpenAI Responses API.
+# - domain/types.py             Shared domain types for the OpenAI Responses engine and adapters.
+# - domain/history.py           History reconstruction and persistence helpers.
+# - domain/tools.py             Tool definitions, registry/executor interfaces, and merge policy.
+# - domain/web_search.py        Web search tool construction helpers.
+# - domain/code_interpreter.py  Helpers for code_interpreter events and outputs.
+# - domain/routing.py           Routing helpers for GPT-5 pseudo-models.
+# - domain/engine.py
+# - openwebui/store.py          Open WebUI-backed history store implementation.
+# - openwebui/events.py         Event adapter that maps domain runtime events to Open WebUI.
+# - openwebui/tools.py          Open WebUI tool registry and executor wrappers.
+# - openwebui/bridge.py         Helpers that translate Open WebUI inputs into Responses requests.
+# - pipe.py                     Open WebUI pipe entrypoint for the OpenAI Responses manifold.
 
 # fmt: off
 # Open WebUI runs Black on upload; disabling fmt keeps this bundle readable in that UI.
 
 from __future__ import annotations
 
-# === config/settings.py ===
-"""Shared pipe settings and defaults."""
+# === core/config.py ===
+"""Configuration models for the OpenAI Responses manifold.
 
-import os
-from typing import Literal, cast
+This module defines the pipe-level and per-user valve schemas along
+with the runtime configuration merged from both sources. See
+``docs/config_and_valves.md`` for field semantics.
+"""
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
-
-_PIPE_LOG_LEVELS: tuple[Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], ...] = (
-    "DEBUG",
-    "INFO",
-    "WARNING",
-    "ERROR",
-    "CRITICAL",
-)
-_default_pipe_log_level = (os.getenv("GLOBAL_LOG_LEVEL", "INFO") or "INFO").upper()
-if _default_pipe_log_level not in _PIPE_LOG_LEVELS:
-    _default_pipe_log_level = "INFO"
-DEFAULT_PIPE_LOG_LEVEL = cast(
-    Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], _default_pipe_log_level
-)
+from pydantic import BaseModel, field_validator
 
 
 class PipeValves(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    """Pipe-level configuration shared by all users."""
 
-    BASE_URL: str = Field(
-        default=((os.getenv("OPENAI_API_BASE_URL") or "").strip() or "https://api.openai.com/v1"),
-        description="The base URL to use with the OpenAI SDK. Defaults to the official OpenAI API endpoint. Supports LiteLLM and other custom endpoints.",
-    )
-    API_KEY: str = Field(
-        default=(os.getenv("OPENAI_API_KEY") or "").strip(),
-        description="Your OpenAI API key. Defaults to the value of the OPENAI_API_KEY environment variable (blank if unset).",
-    )
-    MODEL_ID: str = Field(
-        default="gpt-5-auto, gpt-5-chat-latest, gpt-5-thinking, gpt-5-thinking-high, gpt-5-thinking-minimal, gpt-4.1-nano, chatgpt-4o-latest, o3, gpt-4o",
-        description=(
-            "Comma separated OpenAI model IDs. Each ID becomes a model entry in WebUI. "
-            "Supports all official OpenAI model IDs and pseudo IDs (see README.md for full list)."
-        ),
-    )
-    REASONING_SUMMARY: Literal["auto", "concise", "detailed", "disabled"] = Field(
-        default="disabled",
-        description="REQUIRES VERIFIED OPENAI ORG. Visible reasoning summary (auto | concise | detailed | disabled). Works on gpt-5, o3, o4-mini; ignored otherwise. Docs: https://platform.openai.com/docs/api-reference/responses/create#responses-create-reasoning",
-    )
-    PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"] = Field(
-        default="disabled",
-        description=(
-            "REQUIRES VERIFIED OPENAI ORG. If `disabled` (default) = never request encrypted "
-            "reasoning tokens; if `response` = request encrypted reasoning tokens for this response "
-            "only (not reused across turns); if `conversation` = also persist encrypted reasoning "
-            "items for future turns (reuse not yet wired in)."
-        ),
-    )
-    PERSIST_TOOL_RESULTS: bool = Field(
-        default=True,
-        description="Persist tool call results across conversation turns. When disabled, tool results are not stored in the chat history.",
-    )
-    PARALLEL_TOOL_CALLS: bool = Field(
-        default=True,
-        description="Whether tool calls can be parallelized. Defaults to True if not set. Read more: https://platform.openai.com/docs/api-reference/responses/create#responses-create-parallel_tool_calls",
-    )
-    ENABLE_STRICT_TOOL_CALLING: bool = Field(
-        default=True,
-        description=(
-            "When True, converts Open WebUI registry tools to strict JSON Schema for OpenAI tools, "
-            "enforcing explicit types, required fields, and disallowing additionalProperties."
-        ),
-    )
-    MAX_TOOL_CALLS: int | None = Field(
-        default=None,
-        description=(
-            "Maximum number of individual tool or function calls the model can make "
-            "within a single response. Applies to the total number of calls across "
-            "all built-in tools. Further tool-call attempts beyond this limit will be ignored."
-        ),
-    )
-    MAX_FUNCTION_CALL_LOOPS: int = Field(
-        default=10,
-        description=(
-            "Maximum number of full execution cycles (loops) allowed per request. "
-            "Each loop involves the model generating one or more function/tool calls, "
-            "executing all requested functions, and feeding the results back into the model. "
-            "Looping stops when this limit is reached or when the model no longer requests "
-            "additional tool or function calls."
-        ),
-    )
-    ENABLE_WEB_SEARCH_TOOL: bool = Field(
-        default=False,
-        description="Enable OpenAI's built-in 'web_search' tool when supported. Read more: https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses",
-    )
-    WEB_SEARCH_USER_LOCATION: str | None = Field(
-        default=None,
-        description='User location for web search context. Leave blank to disable. Must be in valid JSON format according to OpenAI spec.  E.g., {"type": "approximate","country": "US","city": "San Francisco","region": "CA"}.',
-    )
-    WEB_SEARCH_ALLOWED_DOMAINS: str | None = Field(
-        default=None,
-        description=(
-            "Comma-separated or JSON array of domains for web_search filters.allowed_domains. "
-            "Per OpenAI docs, omit http/https (e.g., openai.com). Applies to Responses API only."
-        ),
-    )
-    WEB_SEARCH_EXTERNAL_WEB_ACCESS: bool = Field(
-        default=True,
-        description=(
-            "When False, sets web_search.external_web_access=false to use cached/indexed results "
-            "instead of live internet access."
-        ),
-    )
-    WEB_SEARCH_INCLUDE_SOURCES: bool = Field(
-        default=True,
-        description=(
-            "Automatically request web_search_call.action.sources when a web_search tool is present, "
-            "surfacing the full list of consulted URLs alongside inline citations."
-        ),
-    )
-    ENABLE_CODE_INTERPRETER_TOOL: bool = Field(
-        default=False,
-        description=(
-            "Enable OpenAI's built-in 'code_interpreter' tool when supported by the model. "
-            "Docs: https://platform.openai.com/docs/assistants/tools/code-interpreter"
-        ),
-    )
-    CODE_INTERPRETER_CONTAINER_JSON: str | None = Field(
-        default=None,
-        description=(
-            "Optional JSON for the code_interpreter tool's 'container' field. "
-            "If unset, defaults to {'type': 'auto'}."
-        ),
-    )
-    REMOTE_MCP_SERVERS_JSON: str | None = Field(
-        default=None,
-        description=(
-            "[EXPERIMENTAL] A JSON-encoded list (or single JSON object) defining one or more "
-            "remote MCP servers to be automatically attached to each request. This can be useful "
-            "for globally enabling tools across all chats."
-        ),
-    )
-    TRUNCATION: Literal["auto", "disabled"] = Field(
-        default="auto",
-        description="OpenAI truncation strategy. 'auto' drops middle context items if the conversation exceeds the context window; 'disabled' returns a 400 error instead.",
-    )
-    PROMPT_CACHE_KEY: Literal["id", "email"] = Field(
-        default="id",
-        description="Controls which user identifier is sent in the 'user' parameter to OpenAI.",
-    )
-    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
-        default=DEFAULT_PIPE_LOG_LEVEL,
-        description="Select logging level. Recommend INFO or WARNING for production use.",
-    )
+    BASE_URL: str = "https://api.openai.com/v1"
+    API_KEY: str = ""
+
+    MODEL_ID: str = "gpt-5.1-chat-latest"
+
+    REASONING_SUMMARY: Literal["auto", "concise", "detailed", "disabled"] = "disabled"
+    PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"] = "disabled"
+
+    PERSIST_TOOL_RESULTS: bool = True
+    PARALLEL_TOOL_CALLS: bool = True
+    ENABLE_STRICT_TOOL_CALLING: bool = True
+    MAX_TOOL_CALLS: Optional[int] = None
+    MAX_FUNCTION_CALL_LOOPS: int = 10
+
+    ENABLE_WEB_SEARCH_TOOL: bool = False
+    WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None] = "medium"
+    WEB_SEARCH_USER_LOCATION: Optional[str] = None
+
+    REMOTE_MCP_SERVERS_JSON: Optional[str] = None
+
+    TRUNCATION: Literal["auto", "disabled"] = "auto"
+
+    PROMPT_CACHE_KEY: Literal["id", "email"] = "id"
+
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    @field_validator("LOG_LEVEL", mode="before")
+    @classmethod
+    def _normalize_pipe_log_level(cls, value: str) -> str:
+        return value.upper()
 
 
 class UserValves(BaseModel):
-    """
-    User-level overrides. Currently only LOG_LEVEL is honored; all other settings are pipe-global.
+    """Per-user valve overrides."""
+
+    LOG_LEVEL: Literal[
+        "DEBUG",
+        "INFO",
+        "WARNING",
+        "ERROR",
+        "CRITICAL",
+        "INHERIT",
+    ] = "INHERIT"
+
+    @field_validator("LOG_LEVEL", mode="before")
+    @classmethod
+    def _normalize_user_log_level(cls, value: str) -> str:
+        return value.upper()
+
+
+class RuntimeConfig(BaseModel):
+    """Effective configuration for a single turn."""
+
+    BASE_URL: str
+    API_KEY: str
+
+    MODEL_ID: str
+
+    REASONING_SUMMARY: Literal["auto", "concise", "detailed", "disabled"]
+    PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"]
+
+    PERSIST_TOOL_RESULTS: bool
+    PARALLEL_TOOL_CALLS: bool
+    ENABLE_STRICT_TOOL_CALLING: bool
+    MAX_TOOL_CALLS: Optional[int]
+    MAX_FUNCTION_CALL_LOOPS: int
+
+    ENABLE_WEB_SEARCH_TOOL: bool
+    WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None]
+    WEB_SEARCH_USER_LOCATION: Optional[str]
+
+    REMOTE_MCP_SERVERS_JSON: Optional[str]
+
+    TRUNCATION: Literal["auto", "disabled"]
+
+    PROMPT_CACHE_KEY: Literal["id", "email"]
+
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+
+def merge_valves(pipe_valves: PipeValves, user_valves: UserValves) -> RuntimeConfig:
+    """Merge pipe-level and user valves into a runtime config.
+
+    User valves override pipe valves when they specify a concrete value.
+    The only override today is ``LOG_LEVEL``; when it is set to
+    ``"INHERIT"`` (case-insensitive) the pipe-level ``LOG_LEVEL`` is
+    preserved.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    base_config = pipe_valves.model_dump()
+    user_overrides = user_valves.model_dump()
 
-    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "INHERIT"] = Field(
-        default="INHERIT",
-        description="Select logging level. 'INHERIT' uses the pipe default.",
-    )
+    user_log_level = user_overrides.get("LOG_LEVEL")
+    if isinstance(user_log_level, str) and user_log_level.upper() != "INHERIT":
+        base_config["LOG_LEVEL"] = user_log_level.upper()
+
+    return RuntimeConfig(**base_config)
+
+
+__all__ = ["PipeValves", "UserValves", "RuntimeConfig", "merge_valves"]
 
 # === core/logging.py ===
-"""Session-aware logging helpers in a single, readable module."""
+"""Session-aware logging helpers for the manifold.
 
+This module centralizes logging setup so all layers share the same
+formatting, context propagation, and in-memory log buffering. See
+``docs/config_and_valves.md`` for operational guidance.
+"""
 import logging
 import sys
 from collections import defaultdict, deque
@@ -225,13 +176,13 @@ from contextvars import ContextVar, Token
 from typing import Any, DefaultDict, Deque, Iterator, Tuple
 
 # ---------------------------------------------------------------------------
-# ContextVars: what we attach to every log record
+# ContextVars attached to every log record
 # ---------------------------------------------------------------------------
 
-OWUI_SESSION_ID: ContextVar[str | None] = ContextVar("owui_session_id", default=None)  # OpenWebUI session token
-OWUI_CHAT_ID: ContextVar[str | None] = ContextVar("owui_chat_id", default=None)  # Chat/conversation ID
-OWUI_MESSAGE_ID: ContextVar[str | None] = ContextVar("owui_message_id", default=None)  # Message ID in chat
-OWUI_USER_ID: ContextVar[str | None] = ContextVar("owui_user_id", default=None)  # OpenWebUI user ID
+OWUI_SESSION_ID: ContextVar[str | None] = ContextVar("owui_session_id", default=None)
+OWUI_CHAT_ID: ContextVar[str | None] = ContextVar("owui_chat_id", default=None)
+OWUI_MESSAGE_ID: ContextVar[str | None] = ContextVar("owui_message_id", default=None)
+OWUI_USER_ID: ContextVar[str | None] = ContextVar("owui_user_id", default=None)
 OWUI_LOG_LEVEL: ContextVar[int] = ContextVar("owui_log_level", default=logging.INFO)
 
 # Buffered per-session logs for citations
@@ -410,6 +361,7 @@ def consume_session_logs(session_id: str | None) -> list[str]:
 # Misc helpers
 # ---------------------------------------------------------------------------
 
+
 def truncate_for_log(value: Any, limit: int = 2000) -> tuple[str, bool]:
     """Return a safe, possibly truncated string for logging."""
 
@@ -444,176 +396,110 @@ __all__ = [
     "truncate_for_log",
 ]
 
-# === core/errors.py ===
-"""Typed exceptions referenced throughout the manifold."""
-
-
-class ManifoldError(Exception):
-    """Base class for manifold-specific exceptions."""
-
-
-class ToolExecutionError(ManifoldError):
-    """Raised when a tool invocation fails."""
-
-
-class RoutingError(ManifoldError):
-    """Raised when an automatic model routing step fails."""
-
-
-class OpenAIStreamError(ManifoldError):
-    """Raised when streaming events from OpenAI encounters a fatal error."""
-
-
-class PersistenceError(ManifoldError):
-    """Raised when items fail to persist or resolve."""
-
-
-__all__ = [
-    "ManifoldError",
-    "OpenAIStreamError",
-    "PersistenceError",
-    "RoutingError",
-    "ToolExecutionError",
-]
-
 # === core/model_catalog.py ===
-"""Single source of truth for OpenAI model IDs, aliases, and capabilities."""
+"""Model catalog helpers for the OpenAI Responses manifold.
+
+This module centralizes model normalization, alias defaults, and
+capability flags so other layers can stay agnostic of naming quirks.
+See ``docs/routing_and_model_catalog.md`` for the authoritative
+behavioral contract.
+"""
 
 import re
 from copy import deepcopy
-from typing import Any, Mapping
+from typing import Mapping
 
-# [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.logging import get_logger
+_PREFIX = "openai_responses."
+_DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 
-# =============================================================================
-# Change Log
-# 2025-11-20: Align model feature flags with current OpenAI docs (web search,
-#             file search, image generation, and code interpreter coverage),
-#             add gpt-5-pro and Codex models, adjust deep-research and chat
-#             model capabilities to match Responses API model cards.
-# =============================================================================
-
-# Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
-#
-# Feature flags:
-# - function_calling       → Supports custom tools / function calling in Responses.
-# - reasoning              → Supports `reasoning` options (reasoning models).
-# - reasoning_summary      → Supports reasoning summaries / traces.
-# - web_search_tool        → Built-in Web search tool in Responses.
-# - file_search_tool       → Built-in File search / retrieval tool in Responses.
-# - image_gen_tool         → Built-in Image generation tool in Responses.
-# - code_interpreter_tool  → Built-in Code interpreter tool in Responses.
-# - deep_research          → Deep research orchestration models.
-# - verbosity              → Supports `text.verbosity` parameter.
-MODEL_FEATURES: dict[str, set[str]] = {
-    # -------------------------------------------------------------------------
-    # GPT‑5 family (reasoning + tools)
-    # -------------------------------------------------------------------------
-    "gpt-5-auto": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
-    "gpt-5.1": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
-    "gpt-5.1-pro": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
-    "gpt-5-pro": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
-    "gpt-5": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
-    "gpt-5-mini": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
-    "gpt-5-nano": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool", "verbosity"},
-
-    # Codex variants (reasoning models, tool-heavy, no verbosity param)
-    "gpt-5.1-codex": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
-    "gpt-5.1-codex-max": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
-    "gpt-5.1-codex-mini": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
-    "gpt-5-codex": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
-    "codex-mini-latest": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "code_interpreter_tool"},
-
-    # Chat-tuned GPT‑5 models (non‑reasoning, supports tools)
-    "gpt-5.1-chat-latest": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
-    "gpt-5-chat-latest": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
-
-    # -------------------------------------------------------------------------
-    # GPT‑4.x family
-    # -------------------------------------------------------------------------
-    "gpt-4.1": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
-    "gpt-4.1-mini": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
-    "gpt-4.1-nano": {"function_calling", "image_gen_tool", "code_interpreter_tool"},
-    "gpt-4o": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
-    "gpt-4o-mini": {"function_calling", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
-
-    # ChatGPT-branded 4o model (no tools / function calling in Responses)
+# Base model → feature flags. Keep in sync with docs.
+_SPECS: dict[str, set[str]] = {
+    "gpt-5.1-chat-latest": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "verbosity",
+    },
+    "gpt-5.1": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "verbosity",
+    },
+    "gpt-5": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "verbosity",
+    },
+    "gpt-5-mini": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "verbosity",
+    },
+    "gpt-4o": {
+        "function_calling",
+        "web_search_tool",
+    },
     "chatgpt-4o-latest": set(),
-
-    # -------------------------------------------------------------------------
-    # o‑series reasoning models
-    # -------------------------------------------------------------------------
-    "o3": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
-    "o3-mini": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
-    "o3-pro": {"function_calling", "reasoning", "web_search_tool", "file_search_tool", "image_gen_tool"},
-    "o4-mini": {"function_calling", "reasoning", "reasoning_summary", "web_search_tool", "file_search_tool", "image_gen_tool", "code_interpreter_tool"},
-
-    # -------------------------------------------------------------------------
-    # Deep research models
-    # -------------------------------------------------------------------------
-    "o3-deep-research": {"reasoning", "reasoning_summary", "deep_research", "web_search_tool", "file_search_tool"},
-    "o4-mini-deep-research": {"reasoning", "reasoning_summary", "deep_research", "web_search_tool", "file_search_tool"},
 }
 
-# Add entries to MODEL_ALIASES for any pseudo-model name users can pick.
-# Each alias is a preset that points to a base model and optional default params,
-# e.g. gpt-5-thinking-high -> gpt-5 with reasoning effort fixed to high.
-MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
-    "gpt-5.1-thinking": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "medium"}}},
-    "gpt-5.1-thinking-minimal": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "minimal"}}},
-    "gpt-5.1-thinking-high": {"base_model": "gpt-5.1", "params": {"reasoning": {"effort": "high"}}},
-    "gpt-5-thinking": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "medium"}}},
-    "gpt-5-thinking-minimal": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "minimal"}}},
-    "gpt-5-thinking-high": {"base_model": "gpt-5", "params": {"reasoning": {"effort": "high"}}},
-    "gpt-5-thinking-mini": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "medium"}}},
-    "gpt-5-thinking-mini-minimal": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "minimal"}}},
-    "gpt-5-thinking-mini-high": {"base_model": "gpt-5-mini", "params": {"reasoning": {"effort": "high"}}},
-    "gpt-5-thinking-nano": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "medium"}}},
-    "gpt-5-thinking-nano-minimal": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "minimal"}}},
-    "gpt-5-thinking-nano-high": {"base_model": "gpt-5-nano", "params": {"reasoning": {"effort": "high"}}},
-    "o3-mini-high": {"base_model": "o3-mini", "params": {"reasoning": {"effort": "high"}}},
-    "o4-mini-high": {"base_model": "o4-mini", "params": {"reasoning": {"effort": "high"}}},
-}
+# Alias / pseudo ID → base model + default params overlay.
+_ALIASES: dict[str, dict[str, object]] = {
+    # Reasoning-flavored GPT-5.
+    "gpt-5-thinking": {"base_model": "gpt-5"},
+    "gpt-5-thinking-high": {
+        "base_model": "gpt-5",
+        "params": {"reasoning": {"effort": "high"}},
+    },
+    "gpt-5-thinking-minimal": {
+        "base_model": "gpt-5",
+        "params": {"reasoning": {"effort": "minimal"}},
+    },
 
-_DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
-_KNOWN_IDS = frozenset({*MODEL_FEATURES.keys(), *MODEL_ALIASES.keys()})
-_logger = get_logger(__name__)
-_UNKNOWN_LOGGED: set[str] = set()
+    # Reasoning-flavored GPT-5 Mini.
+    "gpt-5-thinking-mini": {"base_model": "gpt-5-mini"},
+    "gpt-5-thinking-mini-high": {
+        "base_model": "gpt-5-mini",
+        "params": {"reasoning": {"effort": "high"}},
+    },
+
+    # Optional 5.1-style aliases.
+    "gpt-5.1-thinking": {"base_model": "gpt-5.1-chat-latest"},
+    "gpt-5.1-thinking-high": {
+        "base_model": "gpt-5.1-chat-latest",
+        "params": {"reasoning": {"effort": "high"}},
+    },
+}
 
 
 def normalize(model_id: str) -> str:
-    """Normalize identifiers by lowercasing, trimming, and removing prefixes/dates."""
+    """Normalize model identifiers.
 
-    raw = (model_id or "").strip().lower()
-    if not raw:
-        return ""
+    * Trim whitespace and lower-case.
+    * Strip the manifold prefix (``openai_responses.``) if present.
+    * Drop trailing date suffixes (``-YYYY-MM-DD``).
+    """
 
-    # Drop trailing date suffix if present (e.g. -2025-10-06).
-    no_date = _DATE_SUFFIX_RE.sub("", raw)
-    if no_date in _KNOWN_IDS:
-        return no_date
-
-    # Some official IDs are like gpt-5.1-2025-11-13; if the portion
-    # after the first dot matches a known ID, use that.
-    dot_index = no_date.find(".")
-    if dot_index != -1:
-        suffix = _DATE_SUFFIX_RE.sub("", no_date[dot_index + 1 :])
-        if suffix in _KNOWN_IDS:
-            return suffix
-
-    return no_date
+    normalized = (model_id or "").strip()
+    if normalized.startswith(_PREFIX):
+        normalized = normalized[len(_PREFIX) :]
+    normalized = _DATE_RE.sub("", normalized)
+    return normalized.lower()
 
 
 def base_model(
-    model_id: str,
-    alias_lookup: Mapping[str, Mapping[str, str | dict]] | None = None,
+    model_id: str, alias_lookup: Mapping[str, Mapping[str, object]] | None = None
 ) -> str:
     """Return the canonical base model for a given identifier."""
 
-    alias_map = alias_lookup or MODEL_ALIASES
     normalized = normalize(model_id)
-    alias_entry = alias_map.get(normalized)
+    alias_entry = (alias_lookup or _ALIASES).get(normalized)
     if alias_entry:
         base = alias_entry.get("base_model")
         if isinstance(base, str):
@@ -621,23 +507,17 @@ def base_model(
     return normalized
 
 
-def alias_defaults(model_id: str) -> dict[str, Any]:
+def alias_defaults(model_id: str) -> dict:
     """Return default parameters defined for a pseudo-model alias."""
 
-    params = MODEL_ALIASES.get(normalize(model_id), {}).get("params")
+    params = _ALIASES.get(normalize(model_id), {}).get("params")
     return deepcopy(params) if params else {}
 
 
 def features(model_id: str) -> set[str]:
     """Return the capability set for the canonical base model."""
 
-    canonical = base_model(model_id, MODEL_ALIASES)
-    feature_set = MODEL_FEATURES.get(canonical)
-    if feature_set is None and canonical and canonical not in _UNKNOWN_LOGGED:
-        _UNKNOWN_LOGGED.add(canonical)
-        _logger.warning("Unknown model_id in MODEL_FEATURES: %s (canonical=%s)", model_id, canonical)
-        return set()
-    return feature_set or set()
+    return _SPECS.get(base_model(model_id), set())
 
 
 def supports(feature: str, model_id: str) -> bool:
@@ -647,216 +527,209 @@ def supports(feature: str, model_id: str) -> bool:
 
 
 __all__ = [
-    "MODEL_FEATURES",
-    "MODEL_ALIASES",
     "alias_defaults",
-    "features",
-    "supports",
-    "normalize",
     "base_model",
-]
-
-# === core/messages.py ===
-"""Helpers for converting OpenWebUI message blocks to Responses items."""
-
-from typing import Any
-
-
-def normalize_user_blocks(content: str | list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Return a list of user blocks regardless of how OpenWebUI formatted them."""
-
-    if isinstance(content, str):
-        return [{"type": "text", "text": content}]
-    if isinstance(content, list):
-        return [block for block in content if isinstance(block, dict)]
-    return []
-
-
-def user_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenWebUI user blocks into Responses input items."""
-
-    responses: list[dict[str, Any]] = []
-    for block in blocks:
-        block_type = block.get("type")
-        if block_type == "text":
-            responses.append({"type": "input_text", "text": block.get("text", "")})
-        elif block_type == "image_url":
-            url = (block.get("image_url") or {}).get("url")
-            if url:
-                responses.append({"type": "input_image", "image_url": url})
-        elif block_type == "input_file":
-            file_id = block.get("file_id")
-            if file_id:
-                responses.append({"type": "input_file", "file_id": file_id})
-    return responses
-
-
-def assistant_blocks_to_responses_items(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenWebUI assistant blocks into Responses output items."""
-
-    responses: list[dict[str, Any]] = []
-    for block in blocks:
-        block_type = block.get("type")
-        if block_type in {"text", "input_text", "output_text"}:
-            responses.append({"type": "output_text", "text": block.get("text", "")})
-    return responses
-
-
-def assistant_text_item(text: str) -> dict[str, Any]:
-    """Generate an assistant message item for plain text segments."""
-
-    return {
-        "role": "assistant",
-        "content": [
-            {
-                "type": "output_text",
-                "text": text,
-            }
-        ],
-    }
-
-
-def developer_message(content: str) -> dict[str, Any]:
-    """Construct a developer-role message block.
-
-    For the Responses API, developer messages can carry plain string content; we use that simpler form.
-    """
-
-    return {"role": "developer", "content": content}
-
-
-__all__ = [
-    "assistant_text_item",
-    "assistant_blocks_to_responses_items",
-    "developer_message",
-    "normalize_user_blocks",
-    "user_blocks_to_responses_items",
+    "features",
+    "normalize",
+    "supports",
 ]
 
 # === core/markers.py ===
-"""Helpers for encoding/decoding hidden response markers."""
+"""Helpers for encoding and parsing invisible history markers.
+
+See `docs/markers_and_persistence.md` for the v2 marker format.
+"""
 
 import re
 import secrets
-from typing import Any
+from typing import Dict, Iterable, List, TypedDict
 from urllib.parse import parse_qsl, urlencode
 
+MARKER_PREFIX = "openai_responses:v2:"
 ULID_LENGTH = 16
-_CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-_SENTINEL = "[openai_responses:v2:"
-_MARKER_RE = re.compile(
-    r"\[openai_responses:v2:(?P<kind>[a-z0-9_]{2,30}):(?P<ulid>[A-Z0-9]{16})(?:\?(?P<query>[^\]]+))?\]:\s*#",
-    re.I,
-)
+CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+_MARKER_PATTERN = re.compile(r"\[(?P<payload>openai_responses:v2:[^\]]+)\]:\s*#")
+_ITEM_TYPE_PATTERN = re.compile(r"^[a-z0-9_]{2,30}$")
 
 
-def generate_item_id() -> str:
-    """Generate a short ULID-like identifier."""
-
-    return "".join(secrets.choice(_CROCKFORD_ALPHABET) for _ in range(ULID_LENGTH))
-
-
-def _qs(metadata: dict[str, str]) -> str:
-    return urlencode(metadata) if metadata else ""
+class ParsedMarker(TypedDict):
+    item_type: str
+    ulid: str
+    metadata: dict[str, str]
 
 
-def _parse_qs(query: str) -> dict[str, str]:
-    return dict(parse_qsl(query)) if query else {}
+def generate_ulid() -> str:
+    """Generate a 16-character ULID-style identifier using Crockford Base32."""
+
+    return "".join(secrets.choice(CROCKFORD_ALPHABET) for _ in range(ULID_LENGTH))
 
 
-def create_marker(
-    item_type: str,
-    *,
-    ulid: str | None = None,
-    model_id: str | None = None,
-    metadata: dict[str, str] | None = None,
+def _validate_item_type(item_type: str) -> None:
+    if not _ITEM_TYPE_PATTERN.match(item_type):
+        raise ValueError(
+            "item_type must match [a-z0-9_]{2,30}; got %r" % item_type
+        )
+
+
+def _validate_ulid(ulid: str) -> None:
+    if len(ulid) != ULID_LENGTH:
+        raise ValueError(f"ulid must be {ULID_LENGTH} characters; got {ulid!r}")
+    invalid_chars = [ch for ch in ulid if ch not in CROCKFORD_ALPHABET]
+    if invalid_chars:
+        raise ValueError(f"ulid contains invalid characters: {invalid_chars!r}")
+
+
+def build_marker_payload(
+    *, item_type: str, ulid: str, metadata: dict[str, str] | None = None
 ) -> str:
-    """Create a bare marker payload (without the wrapping newlines)."""
+    """Build the raw marker payload string.
 
-    if not re.fullmatch(r"[a-z0-9_]{2,30}", item_type):
-        raise ValueError("item_type must be 2-30 chars of [a-z0-9_]")
+    Example: ``openai_responses:v2:function_call:<ULID>?model=openai_responses.gpt-4o``.
+    """
 
-    meta = {**(metadata or {})}
-    if model_id:
-        meta["model"] = model_id
+    _validate_item_type(item_type)
+    _validate_ulid(ulid)
 
-    base = f"openai_responses:v2:{item_type}:{ulid or generate_item_id()}"
-    return f"{base}?{_qs(meta)}" if meta else base
-
-
-def wrap_marker(marker: str) -> str:
-    """Wrap a marker string in an empty markdown link."""
-
-    return f"\n[{marker}]: #\n"
+    base = f"{MARKER_PREFIX}{item_type}:{ulid}"
+    if metadata:
+        return f"{base}?{urlencode(metadata)}"
+    return base
 
 
-def contains_marker(text: str) -> bool:
-    """Return True if the sentinel substring is present."""
+def wrap_marker(payload: str) -> str:
+    """Wrap a raw marker payload into an invisible Markdown reference."""
 
-    return _SENTINEL in text
-
-
-def parse_marker(marker: str) -> dict[str, Any]:
-    """Parse a raw marker string back into its components."""
-
-    if not marker.startswith("openai_responses:v2:"):
-        raise ValueError("not a v2 marker")
-    _, _, kind, rest = marker.split(":", 3)
-    uid, _, query = rest.partition("?")
-    return {"version": "v2", "item_type": kind, "ulid": uid, "metadata": _parse_qs(query)}
+    return f"\n[{payload}]: #\n"
 
 
-def extract_markers(text: str, *, parsed: bool = False) -> list[Any]:
-    """Extract hidden markers from the assistant text."""
+def contains_marker(text: str | None) -> bool:
+    """Fast sentinel check for marker presence in ``text``."""
 
-    found: list[Any] = []
-    for match in _MARKER_RE.finditer(text):
-        raw = f"openai_responses:v2:{match.group('kind')}:{match.group('ulid')}"
-        if match.group("query"):
-            raw += f"?{match.group('query')}"
-        found.append(parse_marker(raw) if parsed else raw)
-    return found
+    return MARKER_PREFIX in (text or "")
 
 
-def split_text_by_markers(text: str) -> list[dict[str, str]]:
-    """Split text into a list of literal segments and marker segments."""
+def parse_marker(payload: str) -> ParsedMarker:
+    """Parse a raw marker payload string into its components."""
 
-    segments: list[dict[str, str]] = []
-    last = 0
-    for match in _MARKER_RE.finditer(text):
-        if match.start() > last:
-            segments.append({"type": "text", "text": text[last : match.start()]})
-        raw = f"openai_responses:v2:{match.group('kind')}:{match.group('ulid')}"
-        if match.group("query"):
-            raw += f"?{match.group('query')}"
-        segments.append({"type": "marker", "marker": raw})
-        last = match.end()
-    if last < len(text):
-        segments.append({"type": "text", "text": text[last:]})
+    if not payload.startswith(MARKER_PREFIX):
+        raise ValueError("marker payload missing expected prefix")
+
+    marker_body = payload[len(MARKER_PREFIX) :]
+    item_and_id, _, query = marker_body.partition("?")
+    try:
+        item_type, ulid = item_and_id.split(":", 1)
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise ValueError("marker payload missing item type or ulid") from exc
+
+    _validate_item_type(item_type)
+    _validate_ulid(ulid)
+
+    metadata: Dict[str, str] = {}
+    if query:
+        for key, value in parse_qsl(query, keep_blank_values=True):
+            metadata[key] = value
+
+    return {
+        "item_type": item_type,
+        "ulid": ulid,
+        "metadata": metadata,
+    }
+
+
+def extract_markers(text: str, *, parsed: bool = False) -> List[str] | List[ParsedMarker]:
+    """Extract wrapped markers from ``text``.
+
+    Returns raw payload strings by default, or parsed marker dicts when
+    ``parsed=True``.
+    """
+
+    if not contains_marker(text):
+        return []
+
+    payloads: List[str] = [match.group("payload") for match in _MARKER_PATTERN.finditer(text)]
+
+    if not parsed:
+        return payloads
+
+    return [parse_marker(payload) for payload in payloads]
+
+
+def split_text_by_markers(text: str) -> List[dict[str, str]]:
+    """Split ``text`` into ordered segments of visible text and marker payloads."""
+
+    if not contains_marker(text):
+        return [{"type": "text", "text": text}]
+
+    segments: List[dict[str, str]] = []
+    last_end = 0
+    for match in _MARKER_PATTERN.finditer(text):
+        start, end = match.span()
+        if start > last_end:
+            visible = text[last_end:start]
+            if visible:
+                segments.append({"type": "text", "text": visible})
+        segments.append({"type": "marker", "marker": match.group("payload")})
+        last_end = end
+
+    if last_end < len(text):
+        tail = text[last_end:]
+        if tail:
+            segments.append({"type": "text", "text": tail})
+
+    if not segments:
+        return [{"type": "text", "text": text}]
+
     return segments
 
-# === adapters/openai/requests.py ===
-"""Request DTOs and helpers for OpenAI Responses and Chat Completions."""
 
+__all__ = [
+    "MARKER_PREFIX",
+    "ULID_LENGTH",
+    "CROCKFORD_ALPHABET",
+    "ParsedMarker",
+    "generate_ulid",
+    "build_marker_payload",
+    "wrap_marker",
+    "contains_marker",
+    "parse_marker",
+    "extract_markers",
+    "split_text_by_markers",
+]
+
+# === openai_api/types.py ===
+"""Typed models for the OpenAI Responses API.
+
+See ``docs/responses_engine.md`` and ``docs/routing_and_model_catalog.md``
+for the behavioral contract. The classes here intentionally model only the
+fields used by the manifold so they remain lightweight and easy to parse in
+tests.
+"""
 import json
-from typing import Any, Literal, Mapping
+from copy import deepcopy
+from typing import Any, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.model_catalog import MODEL_ALIASES, alias_defaults, base_model
+# from ..core import model_catalog
 
 
 class StreamOptions(BaseModel):
-    """Streaming options for responses."""
+    """Streaming options accepted by the Responses API."""
 
     include_obfuscation: bool | None = None
 
     model_config = ConfigDict(extra="forbid")
 
 
-class ResponseCreateParams(BaseModel):
-    """Request body for the OpenAI Responses API."""
+class ResponsesRequest(BaseModel):
+    """Request body for the OpenAI Responses API.
+
+    The model validator normalizes model aliases and overlays any alias
+    defaults (e.g. reasoning effort) without overwriting explicit user
+    choices.
+    """
 
     model: str
     input: str | list[dict[str, Any]] | None = None
@@ -876,65 +749,39 @@ class ResponseCreateParams(BaseModel):
     prompt_cache_retention: str | None = None
     reasoning: dict[str, Any] | None = None
     safety_identifier: str | None = None
-    service_tier: Literal["auto", "default", "flex", "priority"] | None = None
+    service_tier: str | None = None
     stream_options: StreamOptions | None = None
     temperature: float | None = 1.0
     top_p: float | None = 1.0
     top_logprobs: int | None = None
     tool_choice: str | dict[str, Any] | None = None
     tools: list[dict[str, Any]] | None = None
-    truncation: Literal["auto", "disabled"] | None = "disabled"
+    truncation: str | None = "disabled"
     text: dict[str, Any] | None = None
     model_router_result: dict[str, Any] | None = None
-    user: str | None = None  # deprecated upstream; kept for compatibility
+    user: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
-    def _normalize_aliases(self) -> "ResponseCreateParams":
-        """Normalize model aliases and merge default parameters."""
+    def _apply_model_alias_defaults(self) -> "ResponsesRequest":
+        """Normalize model aliases and merge default parameters.
 
-        orig_model = self.model or ""
-        canonical_model = base_model(orig_model, MODEL_ALIASES)
-        defaults = alias_defaults(orig_model) or {}
+        * ``model`` is normalized to the canonical base model using
+          ``model_catalog.base_model``.
+        * Any alias-implied defaults are deep-merged into the request **only
+          when a value is not already provided**.
+        """
 
-        if canonical_model == orig_model and not defaults:
+        original_model = self.model or ""
+        canonical_model = model_catalog.base_model(original_model)
+        defaults = model_catalog.alias_defaults(original_model) or {}
+
+        if canonical_model == model_catalog.normalize(original_model) and not defaults:
             return self
 
         data = json.loads(self.model_dump_json(exclude_none=False))
         data["model"] = canonical_model
-
-        def _deep_overlay(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
-            for key, value in src.items():
-                if isinstance(value, dict):
-                    node = dst.get(key)
-                    if isinstance(node, dict):
-                        _deep_overlay(node, value)
-                    else:
-                        dst[key] = json.loads(json.dumps(value))
-                elif isinstance(value, list):
-                    existing = dst.get(key)
-                    if isinstance(existing, list):
-                        seen: set[tuple[str, str]] = set()
-                        merged: list[Any] = []
-
-                        def _make_key(item: Any) -> tuple[str, str]:
-                            try:
-                                return ("json", json.dumps(item, sort_keys=True))
-                            except Exception:
-                                return ("id", str(id(item)))
-
-                        for item in existing + value:
-                            key_tuple = _make_key(item)
-                            if key_tuple not in seen:
-                                seen.add(key_tuple)
-                                merged.append(item)
-                        dst[key] = merged
-                    else:
-                        dst[key] = list(value)
-                else:
-                    dst[key] = value
-            return dst
 
         if defaults:
             _deep_overlay(data, defaults)
@@ -944,1358 +791,955 @@ class ResponseCreateParams(BaseModel):
         return self
 
 
-class CompletionCreateParams(BaseModel):
-    """Request body for OpenAI's Chat Completions API."""
+def _deep_overlay(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+    """Merge ``src`` onto ``dst`` without overwriting explicit values."""
 
-    model: str
-    messages: list[dict[str, Any]]
-    stream: bool = False
-
-    model_config = ConfigDict(extra="allow")
-
-
-_RESPONSES_BODY_ADAPTER = TypeAdapter(ResponseCreateParams)
-
-
-def validate_response_create_params(payload: ResponseCreateParams | Mapping[str, Any]) -> ResponseCreateParams:
-    """Coerce/validate a payload into a ResponseCreateParams instance."""
-
-    if isinstance(payload, ResponseCreateParams):
-        return payload
-    return _RESPONSES_BODY_ADAPTER.validate_python(payload)
-
-
-def dump_response_create_params(payload: ResponseCreateParams | Mapping[str, Any]) -> dict[str, Any]:
-    """Return a JSON-ready dict with ``exclude_none=True`` applied."""
-
-    return validate_response_create_params(payload).model_dump(exclude_none=True)
-
-
-__all__ = [
-    "CompletionCreateParams",
-    "StreamOptions",
-    "ResponseCreateParams",
-    "validate_response_create_params",
-    "dump_response_create_params",
-]
-
-# === adapters/openai/events.py ===
-"""Typed schemas for documented OpenAI Responses streaming events."""
-
-from enum import Enum
-from typing import Any, Annotated, Literal, Mapping
-
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+    for key, value in src.items():
+        if isinstance(value, dict):
+            node = dst.get(key)
+            if isinstance(node, dict):
+                _deep_overlay(node, value)
+            elif node is None:
+                dst[key] = deepcopy(value)
+        elif isinstance(value, list):
+            existing = dst.get(key)
+            if isinstance(existing, list):
+                seen: set[str] = set()
+                merged: list[Any] = []
+                for item in existing + value:
+                    marker = _stable_json_key(item)
+                    if marker not in seen:
+                        seen.add(marker)
+                        merged.append(item)
+                dst[key] = merged
+            elif existing is None:
+                dst[key] = list(value)
+        else:
+            if key not in dst or dst.get(key) is None:
+                dst[key] = value
+    return dst
 
 
-class UnknownStreamEventType(ValueError):
-    """Raised when an SSE event ``type`` is not recognized."""
+def _stable_json_key(value: Any) -> str:
+    """Produce a stable key for deduplicating list entries."""
+
+    try:
+        return json.dumps(value, sort_keys=True)
+    except Exception:
+        return str(id(value))
 
 
-class EventType(str, Enum):
-    RESPONSE_QUEUED = "response.queued"
-    RESPONSE_CREATED = "response.created"
-    RESPONSE_IN_PROGRESS = "response.in_progress"
-    RESPONSE_COMPLETED = "response.completed"
-    RESPONSE_FAILED = "response.failed"
-    RESPONSE_INCOMPLETE = "response.incomplete"
+class ResponseEvent(BaseModel):
+    """Base class for streaming response events."""
 
-    RESPONSE_OUTPUT_ITEM_ADDED = "response.output_item.added"
-    RESPONSE_OUTPUT_ITEM_DONE = "response.output_item.done"
-
-    RESPONSE_CONTENT_PART_ADDED = "response.content_part.added"
-    RESPONSE_CONTENT_PART_DONE = "response.content_part.done"
-
-    RESPONSE_OUTPUT_TEXT_DELTA = "response.output_text.delta"
-    RESPONSE_OUTPUT_TEXT_DONE = "response.output_text.done"
-    RESPONSE_OUTPUT_TEXT_ANNOTATION_ADDED = "response.output_text.annotation.added"
-
-    RESPONSE_REFUSAL_DELTA = "response.refusal.delta"
-    RESPONSE_REFUSAL_DONE = "response.refusal.done"
-
-    RESPONSE_FUNCTION_CALL_ARGS_DELTA = "response.function_call_arguments.delta"
-    RESPONSE_FUNCTION_CALL_ARGS_DONE = "response.function_call_arguments.done"
-
-    RESPONSE_CUSTOM_TOOL_CALL_INPUT_DELTA = "response.custom_tool_call_input.delta"
-    RESPONSE_CUSTOM_TOOL_CALL_INPUT_DONE = "response.custom_tool_call_input.done"
-
-    RESPONSE_FILE_SEARCH_CALL_IN_PROGRESS = "response.file_search_call.in_progress"
-    RESPONSE_FILE_SEARCH_CALL_SEARCHING = "response.file_search_call.searching"
-    RESPONSE_FILE_SEARCH_CALL_COMPLETED = "response.file_search_call.completed"
-
-    RESPONSE_WEB_SEARCH_CALL_IN_PROGRESS = "response.web_search_call.in_progress"
-    RESPONSE_WEB_SEARCH_CALL_SEARCHING = "response.web_search_call.searching"
-    RESPONSE_WEB_SEARCH_CALL_COMPLETED = "response.web_search_call.completed"
-
-    RESPONSE_REASONING_SUMMARY_PART_ADDED = "response.reasoning_summary_part.added"
-    RESPONSE_REASONING_SUMMARY_PART_DONE = "response.reasoning_summary_part.done"
-    RESPONSE_REASONING_SUMMARY_TEXT_DELTA = "response.reasoning_summary_text.delta"
-    RESPONSE_REASONING_SUMMARY_TEXT_DONE = "response.reasoning_summary_text.done"
-
-    RESPONSE_REASONING_TEXT_DELTA = "response.reasoning_text.delta"
-    RESPONSE_REASONING_TEXT_DONE = "response.reasoning_text.done"
-
-    RESPONSE_IMAGE_GENERATION_CALL_IN_PROGRESS = "response.image_generation_call.in_progress"
-    RESPONSE_IMAGE_GENERATION_CALL_GENERATING = "response.image_generation_call.generating"
-    RESPONSE_IMAGE_GENERATION_CALL_COMPLETED = "response.image_generation_call.completed"
-    RESPONSE_IMAGE_GENERATION_CALL_PARTIAL_IMAGE = "response.image_generation_call.partial_image"
-
-    RESPONSE_MCP_CALL_ARGS_DELTA = "response.mcp_call_arguments.delta"
-    RESPONSE_MCP_CALL_ARGS_DONE = "response.mcp_call_arguments.done"
-    RESPONSE_MCP_CALL_IN_PROGRESS = "response.mcp_call.in_progress"
-    RESPONSE_MCP_CALL_COMPLETED = "response.mcp_call.completed"
-    RESPONSE_MCP_CALL_FAILED = "response.mcp_call.failed"
-    RESPONSE_MCP_LIST_TOOLS_IN_PROGRESS = "response.mcp_list_tools.in_progress"
-    RESPONSE_MCP_LIST_TOOLS_COMPLETED = "response.mcp_list_tools.completed"
-    RESPONSE_MCP_LIST_TOOLS_FAILED = "response.mcp_list_tools.failed"
-
-    RESPONSE_CODE_INTERPRETER_CALL_IN_PROGRESS = "response.code_interpreter_call.in_progress"
-    RESPONSE_CODE_INTERPRETER_CALL_INTERPRETING = "response.code_interpreter_call.interpreting"
-    RESPONSE_CODE_INTERPRETER_CALL_COMPLETED = "response.code_interpreter_call.completed"
-    RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA = "response.code_interpreter_call.code.delta"
-    RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE = "response.code_interpreter_call.code.done"
-
-    ERROR = "error"
-
-
-class BaseStreamEvent(BaseModel):
-    """Common fields for all streaming events."""
-
-    type: EventType
-    sequence_number: int | None = Field(default=None, description="Monotonic within a stream.")
+    type: str
+    sequence_number: Optional[int] = None
 
     model_config = ConfigDict(extra="ignore")
 
 
-class ResponseEnvelopeEvent(BaseStreamEvent):
+class ResponseOutputTextDeltaEvent(ResponseEvent):
+    type: str = "response.output_text.delta"
+    output_index: Optional[int] = None
+    item_id: Optional[str] = None
+    content_index: Optional[int] = None
+    delta: Optional[str] = None
+    logprobs: list[Any] | None = None
+    obfuscation: str | None = None
+
+
+class ResponseReasoningSummaryTextDoneEvent(ResponseEvent):
+    type: str = "response.reasoning_summary_text.done"
+    output_index: Optional[int] = None
+    item_id: Optional[str] = None
+    summary_index: Optional[int] = None
+    text: Optional[str] = None
+
+
+class ResponseOutputTextAnnotationAddedEvent(ResponseEvent):
+    type: str = "response.output_text.annotation.added"
+    output_index: Optional[int] = None
+    item_id: Optional[str] = None
+    content_index: Optional[int] = None
+    annotation_index: Optional[int] = None
+    annotation: dict[str, Any] | None = None
+
+
+class ResponseOutputItemAddedEvent(ResponseEvent):
+    type: str = "response.output_item.added"
+    output_index: Optional[int] = None
+    item: dict[str, Any] | None = None
+
+
+class ResponseOutputItemDoneEvent(ResponseEvent):
+    type: str = "response.output_item.done"
+    output_index: Optional[int] = None
+    item: dict[str, Any] | None = None
+
+
+class ResponseCompletedEvent(ResponseEvent):
+    type: str = "response.completed"
     response: dict[str, Any]
 
 
-class ResponseQueuedEvent(ResponseEnvelopeEvent):
-    """Emitted when a response is queued and waiting to be processed."""
+class ResponseIncompleteEvent(ResponseEvent):
+    type: str = "response.incomplete"
+    error_message: str | None = None
+    response: dict[str, Any] | None = None
 
-    type: Literal[EventType.RESPONSE_QUEUED] = EventType.RESPONSE_QUEUED
 
+class ResponseFailedEvent(ResponseEvent):
+    type: str = "response.failed"
+    error_message: str | None = None
+    response: dict[str, Any] | None = None
 
-class ResponseCreatedEvent(ResponseEnvelopeEvent):
-    """Emitted when a response object has been created."""
 
-    type: Literal[EventType.RESPONSE_CREATED] = EventType.RESPONSE_CREATED
-
-
-class ResponseInProgressEvent(ResponseEnvelopeEvent):
-    """Emitted while a response is being generated."""
-
-    type: Literal[EventType.RESPONSE_IN_PROGRESS] = EventType.RESPONSE_IN_PROGRESS
-
-
-class ResponseCompletedEvent(ResponseEnvelopeEvent):
-    """Emitted when the response has completed successfully."""
-
-    type: Literal[EventType.RESPONSE_COMPLETED] = EventType.RESPONSE_COMPLETED
-
-
-class ResponseFailedEvent(ResponseEnvelopeEvent):
-    """Emitted when the response fails."""
-
-    type: Literal[EventType.RESPONSE_FAILED] = EventType.RESPONSE_FAILED
-
-
-class ResponseIncompleteEvent(ResponseEnvelopeEvent):
-    """Emitted when the response finishes in an incomplete state (e.g., max_tokens)."""
-
-    type: Literal[EventType.RESPONSE_INCOMPLETE] = EventType.RESPONSE_INCOMPLETE
-
-
-class ResponseOutputItemEvent(BaseStreamEvent):
-    output_index: int
-    item: dict[str, Any]
-
-
-class ResponseOutputItemAddedEvent(ResponseOutputItemEvent):
-    """Emitted when a new output item is added to the response."""
-
-    type: Literal[EventType.RESPONSE_OUTPUT_ITEM_ADDED] = EventType.RESPONSE_OUTPUT_ITEM_ADDED
-
-
-class ResponseOutputItemDoneEvent(ResponseOutputItemEvent):
-    """Emitted when an output item is marked completed."""
-
-    type: Literal[EventType.RESPONSE_OUTPUT_ITEM_DONE] = EventType.RESPONSE_OUTPUT_ITEM_DONE
-
-
-class ResponseContentPartEvent(BaseStreamEvent):
-    output_index: int
-    item_id: str
-    content_index: int
-    part: dict[str, Any]
-
-
-class ResponseContentPartAddedEvent(ResponseContentPartEvent):
-    """Emitted when a new content part is added to an output item."""
-
-    type: Literal[EventType.RESPONSE_CONTENT_PART_ADDED] = EventType.RESPONSE_CONTENT_PART_ADDED
-
-
-class ResponseContentPartDoneEvent(ResponseContentPartEvent):
-    """Emitted when a content part is finalized."""
-
-    type: Literal[EventType.RESPONSE_CONTENT_PART_DONE] = EventType.RESPONSE_CONTENT_PART_DONE
-
-
-class ResponseOutputTextDeltaEvent(BaseStreamEvent):
-    """Emitted when an incremental text delta is available."""
-
-    type: Literal[EventType.RESPONSE_OUTPUT_TEXT_DELTA] = EventType.RESPONSE_OUTPUT_TEXT_DELTA
-    output_index: int | None = None
-    item_id: str | None = None
-    content_index: int | None = None
-    delta: str
-    logprobs: list[Any] | None = None
-    obfuscation: str | None = None
-
-
-class ResponseOutputTextDoneEvent(BaseStreamEvent):
-    """Emitted when a text content part is finalized."""
-
-    type: Literal[EventType.RESPONSE_OUTPUT_TEXT_DONE] = EventType.RESPONSE_OUTPUT_TEXT_DONE
-    output_index: int | None = None
-    item_id: str | None = None
-    content_index: int | None = None
-    text: str
-    logprobs: list[Any] | None = None
-    obfuscation: str | None = None
-
-
-class ResponseOutputTextAnnotationAddedEvent(BaseStreamEvent):
-    """Emitted when an annotation is added to text content."""
-
-    type: Literal[EventType.RESPONSE_OUTPUT_TEXT_ANNOTATION_ADDED] = (
-        EventType.RESPONSE_OUTPUT_TEXT_ANNOTATION_ADDED
-    )
-    output_index: int
-    item_id: str
-    content_index: int
-    annotation_index: int
-    annotation: dict[str, Any]
-
-
-class ResponseRefusalDeltaEvent(BaseStreamEvent):
-    """Emitted when partial refusal text is streamed."""
-
-    type: Literal[EventType.RESPONSE_REFUSAL_DELTA] = EventType.RESPONSE_REFUSAL_DELTA
-    output_index: int
-    item_id: str
-    content_index: int
-    delta: str
-    obfuscation: str | None = None
-
-
-class ResponseRefusalDoneEvent(BaseStreamEvent):
-    """Emitted when refusal text is finalized."""
-
-    type: Literal[EventType.RESPONSE_REFUSAL_DONE] = EventType.RESPONSE_REFUSAL_DONE
-    output_index: int
-    item_id: str
-    content_index: int
-    refusal: str
-
-
-class ResponseFunctionCallArgumentsDeltaEvent(BaseStreamEvent):
-    """Emitted when function-call arguments are streamed as a delta."""
-
-    type: Literal[EventType.RESPONSE_FUNCTION_CALL_ARGS_DELTA] = (
-        EventType.RESPONSE_FUNCTION_CALL_ARGS_DELTA
-    )
-    output_index: int
-    item_id: str
-    delta: str
-    obfuscation: str | None = None
-
-
-class ResponseFunctionCallArgumentsDoneEvent(BaseStreamEvent):
-    """Emitted when function-call arguments are finalized."""
-
-    type: Literal[EventType.RESPONSE_FUNCTION_CALL_ARGS_DONE] = (
-        EventType.RESPONSE_FUNCTION_CALL_ARGS_DONE
-    )
-    output_index: int
-    item_id: str
-    arguments: str
-
-
-class ResponseCustomToolCallInputDeltaEvent(BaseStreamEvent):
-    """Emitted when a custom tool call input delta arrives."""
-
-    type: Literal[EventType.RESPONSE_CUSTOM_TOOL_CALL_INPUT_DELTA] = (
-        EventType.RESPONSE_CUSTOM_TOOL_CALL_INPUT_DELTA
-    )
-    output_index: int
-    item_id: str
-    delta: str
-    obfuscation: str | None = None
-
-
-class ResponseCustomToolCallInputDoneEvent(BaseStreamEvent):
-    """Emitted when custom tool call input is finalized."""
-
-    type: Literal[EventType.RESPONSE_CUSTOM_TOOL_CALL_INPUT_DONE] = (
-        EventType.RESPONSE_CUSTOM_TOOL_CALL_INPUT_DONE
-    )
-    output_index: int
-    item_id: str
-    input: str
-
-
-class ResponseFileSearchCallEvent(BaseStreamEvent):
-    output_index: int
-    item_id: str
-
-
-class ResponseFileSearchCallInProgressEvent(ResponseFileSearchCallEvent):
-    """Emitted when a file search call starts."""
-
-    type: Literal[EventType.RESPONSE_FILE_SEARCH_CALL_IN_PROGRESS] = (
-        EventType.RESPONSE_FILE_SEARCH_CALL_IN_PROGRESS
-    )
-
-
-class ResponseFileSearchCallSearchingEvent(ResponseFileSearchCallEvent):
-    """Emitted while a file search call is running."""
-
-    type: Literal[EventType.RESPONSE_FILE_SEARCH_CALL_SEARCHING] = (
-        EventType.RESPONSE_FILE_SEARCH_CALL_SEARCHING
-    )
-
-
-class ResponseFileSearchCallCompletedEvent(ResponseFileSearchCallEvent):
-    """Emitted when a file search call completes."""
-
-    type: Literal[EventType.RESPONSE_FILE_SEARCH_CALL_COMPLETED] = (
-        EventType.RESPONSE_FILE_SEARCH_CALL_COMPLETED
-    )
-
-
-class ResponseWebSearchCallEvent(BaseStreamEvent):
-    output_index: int
-    item_id: str
-
-
-class ResponseWebSearchCallInProgressEvent(ResponseWebSearchCallEvent):
-    """Emitted when a web search call starts."""
-
-    type: Literal[EventType.RESPONSE_WEB_SEARCH_CALL_IN_PROGRESS] = (
-        EventType.RESPONSE_WEB_SEARCH_CALL_IN_PROGRESS
-    )
-
-
-class ResponseWebSearchCallSearchingEvent(ResponseWebSearchCallEvent):
-    """Emitted while a web search call is executing."""
-
-    type: Literal[EventType.RESPONSE_WEB_SEARCH_CALL_SEARCHING] = (
-        EventType.RESPONSE_WEB_SEARCH_CALL_SEARCHING
-    )
-
-
-class ResponseWebSearchCallCompletedEvent(ResponseWebSearchCallEvent):
-    """Emitted when a web search call completes."""
-
-    type: Literal[EventType.RESPONSE_WEB_SEARCH_CALL_COMPLETED] = (
-        EventType.RESPONSE_WEB_SEARCH_CALL_COMPLETED
-    )
-
-
-class ResponseReasoningSummaryPartEvent(BaseStreamEvent):
-    output_index: int
-    item_id: str
-    summary_index: int
-    part: dict[str, Any]
-
-
-class ResponseReasoningSummaryPartAddedEvent(ResponseReasoningSummaryPartEvent):
-    """Emitted when a new reasoning summary part is added."""
-
-    type: Literal[EventType.RESPONSE_REASONING_SUMMARY_PART_ADDED] = (
-        EventType.RESPONSE_REASONING_SUMMARY_PART_ADDED
-    )
-
-
-class ResponseReasoningSummaryPartDoneEvent(ResponseReasoningSummaryPartEvent):
-    """Emitted when a reasoning summary part is completed."""
-
-    type: Literal[EventType.RESPONSE_REASONING_SUMMARY_PART_DONE] = (
-        EventType.RESPONSE_REASONING_SUMMARY_PART_DONE
-    )
-
-
-class ResponseReasoningSummaryTextDeltaEvent(BaseStreamEvent):
-    """Emitted when a reasoning summary text delta is streamed."""
-
-    type: Literal[EventType.RESPONSE_REASONING_SUMMARY_TEXT_DELTA] = (
-        EventType.RESPONSE_REASONING_SUMMARY_TEXT_DELTA
-    )
-    output_index: int
-    item_id: str
-    summary_index: int
-    delta: str
-    obfuscation: str | None = None
-
-
-class ResponseReasoningSummaryTextDoneEvent(BaseStreamEvent):
-    """Emitted when reasoning summary text is finalized."""
-
-    type: Literal[EventType.RESPONSE_REASONING_SUMMARY_TEXT_DONE] = (
-        EventType.RESPONSE_REASONING_SUMMARY_TEXT_DONE
-    )
-    output_index: int
-    item_id: str
-    summary_index: int
-    text: str
-
-
-class ResponseReasoningTextDeltaEvent(BaseStreamEvent):
-    """Emitted when a reasoning text delta is streamed."""
-
-    type: Literal[EventType.RESPONSE_REASONING_TEXT_DELTA] = EventType.RESPONSE_REASONING_TEXT_DELTA
-    output_index: int
-    item_id: str
-    content_index: int
-    delta: str
-    obfuscation: str | None = None
-
-
-class ResponseReasoningTextDoneEvent(BaseStreamEvent):
-    """Emitted when reasoning text is finalized."""
-
-    type: Literal[EventType.RESPONSE_REASONING_TEXT_DONE] = EventType.RESPONSE_REASONING_TEXT_DONE
-    output_index: int
-    item_id: str
-    content_index: int
-    text: str
-
-
-class ResponseImageGenerationCallEvent(BaseStreamEvent):
-    output_index: int
-    item_id: str
-
-
-class ResponseImageGenerationCallInProgressEvent(ResponseImageGenerationCallEvent):
-    """Emitted when an image generation call starts."""
-
-    type: Literal[EventType.RESPONSE_IMAGE_GENERATION_CALL_IN_PROGRESS] = (
-        EventType.RESPONSE_IMAGE_GENERATION_CALL_IN_PROGRESS
-    )
-
-
-class ResponseImageGenerationCallGeneratingEvent(ResponseImageGenerationCallEvent):
-    """Emitted while a web search call is executing."""
-
-    type: Literal[EventType.RESPONSE_IMAGE_GENERATION_CALL_GENERATING] = (
-        EventType.RESPONSE_IMAGE_GENERATION_CALL_GENERATING
-    )
-
-
-class ResponseImageGenerationCallCompletedEvent(ResponseImageGenerationCallEvent):
-    """Emitted when a web search call completes."""
-
-    type: Literal[EventType.RESPONSE_IMAGE_GENERATION_CALL_COMPLETED] = (
-        EventType.RESPONSE_IMAGE_GENERATION_CALL_COMPLETED
-    )
-
-
-class ResponseImageGenerationCallPartialImageEvent(ResponseImageGenerationCallEvent):
-    """Emitted when a partial image is available during image generation."""
-
-    type: Literal[EventType.RESPONSE_IMAGE_GENERATION_CALL_PARTIAL_IMAGE] = (
-        EventType.RESPONSE_IMAGE_GENERATION_CALL_PARTIAL_IMAGE
-    )
-    partial_image_index: int
-    partial_image_b64: str
-
-
-class ResponseMCPCallArgumentsDeltaEvent(BaseStreamEvent):
-    """Emitted when MCP tool call arguments are streamed as a delta."""
-
-    type: Literal[EventType.RESPONSE_MCP_CALL_ARGS_DELTA] = EventType.RESPONSE_MCP_CALL_ARGS_DELTA
-    output_index: int
-    item_id: str
-    delta: str
-    obfuscation: str | None = None
-
-
-class ResponseMCPCallArgumentsDoneEvent(BaseStreamEvent):
-    """Emitted when MCP tool call arguments are finalized."""
-
-    type: Literal[EventType.RESPONSE_MCP_CALL_ARGS_DONE] = EventType.RESPONSE_MCP_CALL_ARGS_DONE
-    output_index: int
-    item_id: str
-    arguments: str
-
-
-class ResponseMCPCallEvent(BaseStreamEvent):
-    output_index: int
-    item_id: str
-
-
-class ResponseMCPCallInProgressEvent(ResponseMCPCallEvent):
-    """Emitted when an MCP tool call starts."""
-
-    type: Literal[EventType.RESPONSE_MCP_CALL_IN_PROGRESS] = EventType.RESPONSE_MCP_CALL_IN_PROGRESS
-
-
-class ResponseMCPCallCompletedEvent(ResponseMCPCallEvent):
-    """Emitted when an MCP tool call completes successfully."""
-
-    type: Literal[EventType.RESPONSE_MCP_CALL_COMPLETED] = EventType.RESPONSE_MCP_CALL_COMPLETED
-
-
-class ResponseMCPCallFailedEvent(ResponseMCPCallEvent):
-    """Emitted when an MCP tool call fails."""
-
-    type: Literal[EventType.RESPONSE_MCP_CALL_FAILED] = EventType.RESPONSE_MCP_CALL_FAILED
-
-
-class ResponseMCPListToolsEvent(BaseStreamEvent):
-    output_index: int
-    item_id: str
-
-
-class ResponseMCPListToolsInProgressEvent(ResponseMCPListToolsEvent):
-    """Emitted when listing available MCP tools begins."""
-
-    type: Literal[EventType.RESPONSE_MCP_LIST_TOOLS_IN_PROGRESS] = (
-        EventType.RESPONSE_MCP_LIST_TOOLS_IN_PROGRESS
-    )
-
-
-class ResponseMCPListToolsCompletedEvent(ResponseMCPListToolsEvent):
-    """Emitted when listing available MCP tools completes."""
-
-    type: Literal[EventType.RESPONSE_MCP_LIST_TOOLS_COMPLETED] = (
-        EventType.RESPONSE_MCP_LIST_TOOLS_COMPLETED
-    )
-
-
-class ResponseMCPListToolsFailedEvent(ResponseMCPListToolsEvent):
-    """Emitted when listing available MCP tools fails."""
-
-    type: Literal[EventType.RESPONSE_MCP_LIST_TOOLS_FAILED] = EventType.RESPONSE_MCP_LIST_TOOLS_FAILED
-
-
-class ResponseCodeInterpreterCallEvent(BaseStreamEvent):
-    output_index: int
-    item_id: str
-    code_interpreter_call: dict[str, Any] | None = Field(default_factory=dict)
-
-
-class ResponseCodeInterpreterCallInProgressEvent(ResponseCodeInterpreterCallEvent):
-    """Emitted when a code interpreter call starts."""
-
-    type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_IN_PROGRESS] = (
-        EventType.RESPONSE_CODE_INTERPRETER_CALL_IN_PROGRESS
-    )
-
-
-class ResponseCodeInterpreterCallInterpretingEvent(ResponseCodeInterpreterCallEvent):
-    """Emitted while the code interpreter is interpreting code."""
-
-    type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_INTERPRETING] = (
-        EventType.RESPONSE_CODE_INTERPRETER_CALL_INTERPRETING
-    )
-
-
-class ResponseCodeInterpreterCallCompletedEvent(ResponseCodeInterpreterCallEvent):
-    """Emitted when the code interpreter finishes execution."""
-
-    type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_COMPLETED] = (
-        EventType.RESPONSE_CODE_INTERPRETER_CALL_COMPLETED
-    )
-
-
-class ResponseCodeInterpreterCallCodeDeltaEvent(BaseStreamEvent):
-    """Emitted when a partial code snippet is streamed."""
-
-    type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA] = (
-        EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA
-    )
-    output_index: int
-    item_id: str
-    delta: str
-
-
-class ResponseCodeInterpreterCallCodeDoneEvent(BaseStreamEvent):
-    """Emitted when the streamed code snippet is finalized."""
-
-    type: Literal[EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE] = (
-        EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE
-    )
-    output_index: int
-    item_id: str
-    code: str
-
-
-class ErrorEvent(BaseStreamEvent):
-    """Emitted when an error occurs outside the response envelope."""
-
-    type: Literal[EventType.ERROR] = EventType.ERROR
-    code: str
-    message: str
-    param: str | None = None
-
-
-StreamEvent = Annotated[
-    ResponseQueuedEvent
-    | ResponseCreatedEvent
-    | ResponseInProgressEvent
-    | ResponseCompletedEvent
-    | ResponseFailedEvent
-    | ResponseIncompleteEvent
+ResponsesEvent = (
+    ResponseOutputTextDeltaEvent
+    | ResponseReasoningSummaryTextDoneEvent
+    | ResponseOutputTextAnnotationAddedEvent
     | ResponseOutputItemAddedEvent
     | ResponseOutputItemDoneEvent
-    | ResponseContentPartAddedEvent
-    | ResponseContentPartDoneEvent
-    | ResponseOutputTextDeltaEvent
-    | ResponseOutputTextDoneEvent
-    | ResponseOutputTextAnnotationAddedEvent
-    | ResponseRefusalDeltaEvent
-    | ResponseRefusalDoneEvent
-    | ResponseFunctionCallArgumentsDeltaEvent
-    | ResponseFunctionCallArgumentsDoneEvent
-    | ResponseCustomToolCallInputDeltaEvent
-    | ResponseCustomToolCallInputDoneEvent
-    | ResponseFileSearchCallInProgressEvent
-    | ResponseFileSearchCallSearchingEvent
-    | ResponseFileSearchCallCompletedEvent
-    | ResponseWebSearchCallInProgressEvent
-    | ResponseWebSearchCallSearchingEvent
-    | ResponseWebSearchCallCompletedEvent
-    | ResponseReasoningSummaryPartAddedEvent
-    | ResponseReasoningSummaryPartDoneEvent
-    | ResponseReasoningSummaryTextDeltaEvent
-    | ResponseReasoningSummaryTextDoneEvent
-    | ResponseReasoningTextDeltaEvent
-    | ResponseReasoningTextDoneEvent
-    | ResponseImageGenerationCallInProgressEvent
-    | ResponseImageGenerationCallGeneratingEvent
-    | ResponseImageGenerationCallCompletedEvent
-    | ResponseImageGenerationCallPartialImageEvent
-    | ResponseMCPCallArgumentsDeltaEvent
-    | ResponseMCPCallArgumentsDoneEvent
-    | ResponseMCPCallInProgressEvent
-    | ResponseMCPCallCompletedEvent
-    | ResponseMCPCallFailedEvent
-    | ResponseMCPListToolsInProgressEvent
-    | ResponseMCPListToolsCompletedEvent
-    | ResponseMCPListToolsFailedEvent
-    | ResponseCodeInterpreterCallInProgressEvent
-    | ResponseCodeInterpreterCallInterpretingEvent
-    | ResponseCodeInterpreterCallCompletedEvent
-    | ResponseCodeInterpreterCallCodeDeltaEvent
-    | ResponseCodeInterpreterCallCodeDoneEvent
-    | ErrorEvent,
-    Field(discriminator="type"),
-]
+    | ResponseCompletedEvent
+    | ResponseIncompleteEvent
+    | ResponseFailedEvent
+)
 
-_STREAM_EVENT_ADAPTER = TypeAdapter(StreamEvent)
+_RESPONSES_EVENT_ADAPTER = TypeAdapter(ResponsesEvent)
+_RESPONSES_REQUEST_ADAPTER = TypeAdapter(ResponsesRequest)
 
 
-def parse_event(payload: Mapping[str, Any]) -> StreamEvent:
-    """Validate and cast a raw SSE payload into a typed event model."""
+def parse_responses_event(payload: Mapping[str, Any] | ResponsesEvent) -> ResponsesEvent:
+    """Coerce a raw payload into a typed ``ResponsesEvent``."""
 
-    raw_type = payload.get("type")
-    # Some transports emit code interpreter code events without the dot separator.
-    alias_map = {
-        "response.code_interpreter_call_code.delta": EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DELTA,
-        "response.code_interpreter_call_code.done": EventType.RESPONSE_CODE_INTERPRETER_CALL_CODE_DONE,
-    }
-    if isinstance(raw_type, str) and raw_type in alias_map:
-        payload = dict(payload)
-        payload["type"] = alias_map[raw_type]
+    if isinstance(payload, ResponseEvent):
+        return payload
+    return _RESPONSES_EVENT_ADAPTER.validate_python(payload)
 
-    try:
-        return _STREAM_EVENT_ADAPTER.validate_python(payload)
-    except ValidationError as exc:  # pragma: no cover - defensive
-        raise UnknownStreamEventType(
-            f"Unknown or invalid event type: {payload.get('type')} (errors: {exc.errors()})"
-        ) from exc
+
+def validate_responses_request(payload: ResponsesRequest | Mapping[str, Any]) -> ResponsesRequest:
+    """Coerce/validate a payload into a ``ResponsesRequest`` instance."""
+
+    if isinstance(payload, ResponsesRequest):
+        return payload
+    return _RESPONSES_REQUEST_ADAPTER.validate_python(payload)
+
+
+def dump_responses_request(payload: ResponsesRequest | Mapping[str, Any]) -> dict[str, Any]:
+    """Return a JSON-ready dict with ``exclude_none=True`` applied."""
+
+    return validate_responses_request(payload).model_dump(exclude_none=True)
 
 
 __all__ = [
-    "BaseStreamEvent",
-    "ErrorEvent",
-    "EventType",
-    "ResponseCodeInterpreterCallCodeDeltaEvent",
-    "ResponseCodeInterpreterCallCodeDoneEvent",
-    "ResponseCodeInterpreterCallCompletedEvent",
-    "ResponseCodeInterpreterCallEvent",
-    "ResponseCodeInterpreterCallInProgressEvent",
-    "ResponseCodeInterpreterCallInterpretingEvent",
+    "ResponsesEvent",
+    "ResponsesRequest",
     "ResponseCompletedEvent",
-    "ResponseContentPartAddedEvent",
-    "ResponseContentPartDoneEvent",
-    "ResponseContentPartEvent",
-    "ResponseCreatedEvent",
-    "ResponseCustomToolCallInputDeltaEvent",
-    "ResponseCustomToolCallInputDoneEvent",
-    "ResponseEnvelopeEvent",
     "ResponseFailedEvent",
-    "ResponseFileSearchCallCompletedEvent",
-    "ResponseFileSearchCallInProgressEvent",
-    "ResponseFileSearchCallSearchingEvent",
-    "ResponseFunctionCallArgumentsDeltaEvent",
-    "ResponseFunctionCallArgumentsDoneEvent",
-    "ResponseImageGenerationCallCompletedEvent",
-    "ResponseImageGenerationCallEvent",
-    "ResponseImageGenerationCallGeneratingEvent",
-    "ResponseImageGenerationCallInProgressEvent",
-    "ResponseImageGenerationCallPartialImageEvent",
-    "ResponseInProgressEvent",
-    "ResponseMCPCallArgumentsDeltaEvent",
-    "ResponseMCPCallArgumentsDoneEvent",
-    "ResponseMCPCallCompletedEvent",
-    "ResponseMCPCallEvent",
-    "ResponseMCPCallFailedEvent",
-    "ResponseMCPCallInProgressEvent",
-    "ResponseMCPListToolsCompletedEvent",
-    "ResponseMCPListToolsEvent",
-    "ResponseMCPListToolsFailedEvent",
-    "ResponseMCPListToolsInProgressEvent",
+    "ResponseIncompleteEvent",
     "ResponseOutputItemAddedEvent",
     "ResponseOutputItemDoneEvent",
-    "ResponseOutputItemEvent",
     "ResponseOutputTextAnnotationAddedEvent",
     "ResponseOutputTextDeltaEvent",
-    "ResponseOutputTextDoneEvent",
-    "ResponseQueuedEvent",
-    "ResponseReasoningSummaryPartAddedEvent",
-    "ResponseReasoningSummaryPartDoneEvent",
-    "ResponseReasoningSummaryPartEvent",
-    "ResponseReasoningSummaryTextDeltaEvent",
     "ResponseReasoningSummaryTextDoneEvent",
-    "ResponseReasoningTextDeltaEvent",
-    "ResponseReasoningTextDoneEvent",
-    "ResponseRefusalDeltaEvent",
-    "ResponseRefusalDoneEvent",
-    "ResponseWebSearchCallCompletedEvent",
-    "ResponseWebSearchCallInProgressEvent",
-    "ResponseWebSearchCallSearchingEvent",
-    "StreamEvent",
-    "UnknownStreamEventType",
-    "parse_event",
+    "StreamOptions",
+    "dump_responses_request",
+    "parse_responses_event",
+    "validate_responses_request",
 ]
 
-# === adapters/openai/client.py ===
-"""aiohttp-backed client for the OpenAI Responses API."""
+# === openai_api/client.py ===
+"""Thin aiohttp-based client for the OpenAI Responses API."""
 
 import json
-from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, AsyncIterator
 
 import aiohttp
-import logging
-from pydantic import BaseModel
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-# from openai_responses_manifold.adapters.openai.events import (
-#     StreamEvent,
-#     UnknownStreamEventType,
-#     parse_event,
+# from .types import (
+#     ResponsesEvent,
+#     ResponsesRequest,
+#     dump_responses_request,
+#     parse_responses_event,
+#     validate_responses_request,
 # )
 
 
-class OpenAIResponsesClient:
-    """Thin wrapper around ``aiohttp`` with SDK-like method names."""
+class OpenAIClient:
+    """HTTP client for the OpenAI Responses API."""
 
     def __init__(self) -> None:
         self._session: aiohttp.ClientSession | None = None
-        self._logger = get_logger(__name__)
 
-    async def stream(
-        self,
-        request_body: dict[str, Any] | BaseModel,
-        *,
-        api_key: str,
-        base_url: str,
-        typed: bool = False,
-    ) -> AsyncIterator[StreamEvent | dict[str, Any]]:
-        """Yield SSE events from ``POST /responses``.
-
-        Set ``typed=True`` to parse each payload into a structured ``StreamEvent``.
-        """
-
-        payload = (
-            request_body.model_dump(exclude_none=True)
-            if isinstance(request_body, BaseModel)
-            else request_body
-        )
-
-        session = await self._get_or_init_http_session()
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
-        url = base_url.rstrip("/") + "/responses"
-        if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
-            input_items = payload.get("input") or []
-            instructions = payload.get("instructions") or ""
-            self._logger.debug(
-                "Streaming request prepared model=%s input_items=%d instructions_len=%d",
-                payload.get("model"),
-                len(input_items) if isinstance(input_items, list) else 0,
-                len(instructions) if isinstance(instructions, str) else 0,
-            )
-            try:
-                trimmed = dict(payload)
-                if "instructions" in trimmed:
-                    trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
-                payload_str = json.dumps(trimmed, ensure_ascii=False)
-                preview, truncated = truncate_for_log(payload_str, limit=300)
-                self._logger.debug(
-                    "request.payload_preview enabled=true truncated=%s len=%d payload=%s",
-                    truncated,
-                    len(payload_str),
-                    preview,
-                )
-            except Exception:
-                pass
-
-        buf = bytearray()
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status >= 400:
-                await self._log_and_raise(resp, kind="streaming")
-
-            async for chunk in resp.content.iter_chunked(4096):
-                buf.extend(chunk)
-                start_idx = 0
-                while True:
-                    newline_idx = buf.find(b"\n", start_idx)
-                    if newline_idx == -1:
-                        break
-                    line = buf[start_idx:newline_idx].strip()
-                    start_idx = newline_idx + 1
-                    if not line or line.startswith(b":") or not line.startswith(b"data:"):
-                        continue
-                    payload = line[5:].strip()
-                    if payload == b"[DONE]":
-                        return
-                    evt: dict[str, Any] = json.loads(payload.decode("utf-8"))
-                    if typed:
-                        try:
-                            yield parse_event(evt)
-                            continue
-                        except UnknownStreamEventType:
-                            preview, truncated = truncate_for_log(json.dumps(evt, ensure_ascii=False), 400)
-                            self._logger.warning(
-                                "Unknown streaming event type=%s truncated=%s payload=%s; yielding raw event",
-                                evt.get("type"),
-                                truncated,
-                                preview,
-                            )
-                            yield evt
-                            continue
-                        except Exception as exc:
-                            preview, truncated = truncate_for_log(json.dumps(evt, ensure_ascii=False), 400)
-                            self._logger.error(
-                                "Failed to parse streaming event type=%s truncated=%s payload=%s error=%s",
-                                evt.get("type"),
-                                truncated,
-                                preview,
-                                exc,
-                            )
-                            raise
-                    yield evt
-                if start_idx > 0:
-                    del buf[:start_idx]
-
-    async def create(
-        self,
-        request_body: dict[str, Any] | BaseModel,
-        *,
-        api_key: str,
-        base_url: str,
-    ) -> dict[str, Any]:
-        """Send a non-streaming request to ``POST /responses``."""
-
-        payload = (
-            request_body.model_dump(exclude_none=True)
-            if isinstance(request_body, BaseModel)
-            else request_body
-        )
-
-        session = await self._get_or_init_http_session()
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        url = base_url.rstrip("/") + "/responses"
-        if self._logger.isEnabledFor(logging.DEBUG):  # type: ignore[attr-defined]
-            input_items = payload.get("input") or []
-            instructions = payload.get("instructions") or ""
-            self._logger.debug(
-                "Non-streaming request prepared model=%s input_items=%d instructions_len=%d",
-                payload.get("model"),
-                len(input_items) if isinstance(input_items, list) else 0,
-                len(instructions) if isinstance(instructions, str) else 0,
-            )
-            try:
-                trimmed = dict(payload)
-                if "instructions" in trimmed:
-                    trimmed["instructions"] = f"<omitted len={len(instructions) if isinstance(instructions, str) else 0}>"
-                payload_str = json.dumps(trimmed, ensure_ascii=False)
-                preview, truncated = truncate_for_log(payload_str, limit=300)
-                self._logger.debug(
-                    "request.payload_preview enabled=true truncated=%s len=%d payload=%s",
-                    truncated,
-                    len(payload_str),
-                    preview,
-                )
-            except Exception:
-                pass
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status >= 400:
-                await self._log_and_raise(resp, kind="non-streaming")
-            return await resp.json()
-
-    async def close(self) -> None:
-        """Close the underlying client session."""
-
-        if self._session and not self._session.closed:
-            await self._session.close()
-
-
-    async def _get_or_init_http_session(self) -> aiohttp.ClientSession:
-        if self._session is not None and not self._session.closed:
-            self._logger.debug("Reusing existing aiohttp session")
-            return self._session
-
-        connector = aiohttp.TCPConnector(
-            limit=50,
-            limit_per_host=10,
-            keepalive_timeout=75,
-            ttl_dns_cache=300,
-        )
-        timeout = aiohttp.ClientTimeout(
-            connect=30,
-            sock_connect=30,
-            sock_read=3600,
-        )
-        self._logger.debug("Creating new aiohttp session")
-        self._session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=timeout,
-            json_serialize=json.dumps,
-        )
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
         return self._session
 
-    async def _log_and_raise(self, resp: aiohttp.ClientResponse, *, kind: str) -> None:
-        """Log upstream error details and re-raise."""
+    async def close(self) -> None:
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
 
-        try:
-            text = await resp.text()
-        except Exception:  # pragma: no cover - defensive
-            text = "<unable to read error body>"
-
-        preview, _ = truncate_for_log(text, 800)
-        self._logger.error("%s request failed status=%s body=%s", kind, resp.status, preview)
-        resp.raise_for_status()
-
-
-__all__ = ["OpenAIResponsesClient"]
-
-# === domain/events.py ===
-"""UI-agnostic interface for runtime events consumed by the engine."""
-
-from typing import Any, Literal, Protocol
-
-
-class RuntimeEvents(Protocol):
-    async def status(self, description: str, *, done: bool = False, hidden: bool = False) -> None: ...
-
-    async def delta(self, content: str) -> None: ...
-
-    async def replace(self, content: str) -> None: ...
-
-    async def citation(self, data: dict[str, Any]) -> None: ...
-
-    async def files(self, files: list[dict[str, Any]]) -> None: ...
-
-    async def chat_completion(self, data: dict[str, Any]) -> None: ...
-
-    async def notification(
+    async def stream_responses(
         self,
-        content: str,
+        request: ResponsesRequest | dict[str, Any],
         *,
-        level: Literal["info", "success", "error", "warning"] = "info",
-    ) -> None: ...
+        base_url: str,
+        api_key: str,
+    ) -> AsyncIterator[ResponsesEvent]:
+        session = await self._get_session()
+        url = f"{base_url.rstrip('/')}/responses"
+        payload = dump_responses_request(validate_responses_request(request))
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
 
+        async with session.post(url, json=payload, headers=headers) as resp:
+            resp.raise_for_status()
+            buffer = ""
+            async for chunk in resp.content.iter_any():
+                buffer += chunk.decode()
+                while "\n\n" in buffer:
+                    raw, buffer = buffer.split("\n\n", 1)
+                    data = _extract_data(raw)
+                    if data is None:
+                        continue
+                    event_payload = json.loads(data)
+                    yield parse_responses_event(event_payload)
 
-class NullRuntimeEvents:
-    """No-op implementation useful for tests or non-UI contexts."""
-
-    async def status(self, description: str, *, done: bool = False, hidden: bool = False) -> None:
-        return None
-
-    async def delta(self, content: str) -> None:
-        return None
-
-    async def replace(self, content: str) -> None:
-        return None
-
-    async def citation(self, data: dict[str, Any]) -> None:
-        return None
-
-    async def files(self, files: list[dict[str, Any]]) -> None:
-        return None
-
-    async def chat_completion(self, data: dict[str, Any]) -> None:
-        return None
-
-    async def notification(
+    async def create_response(
         self,
-        content: str,
+        request: ResponsesRequest | dict[str, Any],
         *,
-        level: Literal["info", "success", "error", "warning"] = "info",
-    ) -> None:
+        base_url: str,
+        api_key: str,
+    ) -> dict[str, Any]:
+        session = await self._get_session()
+        url = f"{base_url.rstrip('/')}/responses"
+        payload = dump_responses_request(validate_responses_request(request))
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+
+        async with session.post(url, json=payload, headers=headers) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+
+def _extract_data(raw: str) -> str | None:
+    lines = raw.splitlines()
+    data_lines: list[str] = []
+    for line in lines:
+        if not line:
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    if not data_lines:
         return None
+    return "\n".join(data_lines)
 
 
-__all__ = ["RuntimeEvents", "NullRuntimeEvents"]
+__all__ = ["OpenAIClient"]
 
-# === domain/turn_context.py ===
-"""Shared turn-level context passed across engine, tools, and history."""
+# === domain/types.py ===
+"""Shared domain types for the OpenAI Responses engine and adapters.
 
-from dataclasses import dataclass
-from typing import Any
+This module hosts turn-level context objects, per-turn state,
+tool call/result containers, citation payloads, and the runtime
+events protocol used by the engine and adapters.
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol, runtime_checkable
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.config.settings import PipeValves
+# from ..core.config import RuntimeConfig
 
 
 @dataclass
 class TurnContext:
-    valves: PipeValves
-    metadata: dict[str, Any]
-    user_identifier: str | None
-    owui_model_id: str
-    features: dict[str, Any]
+    """Context passed across the engine, history manager, and adapters."""
+
+    runtime_config: RuntimeConfig
+    model_id: str
+    features: set[str] = field(default_factory=set)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
-__all__ = ["TurnContext"]
+@dataclass
+class TurnState:
+    """Mutable per-turn state maintained by the engine."""
+
+    assistant_visible_text: str = ""
+    assistant_internal_text: str = ""
+    response_text: str = ""
+    usage: dict | None = None
+    citations: list["Citation"] = field(default_factory=list)
+    structured_items: list[dict] = field(default_factory=list)
+    tool_calls_executed: int = 0
+    error_message: str | None = None
+    citation_ordinals: dict[str, int] = field(default_factory=dict)
+    last_code_output_index: int | None = None
+    code_snippets: dict[int, str] = field(default_factory=dict)
+    pending_ci_results: set[int] = field(default_factory=set)
+    pending_ci_code_snippets: dict[int, str] = field(default_factory=dict)
+
+
+@dataclass
+class ToolCall:
+    """Represents a function/tool call request emitted by the model."""
+
+    call_id: str
+    name: str
+    arguments_json: str
+
+
+@dataclass
+class ToolResult:
+    """Result of executing a tool call."""
+
+    call_id: str
+    output: str
+    status: Literal["ok", "error", "timeout"]
+    error_message: str | None = None
+
+
+@dataclass
+class Citation:
+    """Citation payload derived from url_citation annotations."""
+
+    source_name: str
+    url: str | None
+    document: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TurnResult:
+    """Final result returned by the engine after a streaming turn."""
+
+    text: str
+    usage: dict | None = None
+    citations: list[Citation] = field(default_factory=list)
+    error: str | None = None
+
+
+@runtime_checkable
+class RuntimeEvents(Protocol):
+    """Protocol for runtime event sinks used by the engine."""
+
+    async def status(self, description: str, *, done: bool = False, **extra: Any) -> None:
+        ...
+
+    async def delta(self, content: str) -> None:
+        ...
+
+    async def replace(self, content: str) -> None:
+        ...
+
+    async def citation(self, data: dict[str, Any]) -> None:
+        ...
+
+    async def source(self, data: dict[str, Any]) -> None:
+        ...
+
+    async def chat_completion(self, data: dict[str, Any]) -> None:
+        ...
+
+    async def notification(
+        self,
+        content: str,
+        *,
+        level: Literal["info", "success", "warning", "error"] = "info",
+    ) -> None:
+        ...
+
+
+__all__ = [
+    "TurnContext",
+    "TurnState",
+    "ToolCall",
+    "ToolResult",
+    "Citation",
+    "TurnResult",
+    "RuntimeEvents",
+]
 
 # === domain/history.py ===
-"""Persistence and reconstruction services for Responses items."""
+"""History reconstruction and persistence helpers.
 
-import json
-from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+This module provides a small persistence protocol (`HistoryStore`) and a
+pure domain helper (`HistoryManager`) that converts Open WebUI-style
+``messages`` into the OpenAI Responses ``input`` shape, and appends
+markers for newly persisted items.
+"""
+
+from typing import Iterable, Protocol, Tuple
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.logging import get_logger
 # from openai_responses_manifold.core.markers import (
+#     build_marker_payload,
 #     contains_marker,
-#     create_marker,
 #     extract_markers,
 #     parse_marker,
 #     split_text_by_markers,
 #     wrap_marker,
 # )
-# from openai_responses_manifold.core.messages import (
-#     assistant_blocks_to_responses_items,
-#     assistant_text_item,
-#     developer_message,
-#     normalize_user_blocks,
-#     user_blocks_to_responses_items,
-# )
-# from openai_responses_manifold.domain.turn_context import TurnContext
-
-Resolver = Callable[[list[str], str | None, str | None], dict[str, dict[str, Any]]]
-logger = get_logger(__name__)
 
 
-@dataclass
-class HistoryResult:
-    """Structured result for reconstructed input items and instructions."""
-
-    input_items: list[dict[str, Any]]
-    instructions: str | None = None
-
-
-def extract_system_instructions(messages: list[dict[str, Any]]) -> str | None:
-    """Return the most recent system message content, if present."""
-
-    for message in reversed(messages):
-        if message.get("role") == "system":
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return content
-    return None
+MARKER_PLACEHOLDER = "<!--openai_responses:marker-->"
 
 
 class HistoryStore(Protocol):
     def save_items(
         self,
-        chat_id: str,
+        chat_key: dict,
         message_id: str,
-        items: list[dict[str, Any]],
-        model_id: str,
-    ) -> list[str]: ...
-
-    def load_items(
-        self,
-        chat_id: str,
-        item_ids: list[str],
-        *,
-        model_id: str | None = None,
-    ) -> dict[str, dict[str, Any]]: ...
-
-
-class NullHistoryStore:
-    """Null object used when no backing store is provided."""
-
-    def save_items(
-        self,
-        chat_id: str,
-        message_id: str,
-        items: list[dict[str, Any]],
+        items: list[dict],
         model_id: str,
     ) -> list[str]:
-        return []
+        """Persist items and return their ULIDs."""
 
     def load_items(
         self,
-        chat_id: str,
+        chat_key: dict,
         item_ids: list[str],
-        *,
         model_id: str | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        return {}
+    ) -> dict[str, dict]:
+        """Return {ulid: payload} for requested items (filtered by model if given)."""
 
 
-class HistoryPersistence:
-    """
-    Persist structured output items and emit hidden markers.
+def _render_system_content(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, Iterable):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and "text" in block:
+                parts.append(str(block.get("text", "")))
+            else:
+                parts.append(str(block))
+        return " ".join(part for part in parts if part).strip()
+    return str(content)
 
-    Protocol overview:
-    - When a structured output item (tool output, reasoning tokens, etc.) is finalized,
-      persist_items_for_message():
-        * deep-clones the payload and strips server-side IDs,
-        * saves the payload in the store keyed by a ULID,
-        * returns a concatenated string of hidden markers like
-          "[openai_responses:v2:<kind>:<ulid>?model=<model_id>]: #\n".
-    - Callers append that marker string to the assistant's text; the marker is invisible to end users.
-    - On later turns, HistoryBuilder scans assistant messages for markers, resolves ULIDs via the store,
-      and injects those stored payloads back into the Responses input list.
-    """
 
-    def __init__(self, store: HistoryStore | None = None) -> None:
-        self.store = store or NullHistoryStore()
+def _to_input_block(block: dict) -> dict:
+    kind = block.get("type")
+    if kind == "text":
+        return {"type": "input_text", "text": block.get("text", "")}
+    if kind == "image_url":
+        url = (block.get("image_url") or {}).get("url")
+        return {"type": "input_image", "image_url": url}
+    if kind == "input_file":
+        return {"type": "input_file", "file_id": block.get("file_id")}
+    return block
 
-    def persist_items_for_message(
-        self,
-        chat_id: str,
-        message_id: str,
-        items: list[dict[str, Any]],
-        *,
-        model_id: str,
-    ) -> str:
-        if not items:
-            return ""
 
-        cleaned: list[dict[str, Any]] = []
-        for payload in items:
-            if not isinstance(payload, dict):
+class HistoryManager:
+    """Bridge between Open WebUI messages and Responses API history."""
+
+    def __init__(self, store: HistoryStore):
+        self._store = store
+
+    def _collect_required_item_ids(self, messages: list[dict]) -> set[str]:
+        required_item_ids: set[str] = set()
+        for msg in messages:
+            if msg.get("role") != "assistant":
                 continue
-            clone = json.loads(json.dumps(payload))
-            # Drop server-side IDs so we never depend on OpenAI-side persistence when store=False.
-            clone.pop("id", None)
-            cleaned.append(clone)
-
-        if not cleaned:
-            return ""
-
-        ulids = self.store.save_items(chat_id, message_id, cleaned, model_id)
-        if len(ulids) != len(cleaned):
-            logger.warning(
-                "Item store returned %d ids for %d items; some output markers will be missing.",
-                len(ulids),
-                len(cleaned),
-            )
-        hidden_markers: list[str] = []
-        for ulid, payload in zip(ulids, cleaned):
-            marker = create_marker(payload.get("type", "unknown"), ulid=ulid, model_id=model_id)
-            hidden_markers.append(wrap_marker(marker))
-        return "".join(hidden_markers)
-
-
-class HistoryBuilder:
-    """Rebuild Responses input items from OpenWebUI messages."""
-
-    def __init__(self, resolve_items: Resolver | None = None) -> None:
-        self._resolve_items = resolve_items
+            content = msg.get("content")
+            if not isinstance(content, str):
+                continue
+            if not contains_marker(content):
+                continue
+            for marker in extract_markers(content, parsed=True):
+                ulid = marker.get("ulid")
+                if isinstance(ulid, str):
+                    required_item_ids.add(ulid)
+        return required_item_ids
 
     def build_input_from_messages(
         self,
-        messages: list[dict[str, Any]],
         *,
-        chat_id: str | None = None,
-        openwebui_model_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        required_item_ids: list[str] = []
-        for message in messages:
-            content = message.get("content")
-            if message.get("role") == "assistant" and isinstance(content, str) and contains_marker(content):
-                for marker in extract_markers(content, parsed=True):
-                    required_item_ids.append(marker["ulid"])
+        messages: list[dict],
+        chat_key: dict | None,
+        model_id: str | None,
+        openwebui_model_id: str | None,
+    ) -> Tuple[list[dict], str | None]:
+        """Build Responses ``input`` items plus instructions from messages."""
 
-        resolved: dict[str, dict[str, Any]] = {}
-        if required_item_ids and self._resolve_items:
-            resolved = self._resolve_items(required_item_ids, chat_id, openwebui_model_id)
+        items_lookup: dict[str, dict] = {}
+        if chat_key and openwebui_model_id:
+            required_item_ids = self._collect_required_item_ids(messages)
+            if required_item_ids:
+                try:
+                    items_lookup = self._store.load_items(
+                        chat_key=chat_key,
+                        item_ids=list(required_item_ids),
+                        model_id=openwebui_model_id,
+                    )
+                except Exception:  # pragma: no cover - defensive fallback
+                    items_lookup = {}
 
-        openai_input: list[dict[str, Any]] = []
-        for message in messages:
-            role = message.get("role")
-            content = message.get("content")
+        input_items: list[dict] = []
+        instructions: str | None = None
 
+        for msg in messages:
+            role = msg.get("role")
             if role == "system":
+                instructions = _render_system_content(msg.get("content"))
                 continue
+
             if role == "user":
-                blocks = user_blocks_to_responses_items(normalize_user_blocks(content))
-                if blocks:
-                    openai_input.append({"role": "user", "content": blocks})
+                blocks = msg.get("content") or []
+                if isinstance(blocks, str):
+                    blocks = [{"type": "text", "text": blocks}]
+                content_blocks = [_to_input_block(b) for b in blocks if b is not None]
+                if content_blocks:
+                    input_items.append({"role": "user", "content": content_blocks})
                 continue
+
             if role == "developer":
-                if isinstance(content, str) and content:
-                    openai_input.append(developer_message(content))
+                blocks = msg.get("content") or []
+                if isinstance(blocks, str):
+                    blocks = [{"type": "text", "text": blocks}]
+                content_blocks = [_to_input_block(b) for b in blocks if b is not None]
+                if content_blocks:
+                    input_items.append({"role": "developer", "content": content_blocks})
                 continue
-            if role == "assistant":
-                if isinstance(content, str):
-                    if not contains_marker(content):
-                        if content.strip():
-                            openai_input.append(assistant_text_item(content.strip()))
+
+            if role != "assistant":
+                continue
+
+            raw = msg.get("content", "") or ""
+            if not isinstance(raw, str):
+                raw = str(raw)
+
+            if not contains_marker(raw):
+                text = raw.strip()
+                if text:
+                    input_items.append(
+                        {"role": "assistant", "content": [{"type": "output_text", "text": text}]}
+                    )
+                continue
+
+            for segment in split_text_by_markers(raw):
+                if segment.get("type") == "marker":
+                    payload = segment.get("marker") or ""
+                    try:
+                        parsed = parse_marker(payload)
+                    except Exception:
                         continue
-                    for segment in split_text_by_markers(content):
-                        if segment["type"] == "marker":
-                            marker = parse_marker(segment["marker"])
-                            payload = resolved.get(marker["ulid"])
-                            if payload:
-                                payload_copy = json.loads(json.dumps(payload))
-                                payload_copy.setdefault("id", marker["ulid"])
-                                openai_input.append(payload_copy)
-                        elif segment["type"] == "text":
-                            text_segment = segment.get("text", "").strip()
-                            if text_segment:
-                                openai_input.append(assistant_text_item(text_segment))
+                    ulid = parsed.get("ulid")
+                    if isinstance(ulid, str):
+                        item = items_lookup.get(ulid)
+                        if item is not None:
+                            input_items.append(item)
                     continue
-                if isinstance(content, list):
-                    blocks = assistant_blocks_to_responses_items(normalize_user_blocks(content))
-                    if blocks:
-                        openai_input.append({"role": "assistant", "content": blocks})
+
+                if segment.get("type") == "text":
+                    text = (segment.get("text") or "").strip()
+                    if text:
+                        input_items.append(
+                            {
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": text}],
+                            }
+                        )
+
+        return input_items, instructions
+
+    def persist_items_for_message(
+        self,
+        *,
+        chat_key: dict | None,
+        message_id: str,
+        items: list[dict],
+        model_id: str,
+        openwebui_model_id: str | None,
+        current_assistant_text: str,
+        marker_placeholder: str = MARKER_PLACEHOLDER,
+    ) -> str:
+        """Persist items and append wrapped markers to assistant text."""
+
+        if not items:
+            return current_assistant_text
+        if not chat_key or not openwebui_model_id:
+            return current_assistant_text
+
+        try:
+            ulids = self._store.save_items(
+                chat_key=chat_key,
+                message_id=message_id,
+                items=items,
+                model_id=openwebui_model_id,
+            )
+        except Exception:  # pragma: no cover - defensive fallback
+            return current_assistant_text
+
+        updated_text = current_assistant_text or ""
+        for ulid, payload in zip(ulids, items):
+            item_type = str(payload.get("type", "unknown"))
+            raw_payload = build_marker_payload(
+                item_type=item_type,
+                ulid=ulid,
+                metadata={"model": openwebui_model_id},
+            )
+            marker_text = wrap_marker(raw_payload)
+            if marker_placeholder and marker_placeholder in updated_text:
+                updated_text = updated_text.replace(marker_placeholder, marker_text, 1)
+            else:
+                updated_text += marker_text
+
+        if marker_placeholder and marker_placeholder in updated_text:
+            updated_text = updated_text.replace(marker_placeholder, "")
+
+        return updated_text
+
+
+__all__ = ["HistoryManager", "HistoryStore", "MARKER_PLACEHOLDER"]
+
+# === domain/tools.py ===
+"""Tool definitions, registry/executor interfaces, and merge policy.
+
+This module translates tool definitions from multiple sources into the
+OpenAI Responses ``tools`` array while enforcing capability gating,
+strict JSON Schema handling, and deterministic deduplication. See
+``docs/tools_and_extra_tools.md`` for the authoritative contract.
+"""
+
+from copy import deepcopy
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import Iterable, Literal, Protocol
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.config import RuntimeConfig
+# from openai_responses_manifold.core.model_catalog import supports
+
+# [build.py] internal imports removed in monolith:
+# from .types import ToolCall, ToolResult
+
+
+@dataclass
+class ToolDefinition:
+    """Internal representation of a tool definition."""
+
+    name: str
+    description: str
+    parameters: dict
+    strict: bool
+    source: Literal["registry", "filter", "body", "mcp", "builtin"]
+
+
+class ToolRegistry(Protocol):
+    def get(self, name: str) -> ToolDefinition | None:
+        ...
+
+    def iter_definitions(self) -> Iterable[ToolDefinition]:
+        ...
+
+
+class ToolExecutor(Protocol):
+    async def execute(self, calls: list[ToolCall]) -> list[ToolResult]:
+        ...
+
+
+def _ensure_object_schema(schema: object) -> dict:
+    if isinstance(schema, dict):
+        return deepcopy(schema)
+    return {"type": "object", "properties": {}}
+
+
+def _make_nullable(type_value: object) -> object:
+    if isinstance(type_value, list):
+        if "null" in type_value:
+            return type_value
+        return [*type_value, "null"]
+    if isinstance(type_value, str):
+        if type_value == "null":
+            return type_value
+        return [type_value, "null"]
+    return type_value
+
+
+def _strictify_schema(schema: dict) -> dict:
+    """Recursively enforce strict JSON Schema semantics for objects."""
+
+    schema = _ensure_object_schema(schema)
+    schema_type = schema.get("type")
+    if schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    ):
+        properties = schema.get("properties")
+        original_required = set(schema.get("required") or [])
+        if not isinstance(properties, dict):
+            properties = {}
+
+        strict_props: dict[str, dict] = {}
+        required: list[str] = []
+        for prop_name, prop_schema in properties.items():
+            strict_prop = _strictify_schema(prop_schema)
+            if prop_name not in original_required:
+                current_type = strict_prop.get("type")
+                strict_prop["type"] = _make_nullable(current_type)
+            strict_props[prop_name] = strict_prop
+            required.append(prop_name)
+
+        schema["properties"] = strict_props
+        schema["required"] = required
+        schema["additionalProperties"] = False
+
+    items = schema.get("items")
+    if isinstance(items, dict):
+        schema["items"] = _strictify_schema(items)
+
+    return schema
+
+
+def _tool_identity(tool: dict) -> tuple[str | None, str | None]:
+    tool_type = tool.get("type")
+    name = tool.get("name") if tool_type == "function" else None
+    return (str(tool_type) if tool_type is not None else None, name)
+
+
+def _sanitize_tool(tool: dict) -> dict:
+    sanitized = deepcopy(tool)
+    params = sanitized.get("parameters")
+    if not isinstance(params, dict):
+        sanitized["parameters"] = {"type": "object", "properties": {}}
+    return sanitized
+
+
+def _definition_to_tool(defn: ToolDefinition) -> dict:
+    return {
+        "type": "function",
+        "name": defn.name,
+        "description": defn.description,
+        "parameters": _ensure_object_schema(defn.parameters),
+        "strict": defn.strict,
+        "source": defn.source,
+    }
+
+
+class ToolPolicy:
+    """Policy for building the OpenAI ``tools`` array for a turn."""
+
+    @staticmethod
+    def build_responses_tools(
+        model_id: str,
+        features: set[str],
+        cfg: RuntimeConfig,
+        registry: ToolRegistry,
+        body_tools: list[dict] | None,
+        extra_tools: list[dict] | None,
+        mcp_tools: list[dict] | None,
+        web_search_tools: list[dict] | None,
+    ) -> list[dict]:
+        allow_function_tools = "function_calling" in features or supports(
+            "function_calling", model_id
+        )
+        allow_web_search_tools = "web_search_tool" in features or supports(
+            "web_search_tool", model_id
+        )
+
+        ordered_tools: list[dict] = []
+
+        def extend_tools(candidates: Iterable[dict]) -> None:
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                ordered_tools.append(deepcopy(candidate))
+
+        extend_tools(body_tools or [])
+        extend_tools(_definition_to_tool(d) for d in registry.iter_definitions())
+        extend_tools(extra_tools or [])
+        extend_tools(mcp_tools or [])
+        extend_tools(web_search_tools or [])
+
+        deduped: dict[tuple[str | None, str | None], dict] = {}
+        for raw_tool in ordered_tools:
+            tool = _sanitize_tool(raw_tool)
+
+            tool_type = tool.get("type")
+            if tool_type == "function" and not allow_function_tools:
+                continue
+            if tool_type == "web_search" and not allow_web_search_tools:
                 continue
 
-        return openai_input
+            if tool_type == "function" and cfg.ENABLE_STRICT_TOOL_CALLING:
+                tool["parameters"] = _strictify_schema(tool.get("parameters"))
+                tool["strict"] = True
+            identity = _tool_identity(tool)
+            if identity in deduped:
+                deduped.pop(identity, None)
+            deduped[identity] = tool
 
-
-class HistoryService:
-    """Facade for reconstructing Responses input items and instructions from stored chat history."""
-
-    def __init__(self, store: HistoryStore | None = None) -> None:
-        self.store = store or NullHistoryStore()
-
-    def build_input_and_instructions(self, messages: list[dict[str, Any]], *, ctx: TurnContext) -> HistoryResult:
-        resolver = self._resolver(ctx.metadata)
-        builder = HistoryBuilder(resolve_items=resolver)
-        input_items = builder.build_input_from_messages(
-            messages,
-            chat_id=ctx.metadata.get("chat_id"),
-            openwebui_model_id=ctx.metadata.get("model", {}).get("id"),
-        )
-        instructions = extract_system_instructions(messages)
-        return HistoryResult(input_items=input_items, instructions=instructions)
-
-    def _resolver(self, metadata: dict[str, Any]) -> Resolver:
-        chat_id = metadata.get("chat_id")
-        openwebui_model_id = metadata.get("model", {}).get("id")
-
-        def _resolve(
-            item_ids: list[str],
-            resolver_chat: str | None,
-            model_id: str | None,
-        ) -> dict[str, dict[str, Any]]:
-            target_chat = resolver_chat or chat_id or ""
-            target_model = model_id or openwebui_model_id
-            return self.store.load_items(target_chat, item_ids, model_id=target_model)
-
-        return _resolve
+        return list(deduped.values())
 
 
 __all__ = [
-    "HistoryBuilder",
-    "HistoryResult",
-    "HistoryPersistence",
-    "HistoryService",
-    "HistoryStore",
-    "NullHistoryStore",
-    "extract_system_instructions",
-    "TurnContext",
+    "ToolDefinition",
+    "ToolRegistry",
+    "ToolExecutor",
+    "ToolPolicy",
 ]
 
+# === domain/web_search.py ===
+"""Web search tool construction helpers.
+
+See ``docs/web_search_and_citations.md`` for the behavioral contract.
+"""
+
+import json
+from typing import Any
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.config import RuntimeConfig
+# from openai_responses_manifold.core.logging import get_logger
+# from openai_responses_manifold.core.model_catalog import supports
+
+_logger = get_logger(__name__)
+
+
+def build_web_search_tools(
+    model_id: str,
+    features: set[str],
+    cfg: RuntimeConfig,
+    reasoning_effort: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return a ``web_search`` tool definition when enabled.
+
+    The tool is included only when:
+    * The model advertises ``web_search_tool`` capability.
+    * Web search is enabled via valves.
+    * The effective reasoning effort is not explicitly ``"minimal"``.
+    """
+
+    allow_web_search = "web_search_tool" in features or supports(
+        "web_search_tool", model_id
+    )
+    if not allow_web_search:
+        return []
+
+    if reasoning_effort == "minimal":
+        return []
+
+    if not cfg.ENABLE_WEB_SEARCH_TOOL:
+        return []
+
+    tool: dict[str, Any] = {
+        "type": "web_search",
+        "search_context_size": cfg.WEB_SEARCH_CONTEXT_SIZE,
+    }
+
+    if cfg.WEB_SEARCH_USER_LOCATION:
+        try:
+            tool["user_location"] = json.loads(cfg.WEB_SEARCH_USER_LOCATION)
+        except Exception:
+            _logger.warning("WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring.")
+
+    return [tool]
+
+
+__all__ = ["build_web_search_tools"]
+
 # === domain/code_interpreter.py ===
-"""Helpers for handling code interpreter events and output items."""
+"""Helpers for code_interpreter events and outputs.
+
+These helpers mirror the legacy manifold behavior: streaming status updates
+for code interpreter runs and citations summarizing logs/outputs/code. See
+``docs/responses_engine.md`` for where these helpers plug into the engine.
+"""
 
 import logging
 from typing import Any, Awaitable, Callable
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.adapters.openai.events import (
-#     ResponseCodeInterpreterCallCodeDeltaEvent,
-#     ResponseCodeInterpreterCallCodeDoneEvent,
-#     ResponseCodeInterpreterCallCompletedEvent,
-#     ResponseCodeInterpreterCallInProgressEvent,
-#     ResponseCodeInterpreterCallInterpretingEvent,
-# )
-# from openai_responses_manifold.domain.events import RuntimeEvents
 # from openai_responses_manifold.core.logging import truncate_for_log
+# from openai_responses_manifold.domain.types import RuntimeEvents, TurnState
 
-EmitStatusFn = Callable[[str], Awaitable[Any]]
+EmitStatusFn = Callable[..., Awaitable[Any]]
+
+
+def _event_type(event: Any) -> str | None:
+    if hasattr(event, "type"):
+        return getattr(event, "type")
+    if isinstance(event, dict):
+        return event.get("type")
+    return None
+
+
+def _get_attr(event: Any, name: str, default: Any = None) -> Any:
+    if hasattr(event, name):
+        return getattr(event, name)
+    if isinstance(event, dict):
+        return event.get(name, default)
+    return default
+
+
+def _ensure_state_fields(state: TurnState) -> None:
+    state.code_snippets = getattr(state, "code_snippets", {}) or {}
+    state.pending_ci_results = getattr(state, "pending_ci_results", set()) or set()
+    state.pending_ci_code_snippets = getattr(state, "pending_ci_code_snippets", {}) or {}
 
 
 async def handle_code_interpreter_event(
     event: Any,
-    state: Any,
-    emit_status: Callable[[str], Awaitable[Any]],
+    state: TurnState,
+    emit_status: EmitStatusFn,
     logger: logging.Logger,
 ) -> bool:
-    """Handle streaming code interpreter events. Returns True if the stream should stop."""
+    """Handle streaming code interpreter events.
 
-    if isinstance(event, ResponseCodeInterpreterCallInProgressEvent):
+    Returns ``True`` if the stream should stop (currently never). Side effects
+    include emitting statuses and caching code snippets by ``output_index``.
+    """
+
+    _ensure_state_fields(state)
+    event_type = _event_type(event)
+
+    if event_type == "response.code_interpreter_call.in_progress":
+        state.last_code_output_index = _get_attr(event, "output_index")
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("code_interpreter.event in_progress output_index=%s", event.output_index)
-        state.last_code_output_index = event.output_index
+            logger.debug(
+                "code_interpreter.event in_progress output_index=%s",
+                state.last_code_output_index,
+            )
         await emit_status("Starting code interpreter…")
         return False
 
-    if isinstance(event, ResponseCodeInterpreterCallInterpretingEvent):
+    if event_type == "response.code_interpreter_call.interpreting":
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("code_interpreter.event interpreting output_index=%s", event.output_index)
+            logger.debug(
+                "code_interpreter.event interpreting output_index=%s",
+                _get_attr(event, "output_index"),
+            )
         await emit_status("Running Python code in the sandbox…")
         return False
 
-    if isinstance(event, ResponseCodeInterpreterCallCodeDeltaEvent):
+    if event_type == "response.code_interpreter_call.code.delta":
         return False
 
-    if isinstance(event, ResponseCodeInterpreterCallCodeDoneEvent):
-        code = (event.code or "").strip()
+    if event_type == "response.code_interpreter_call.code.done":
+        output_index = _get_attr(event, "output_index")
+        code = (_get_attr(event, "code") or "").strip()
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "code_interpreter.event code_done output_index=%s code_len=%d",
-                event.output_index,
+                output_index,
                 len(code),
             )
-        if event.output_index is not None:
-            state.code_snippets[event.output_index] = code or state.code_snippets.get(event.output_index)
-            state.last_code_output_index = event.output_index
+        if output_index is not None:
+            state.code_snippets[output_index] = code or state.code_snippets.get(output_index, "")
+            state.last_code_output_index = output_index
         if code:
             await emit_status(
                 f"Executed Python:\n```python\n{code}\n```",
@@ -2304,9 +1748,12 @@ async def handle_code_interpreter_event(
             )
         return False
 
-    if isinstance(event, ResponseCodeInterpreterCallCompletedEvent):
+    if event_type == "response.code_interpreter_call.completed":
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("code_interpreter.event completed output_index=%s", event.output_index)
+            logger.debug(
+                "code_interpreter.event completed output_index=%s",
+                _get_attr(event, "output_index"),
+            )
         await emit_status("Code interpreter run finished.", require_previous=True)
         return False
 
@@ -2315,21 +1762,24 @@ async def handle_code_interpreter_event(
 
 async def handle_code_interpreter_item(
     item: dict[str, Any],
-    state: Any,
+    state: TurnState,
     events: RuntimeEvents,
     logger: logging.Logger,
-    emit_status: Callable[..., Awaitable[Any]],
+    emit_status: EmitStatusFn,
     *,
     output_index: int | None = None,
 ) -> None:
-    """Handle a completed code_interpreter_call output item."""
+    """Handle a completed ``code_interpreter_call`` output item."""
 
-    # Support both the OpenAI item shape (flat fields) and the previously nested shape
-    ci_payload = item.get("code_interpreter_call") if isinstance(item.get("code_interpreter_call"), dict) else item
-    outputs = (ci_payload.get("outputs") if isinstance(ci_payload, dict) else None) or item.get("outputs") or []
+    _ensure_state_fields(state)
+
+    payload = item.get("code_interpreter_call") if isinstance(item.get("code_interpreter_call"), dict) else item
+    outputs = (payload.get("outputs") if isinstance(payload, dict) else None) or item.get("outputs") or []
     run_index = output_index if output_index is not None else state.last_code_output_index
+
     log_chunks: list[str] = []
     other_outputs: list[str] = []
+
     for output in outputs:
         if not isinstance(output, dict):
             continue
@@ -2367,18 +1817,8 @@ async def handle_code_interpreter_item(
                 other_outputs.append(f"{output_type}: {preview}{suffix}")
             continue
 
-        keys = ", ".join(sorted(k for k in output.keys() if k != "type"))
-        other_outputs.append(f"{output_type or 'output'} ({keys})")
-
-    if log_chunks:
-        logs_snippet = "\n".join(log_chunks)
-        await emit_status(
-            "Code interpreter logs:\n" + logs_snippet,
-            hidden=True,
-            require_previous=True,
-        )
-
-    code_snippet = (ci_payload.get("code") or item.get("code") or "").strip()
+    code_snippet = (payload.get("code") if isinstance(payload, dict) else None) or item.get("code") or ""
+    code_snippet = code_snippet.strip()
     if not code_snippet and run_index is not None:
         cached_code = state.code_snippets.get(run_index)
         if cached_code:
@@ -2390,10 +1830,9 @@ async def handle_code_interpreter_item(
                     len(code_snippet),
                 )
 
-    assistant_answer = (state.response_text or "").strip()
+    assistant_answer = (state.assistant_visible_text or state.response_text or "").strip()
     pending_result = not (log_chunks or other_outputs or assistant_answer)
 
-    # Emit a consolidated citation so users see logs/outputs/code (and result text if already present).
     snippet_parts: list[str] = []
     if log_chunks:
         snippet_parts.append("Logs:\n" + "\n".join(log_chunks))
@@ -2434,7 +1873,6 @@ async def handle_code_interpreter_item(
         }
     )
 
-    # Track pending results per run so we can emit a second citation once the assistant text arrives.
     if run_index is not None:
         if pending_result:
             state.pending_ci_results.add(run_index)
@@ -2444,32 +1882,26 @@ async def handle_code_interpreter_item(
             state.pending_ci_results.discard(run_index)
             state.pending_ci_code_snippets.pop(run_index, None)
 
-        # Clear cached snippet after consumption (the pending copy, if any, is stored above)
         state.code_snippets.pop(run_index, None)
 
-    if (
-        not log_chunks
-        and not code_snippet
-        and logger.isEnabledFor(logging.DEBUG)
-    ):
-        logger.debug(
-            "code_interpreter_call item had no logs/code; outputs_len=%d",
-            len(outputs),
-        )
+    if not log_chunks and not code_snippet and logger.isEnabledFor(logging.DEBUG):
+        logger.debug("code_interpreter_call item had no logs/code; outputs_len=%d", len(outputs))
 
 
 async def emit_pending_code_interpreter_result(
-    state: Any,
+    state: TurnState,
     events: RuntimeEvents,
     logger: logging.Logger,
     assistant_text: str | None = None,
 ) -> None:
-    """Emit a follow-up citation with the assistant's result text when no structured outputs were returned."""
+    """Emit a follow-up citation once the assistant supplies result text."""
 
-    if not getattr(state, "pending_ci_results", None):
+    _ensure_state_fields(state)
+
+    if not state.pending_ci_results:
         return
 
-    result_text = (assistant_text or state.response_text or "").strip()
+    result_text = (assistant_text or state.assistant_visible_text or state.response_text or "").strip()
     if not result_text:
         return
 
@@ -2519,2599 +1951,1002 @@ __all__ = [
     "emit_pending_code_interpreter_result",
 ]
 
-# === domain/web_search.py ===
-"""Helpers for web_search tool construction and request policy."""
+# === domain/routing.py ===
+"""Routing helpers for GPT-5 pseudo-models.
+
+This module provides a small helper that resolves Open WebUI router
+pseudo-models (e.g. ``.gpt-5-auto-dev``) into concrete OpenAI models.
+See ``docs/routing_and_model_catalog.md`` for behavior details.
+"""
 
 import json
 import logging
-import re
 from typing import Any
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-# from openai_responses_manifold.core.model_catalog import supports
+# from ..core import model_catalog
+# from ..openai_api.client import OpenAIClient
+# from ..openai_api.types import ResponsesRequest
+# from .types import RuntimeEvents, TurnContext
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
-def build_web_search_tool(
-    responses_body: Any,
-    valves: Any,
-    features: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Return a list with a web_search tool if enabled/supported, otherwise []."""
-
-    features = features or {}
-    reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
-    effort = reasoning.get("effort")
-    effort_level = effort.lower() if isinstance(effort, str) else ""
-    allow_web = (
-        supports("web_search_tool", responses_body.model)
-        and (getattr(valves, "ENABLE_WEB_SEARCH_TOOL", False) or features.get("web_search", False))
-        and effort_level != "minimal"
-    )
-    if not allow_web:
-        return []
-
-    web_search_tool: dict[str, Any] = {"type": "web_search"}
-    user_location = getattr(valves, "WEB_SEARCH_USER_LOCATION", None)
-    if user_location:
-        try:
-            web_search_tool["user_location"] = json.loads(user_location)
-        except Exception as exc:
-            preview, truncated = truncate_for_log(user_location, limit=300)
-            logger.warning(
-                "WEB_SEARCH_USER_LOCATION is not valid JSON; ignoring. truncated=%s value=%s error=%s",
-                truncated,
-                preview,
-                exc,
-            )
-    allowed_domains = _parse_allowed_domains(getattr(valves, "WEB_SEARCH_ALLOWED_DOMAINS", None))
-    if allowed_domains:
-        web_search_tool["filters"] = {"allowed_domains": allowed_domains}
-    external_web_access = getattr(valves, "WEB_SEARCH_EXTERNAL_WEB_ACCESS", None)
-    if isinstance(external_web_access, bool):
-        web_search_tool["external_web_access"] = external_web_access
-
-    return [web_search_tool]
-
-
-def apply_web_search_policy(responses_body: Any, valves: Any) -> bool:
-    """
-    Enforce parallel/tool include policy for web_search.
-
-    Returns True if web_search is present and policy applied.
-    """
-
-    has_web_search = any(
-        isinstance(tool, dict) and tool.get("type") == "web_search"
-        for tool in (responses_body.tools or [])
-    )
-    if not has_web_search:
-        return False
-
-    responses_body.parallel_tool_calls = False
-    if getattr(valves, "WEB_SEARCH_INCLUDE_SOURCES", True):
-        responses_body.include = responses_body.include or []
-        if "web_search_call.action.sources" not in responses_body.include:
-            responses_body.include.append("web_search_call.action.sources")
-    return True
-
-
-def _parse_allowed_domains(raw: Any) -> list[str]:
-    """
-    Normalize allowed domain inputs for the web_search tool.
-
-    Accepts JSON (list or string) or comma-separated strings. Removes protocols and trailing slashes.
-    Caps the allow-list at 20 entries, preserving order.
-    """
-
-    if raw is None:
-        return []
-
-    candidates: list[Any] = []
-    if isinstance(raw, str):
-        raw = raw.strip()
-        if not raw:
-            return []
-        try:
-            parsed = json.loads(raw)
-        except Exception:
-            parsed = None
-        if isinstance(parsed, list):
-            candidates = parsed
-        elif isinstance(parsed, str):
-            candidates = [parsed]
-        elif parsed is None:
-            candidates = raw.split(",")
-    elif isinstance(raw, list):
-        candidates = raw
-    else:
-        return []
-
-    normalized: list[str] = []
-    for cand in candidates:
-        if not isinstance(cand, str):
-            continue
-        domain = _normalize_domain(cand)
-        if not domain or domain in normalized:
-            continue
-        normalized.append(domain)
-        if len(normalized) >= 20:
-            break
-    return normalized
-
-
-def _normalize_domain(domain: str) -> str:
-    """Strip protocol/path and whitespace from a domain string."""
-
-    cleaned = domain.strip()
-    cleaned = re.sub(r"^https?://", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.split("/")[0]
-    return cleaned.rstrip("/")
-
-
-__all__ = ["build_web_search_tool", "apply_web_search_policy"]
-
-# === domain/tools.py ===
-"""Tool declaration and execution helpers."""
-
-import asyncio
-import inspect
-import json
-import logging
-import re
-from typing import Any, Awaitable, Callable
-
-# [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-# from openai_responses_manifold.core.errors import ToolExecutionError
-# from openai_responses_manifold.core.model_catalog import supports
-# from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
-# from openai_responses_manifold.domain.turn_context import TurnContext
-# from openai_responses_manifold.domain.web_search import apply_web_search_policy, build_web_search_tool
-
-logger = get_logger(__name__)
-TOOL_CALL_TIMEOUT_SEC = 30
-CODE_INTERPRETER_OUTPUTS_INCLUDE = "code_interpreter_call.outputs"
-
-
-async def resolve_tools(
-    responses_body: ResponseCreateParams,
-    valves: Any,
-    provided_tools: list[dict[str, Any]] | dict[str, Any] | asyncio.Future | None,
-    *,
-    features: dict[str, Any] | None = None,
-    extra_tools: list[dict[str, Any]] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-    """
-    Normalize OpenWebUI tool inputs and build the Responses tool spec list.
-
-    Returns (tools, tool_registry) where tool_registry is an executable mapping for ResultsEngine.
-    """
-
-    resolved = await provided_tools if inspect.isawaitable(provided_tools) else provided_tools
-    tool_registry: dict[str, dict[str, Any]] | None = resolved if isinstance(resolved, dict) else None
-    tools = build_tools(
-        responses_body,
-        valves,
-        openwebui_tools=tool_registry,
-        features=features,
-        extra_tools=extra_tools,
-    )
-    return tools, tool_registry or {}
-
-
-class ToolSpecBuilder:
-    """Build tool specs and runtime registry for a turn."""
-
-    async def build_for_turn(
-        self,
-        responses_body: ResponseCreateParams,
-        ctx: TurnContext,
-        provided_tools: list[dict[str, Any]] | dict[str, Any] | asyncio.Future | None,
-        *,
-        extra_tools: list[dict[str, Any]] | None = None,
-    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-        tools, registry = await resolve_tools(
-            responses_body,
-            ctx.valves,
-            provided_tools,
-            features=ctx.features,
-            extra_tools=extra_tools,
-        )
-        return tools, registry
-
-
-def build_tools(
-    responses_body: ResponseCreateParams,
-    valves: Any,
-    openwebui_tools: dict[str, Any] | None = None,
-    *,
-    features: dict[str, Any] | None = None,
-    extra_tools: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Build the OpenAI Responses-API tool spec list for this request."""
-
-    features = features or {}
-    if not supports("function_calling", responses_body.model):
-        return []
-
-    strict_mode = getattr(valves, "ENABLE_STRICT_TOOL_CALLING", False)
-    tools: list[dict[str, Any]] = []
-    tools.extend(
-        _transform_owui_tools(
-            openwebui_tools, strict=strict_mode
-        )
-    )
-
-    # web_search
-    tools.extend(build_web_search_tool(responses_body, valves, features))
-
-    allow_code_interpreter = (
-        supports("code_interpreter_tool", responses_body.model)
-        and (getattr(valves, "ENABLE_CODE_INTERPRETER_TOOL", False) or features.get("code_interpreter", False))
-    )
-    if allow_code_interpreter:
-        code_tool: dict[str, Any] = {"type": "code_interpreter"}
-
-        feature_cfg = features.get("code_interpreter") if isinstance(features, dict) else None
-        container_from_features = feature_cfg.get("container") if isinstance(feature_cfg, dict) else None
-        container_json = getattr(valves, "CODE_INTERPRETER_CONTAINER_JSON", None)
-
-        if container_from_features is not None:
-            code_tool["container"] = container_from_features
-        elif container_json:
-            try:
-                code_tool["container"] = json.loads(container_json)
-            except Exception as exc:
-                preview, truncated = truncate_for_log(container_json, limit=300)
-                logger.warning(
-                    "CODE_INTERPRETER_CONTAINER_JSON is not valid JSON; ignoring. truncated=%s value=%s error=%s",
-                    truncated,
-                    preview,
-                    exc,
-                )
-        else:
-            code_tool["container"] = {"type": "auto"}
-
-        tools.append(code_tool)
-
-    remote_mcp = getattr(valves, "REMOTE_MCP_SERVERS_JSON", None)
-    if remote_mcp:
-        tools.extend(_build_mcp_tools(remote_mcp))
-
-    if isinstance(extra_tools, list) and extra_tools:
-        tools.extend(_maybe_strictify_extra_tools(extra_tools, strict_mode))
-
-    deduped = _dedupe_tools(tools)
-    if logger.isEnabledFor(logging.DEBUG):
-        summaries = tool_summaries_for_log(deduped)
-        logger.debug(
-            "tools.built count=%d summary=%s",
-            len(deduped),
-            "; ".join(summaries) if summaries else "none",
-        )
-    return deduped
-
-
-def apply_tool_policy(responses_body: Any, valves: Any) -> None:
-    """
-    Normalize include/parallel settings across tool types.
-    """
-
-    tools = responses_body.tools or []
-    has_code_interpreter = any(
-        isinstance(tool, dict) and tool.get("type") == "code_interpreter" for tool in tools
-    )
-
-    web_search_applied = apply_web_search_policy(responses_body, valves)
-
-    if has_code_interpreter:
-        responses_body.include = responses_body.include or []
-        if CODE_INTERPRETER_OUTPUTS_INCLUDE not in responses_body.include:
-            responses_body.include.append(CODE_INTERPRETER_OUTPUTS_INCLUDE)
-
-    if not web_search_applied:
-        responses_body.parallel_tool_calls = getattr(valves, "PARALLEL_TOOL_CALLS", True)
-
-
-class ToolExecutor:
-    """Execute tool calls with status/error signaling."""
-
-    def __init__(self, logger: logging.Logger | None = None) -> None:
-        self.logger = logger or get_logger(__name__)
-
-    async def run(
-        self,
-        tool_calls: list[dict[str, Any]],
-        registry: dict[str, dict[str, Any]],
-        *,
-        emit_status: Callable[[str], Awaitable[Any]] | None = None,
-        valves: Any,
-    ) -> list[dict[str, Any]]:
-        if not tool_calls:
-            return []
-
-        if not registry:
-            self.logger.warning("Tool calls requested but no tool registry provided; skipping execution.")
-            if emit_status:
-                await emit_status("Tool execution skipped: no tool registry available.")
-            return []
-
-        try:
-            return await execute_tool_calls(tool_calls, registry)
-        except ToolExecutionError as exc:
-            self.logger.warning("Skipping malformed tool arguments: %s", exc)
-            if emit_status:
-                await emit_status("Skipping malformed tool arguments.")
-            return []
-
-
-async def execute_tool_calls(
-    calls: list[dict[str, Any]],
-    registry: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Execute tool calls and return Responses-ready outputs."""
-
-    if logger.isEnabledFor(logging.INFO):
-        logger.info("tool.calls_started count=%d", len(calls))
-
-    async def _invoke(call: dict[str, Any]) -> tuple[dict[str, Any], str]:
-        name = call.get("name")
-        arguments_json = call.get("arguments", "{}")
-        try:
-            args = json.loads(arguments_json)
-        except Exception as exc:  # pragma: no cover - defensive
-            raise ToolExecutionError(f"Invalid JSON arguments for tool {name}: {exc}") from exc
-
-        if logger.isEnabledFor(logging.DEBUG):
-            args_preview, args_truncated = truncate_for_log(
-                json.dumps(args, ensure_ascii=False), limit=400
-            )
-            logger.debug(
-                "tool.call name=%s args_truncated=%s args=%s",
-                name,
-                args_truncated,
-                args_preview,
-            )
-
-        tool_cfg = registry.get(name)
-        if not tool_cfg:
-            return call, f"Tool '{name}' not found"
-
-        fn = tool_cfg.get("callable")
-        if not callable(fn):
-            return call, f"Tool '{name}' is not callable"
-
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("tool.call name=%s status=started", name)
-
-        try:
-            if inspect.iscoroutinefunction(fn):
-                coro = fn(**args)
-            else:
-                coro = asyncio.to_thread(fn, **args)
-            result = await asyncio.wait_for(coro, timeout=TOOL_CALL_TIMEOUT_SEC)
-        except asyncio.TimeoutError:
-            logger.warning("Tool %s timed out after %s seconds", name, TOOL_CALL_TIMEOUT_SEC)
-            return call, f"TimeoutError: tool '{name}' exceeded {TOOL_CALL_TIMEOUT_SEC}s"
-        except Exception as exc:
-            logger.warning("Tool %s raised an exception: %s", name, exc)
-            return call, f"{type(exc).__name__}: {exc}"
-
-        output_str = str(result)
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("tool.call name=%s status=completed output_len=%d", name, len(output_str))
-        return call, output_str
-
-    results = await asyncio.gather(*(_invoke(call) for call in calls))
-    outputs: list[dict[str, Any]] = []
-    for call, output in results:
-        outputs.append(
-            {
-                "type": "function_call_output",
-                "call_id": call.get("call_id"),
-                "output": output,
-            }
-        )
-    return outputs
-
-
-def _transform_owui_tools(
-    openwebui_tools: dict[str, dict[str, Any]] | None,
-    *,
-    strict: bool = False,
-) -> list[dict[str, Any]]:
-    if not openwebui_tools:
-        return []
-
-    tools: list[dict[str, Any]] = []
-    for item in openwebui_tools.values():
-        spec = item.get("spec") or {}
-        name = spec.get("name")
-        if not name:
-            continue
-
-        params = spec.get("parameters") or {"type": "object", "properties": {}}
-        tool = {
-            "type": "function",
-            "name": name,
-            "description": spec.get("description") or name,
-            "parameters": _strictify_schema(params) if strict else params,
-        }
-        if strict:
-            tool["strict"] = True
-        tools.append(tool)
-    return tools
-
-
-def _strictify_schema(schema: Any) -> dict[str, Any]:
-    if not isinstance(schema, dict):
-        return {}
-
-    data = json.loads(json.dumps(schema))
-
-    def _enforce(node: dict[str, Any]) -> None:
-        node_type = node.get("type")
-        is_object = (
-            node_type == "object"
-            or (isinstance(node_type, list) and "object" in node_type)
-            or "properties" in node
-        )
-        if is_object:
-            props = node.setdefault("properties", {})
-            if not isinstance(props, dict):
-                props = {}
-                node["properties"] = props
-
-            original_required = [
-                item for item in node.get("required") or [] if isinstance(item, str)
-            ]
-            merged_required: list[str] = []
-            for name in original_required:
-                if name not in merged_required:
-                    merged_required.append(name)
-            for name in props.keys():
-                if isinstance(name, str) and name not in merged_required:
-                    merged_required.append(name)
-            node["required"] = merged_required
-            node["additionalProperties"] = False
-
-            for name, prop in props.items():
-                if not isinstance(prop, dict) or not isinstance(name, str):
-                    continue
-                _enforce(prop)
-
-        items = node.get("items")
-        if isinstance(items, dict):
-            _enforce(items)
-        elif isinstance(items, list):
-            for entry in items:
-                if isinstance(entry, dict):
-                    _enforce(entry)
-
-        for key in ("anyOf", "oneOf"):
-            branches = node.get(key)
-            if isinstance(branches, list):
-                for branch in branches:
-                    if isinstance(branch, dict):
-                        _enforce(branch)
-
-    _enforce(data)
-    return data
-
-
-def _maybe_strictify_extra_tools(
-    extra_tools: list[dict[str, Any]],
-    strict: bool,
-) -> list[dict[str, Any]]:
-    """Apply strict schemas to extra function tools when strict mode is enabled."""
-
-    if not strict:
-        return [tool for tool in extra_tools if isinstance(tool, dict)]
-
-    strictified: list[dict[str, Any]] = []
-    for tool in extra_tools:
-        if not isinstance(tool, dict):
-            continue
-        if tool.get("type") != "function":
-            strictified.append(tool)
-            continue
-
-        clone: dict[str, Any] = json.loads(json.dumps(tool))
-        params = clone.get("parameters")
-        if isinstance(params, dict):
-            clone["parameters"] = _strictify_schema(params)
-        else:
-            clone["parameters"] = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
-        clone.setdefault("strict", True)
-        strictified.append(clone)
-
-    return strictified
-
-
-def tool_summaries_for_log(tools: list[dict[str, Any]]) -> list[str]:
-    """Return compact, index-aware summaries for log output."""
-
-    summaries: list[str] = []
-    for idx, tool in enumerate(tools or []):
-        if not isinstance(tool, dict):
-            summaries.append(f"[{idx}] <invalid tool>")
-            continue
-
-        tool_type = tool.get("type") or "unknown"
-        parts = [f"[{idx}] type={tool_type}"]
-        name = tool.get("name")
-        if isinstance(name, str) and name:
-            parts.append(f"name={name}")
-
-        if tool_type == "function":
-            if tool.get("strict"):
-                parts.append("strict=True")
-            params = tool.get("parameters")
-            if isinstance(params, dict):
-                props = params.get("properties")
-                if isinstance(props, dict) and props:
-                    parts.append(f"params={','.join(sorted(props.keys()))}")
-        elif tool_type == "web_search":
-            context = tool.get("context")
-            if isinstance(context, dict):
-                size = context.get("size")
-                if isinstance(size, str) and size:
-                    parts.append(f"context.size={size}")
-            filters = tool.get("filters")
-            if isinstance(filters, dict):
-                allowed = filters.get("allowed_domains")
-                if isinstance(allowed, list) and allowed:
-                    parts.append(f"filters.allowed_domains={len(allowed)}")
-            external = tool.get("external_web_access")
-            if isinstance(external, bool):
-                parts.append(f"external_web_access={external}")
-        elif tool_type == "mcp":
-            server_label = tool.get("server_label") or tool.get("server_name")
-            if isinstance(server_label, str) and server_label:
-                parts.append(f"server_label={server_label}")
-            server_url = tool.get("server_url")
-            if isinstance(server_url, str) and server_url:
-                parts.append(f"server_url={server_url}")
-        else:
-            extra_keys = [key for key in sorted(tool.keys()) if key != "type"]
-            if extra_keys:
-                parts.append(f"keys={','.join(extra_keys)}")
-
-        summary = " ".join(parts)
-        preview, truncated = truncate_for_log(summary, limit=240)
-        summaries.append(f"{preview}{'…' if truncated else ''}")
-
-    return summaries
-
-
-def _build_mcp_tools(mcp_json: str) -> list[dict[str, Any]]:
-    try:
-        parsed = json.loads(mcp_json)
-    except Exception as exc:  # pragma: no cover - valved bug
-        preview, truncated = truncate_for_log(mcp_json, limit=300)
-        logger.warning(
-            "REMOTE_MCP_SERVERS_JSON is not valid JSON. truncated=%s value=%s error=%s",
-            truncated,
-            preview,
-            exc,
-        )
-        return []
-
-    entries = parsed if isinstance(parsed, list) else [parsed]
-    tools: list[dict[str, Any]] = []
-    for item in entries:
-        if not isinstance(item, dict):
-            continue
-        tool = {
-            "type": "mcp",
-            "server_label": item.get("server_label"),
-            "server_url": item.get("server_url"),
-        }
-        for key in (
-            "model_preference",
-            "client_capabilities",
-            "require_approval",
-            "allowed_tools",
-        ):
-            if key in item:
-                tool[key] = item[key]
-        tools.append(tool)
-    return tools
-
-
-def _dedupe_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    if not tools:
-        return []
-
-    seen: dict[tuple[str, str | None], dict[str, Any]] = {}
-    for tool in tools:
-        tool_type = tool.get("type")
-        if not isinstance(tool_type, str):
-            continue
-        identifier: str | None = None
-        if tool_type == "function":
-            name = tool.get("name")
-            if isinstance(name, str):
-                identifier = name
-        elif tool_type == "mcp":
-            label = tool.get("server_label") or tool.get("server_url")
-            if isinstance(label, str):
-                identifier = label
-        seen[(tool_type, identifier)] = tool
-    return list(seen.values())
-
-
-__all__ = [
-    "build_tools",
-    "apply_tool_policy",
-    "CODE_INTERPRETER_OUTPUTS_INCLUDE",
-    "ToolExecutor",
-    "ToolSpecBuilder",
-    "execute_tool_calls",
-    "resolve_tools",
-]
-
-# === domain/tasks.py ===
-"""Helpers for running non-streamed task models."""
-
-from typing import Any
-
-# [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
-# from openai_responses_manifold.adapters.openai.requests import validate_response_create_params
-
-
-async def run_task_model(
-    client: OpenAIResponsesClient,
-    body: dict[str, Any],
-    valves: Any,
-) -> str:
-    """
-    Execute a task-style request (non-streamed) and return concatenated assistant text.
-
-    This mirrors client.responses.create for simple “task” invocations where we
-    want the final text output without streaming.
-    """
-
-    responses_body = validate_response_create_params(body)
-    task_body = responses_body.model_dump(exclude_none=True)
-    task_body["stream"] = False
-    task_body["store"] = False
-
-    response = await client.create(task_body, api_key=valves.API_KEY, base_url=valves.BASE_URL)
-    text_parts: list[str] = []
-    for item in response.get("output", []):
+def _extract_output_text(response: dict[str, Any]) -> str:
+    for item in reversed(response.get("output", [])):
         if not isinstance(item, dict) or item.get("type") != "message":
             continue
-        for content in item.get("content", []):
-            if not isinstance(content, dict):
-                continue
-            if content.get("type") == "output_text":
-                text_parts.append(content.get("text", ""))
-    return "".join(text_parts)
+        for block in item.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "output_text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    return text
+    return ""
 
 
-__all__ = ["run_task_model"]
+def _parse_decision(raw: str) -> dict[str, Any]:
+    if not raw:
+        return {}
 
-# === domain/routing.py ===
-"""Helper model routing for auto variants."""
-
-import json
-import logging
-from typing import Any
-
-# [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
-# from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
-# from openai_responses_manifold.core.logging import get_logger, truncate_for_log
-# from openai_responses_manifold.domain.events import RuntimeEvents
-
-logger = get_logger(__name__)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(raw[start : end + 1])
+            except json.JSONDecodeError:
+                return {}
+    except Exception:  # pragma: no cover - defensive
+        return {}
+    return {}
 
 
 async def route_auto_model(
-    client: OpenAIResponsesClient,
-    *,
-    router_model: str,
-    responses_body: ResponseCreateParams,
-    valves: Any,
-    tools: list[dict[str, Any]],
-    events: RuntimeEvents | None = None,
-) -> ResponseCreateParams:
+    client: OpenAIClient,
+    request: ResponsesRequest,
+    ctx: TurnContext,
+    tools: list[dict],
+    events: RuntimeEvents,
+) -> ResponsesRequest:
+    """Route GPT-5 auto pseudo-models to concrete models.
+
+    * ``.gpt-5-auto`` is treated as a temporary alias to
+      ``gpt-5.1-chat-latest`` with a notification.
+    * ``.gpt-5-auto-dev`` triggers a router call using a fast model and
+      applies the router's chosen model/reasoning effort when valid.
+    * On any error, the original request is returned unchanged.
     """
-    Use a small helper model to choose the final GPT-5 variant and reasoning effort.
 
-    The helper request mirrors the structure described in the Developer Guide v2.
-    """
+    owui_model_id = ctx.metadata.get("owui_model_id")
+    if not isinstance(owui_model_id, str):
+        return request
 
-    tool_context = _summarize_tools(tools)
-    instructions = _ROUTER_PROMPT
-    if tool_context:
-        instructions = f"{_ROUTER_PROMPT}\n\n# Tool Context\n{tool_context}"
+    request.model = model_catalog.base_model(request.model)
+    normalized = model_catalog.normalize(owui_model_id)
 
-    router_body = {
-        "model": router_model,
-        "reasoning": {"effort": "minimal"},
-        "instructions": instructions,
-        "input": responses_body.input,
-        "prompt_cache_key": "openai_responses_gpt5-router",
-        "text": {
+    if normalized.endswith("gpt-5-auto"):
+        request.model = "gpt-5.1-chat-latest"
+        await events.notification(
+            "Model router coming soon — using gpt‑5.1‑chat‑latest for now.",
+            level="info",
+        )
+        return request
+
+    if not normalized.endswith("gpt-5-auto-dev"):
+        return request
+
+    router_request = ResponsesRequest(
+        model="gpt-5-mini",
+        input=request.input,
+        instructions=(
+            "You are a routing assistant. Choose the best GPT-5 model for the "
+            "user request and available tools. Prefer gpt-5.1-chat-latest for "
+            "general chat, gpt-5 for complex reasoning, and gpt-5-mini for "
+            "simple or tool-heavy tasks."
+        ),
+        reasoning={"effort": "minimal"},
+        text={
             "format": {
                 "type": "json_schema",
                 "name": "gpt5_router",
                 "strict": True,
-                "schema": _ROUTER_SCHEMA,
-            },
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "model": {
+                            "type": "string",
+                            "enum": ["gpt-5.1-chat-latest", "gpt-5", "gpt-5-mini"],
+                        },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "enum": ["minimal", "low", "medium", "high"],
+                        },
+                        "explanation": {
+                            "type": "string",
+                            "minLength": 3,
+                            "maxLength": 500,
+                        },
+                    },
+                    "required": ["model", "reasoning_effort", "explanation"],
+                    "additionalProperties": False,
+                },
+                "verbosity": "medium",
+            }
         },
+    )
+
+    try:
+        router_response = await client.create_response(
+            router_request,
+            base_url=ctx.runtime_config.BASE_URL,
+            api_key=ctx.runtime_config.API_KEY,
+        )
+    except Exception:
+        logger.warning("Model router request failed", exc_info=True)
+        return request
+
+    decision = _parse_decision(_extract_output_text(router_response))
+    model = decision.get("model") if isinstance(decision, dict) else None
+    effort = decision.get("reasoning_effort") if isinstance(decision, dict) else None
+    explanation = decision.get("explanation") if isinstance(decision, dict) else None
+
+    if not (isinstance(model, str) and isinstance(effort, str) and isinstance(explanation, str)):
+        return request
+
+    request.model = model
+
+    if model_catalog.supports("reasoning", model):
+        reasoning = dict(request.reasoning or {})
+        reasoning["effort"] = effort
+        request.reasoning = reasoning
+
+    request.model_router_result = {
+        "model": model,
+        "reasoning_effort": effort,
+        "explanation": explanation,
     }
 
-    try:
-        response = await client.create(
-            router_body,
-            api_key=valves.API_KEY,
-            base_url=valves.BASE_URL,
+    await events.status(
+        (
+            f"Routing to {model} (effort: {effort})\n"
+            f"Explanation: {explanation}"
         )
-    except Exception as exc:  # pragma: no cover
-        logger.warning("Model router request failed: %s", exc)
-        return responses_body
+    )
 
-    text = _extract_router_text(response)
-    if not text:
-        return responses_body
+    return request
 
-    try:
-        router_json: dict[str, Any] = json.loads(text)
-    except Exception:
-        start, end = text.find("{"), text.rfind("}")
-        router_json = (
-            json.loads(text[start : end + 1]) if start != -1 and end != -1 and end > start else {}
-        )
-
-    if not router_json:
-        return responses_body
-
-    model_choice = router_json.get("model")
-    if isinstance(model_choice, str):
-        responses_body.model = model_choice
-    effort = router_json.get("reasoning_effort")
-    if isinstance(effort, str):
-        current_reasoning = responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
-        responses_body.reasoning = {**current_reasoning, "effort": effort}
-
-    responses_body.model_router_result = router_json
-    explanation = router_json.get("explanation")
-    if isinstance(explanation, str) and events:
-        await events.status(
-            f"Routing to {router_json.get('model')} (effort: {router_json.get('reasoning_effort')})\nExplanation: {explanation}"
-        )
-    return responses_body
-
-
-def _extract_router_text(response: dict[str, Any]) -> str:
-    try:
-        return next(
-            (
-                block["text"]
-                for output in reversed(response["output"])
-                if output["type"] == "message"
-                for block in output["content"]
-                if block["type"] == "output_text"
-            ),
-            "",
-        )
-    except Exception as exc:  # pragma: no cover
-        payload_preview, truncated = truncate_for_log(
-            json.dumps(response, ensure_ascii=False), limit=800
-        )
-        logger.warning(
-            "Router response missing expected fields: %s payload_keys=%s truncated=%s payload=%s",
-            exc,
-            list(response.keys()),
-            truncated,
-            payload_preview,
-        )
-        return ""
-
-
-_ROUTER_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "model": {
-            "type": "string",
-            "enum": ["gpt-5-chat-latest", "gpt-5", "gpt-5-mini"],
-        },
-        "reasoning_effort": {
-            "type": "string",
-            "enum": ["minimal", "low", "medium", "high"],
-        },
-        "explanation": {
-            "type": "string",
-            "minLength": 3,
-            "maxLength": 500,
-        },
-    },
-    "required": ["model", "explanation", "reasoning_effort"],
-    "additionalProperties": False,
-}
-
-_ROUTER_PROMPT = """# Role and Objective
-Serve as a **routing helper** for selecting the most appropriate GPT-5 model for user messages, evaluating tool necessity and task complexity.
-
----
-
-# Instructions
-- If a message may require the use of **any available tool**, select a model with **function calling** capabilities. If **web search** is required, you may only choose **low, medium or high** reasoning, not minimal.
-- When tools are not necessary, favor the **fastest** or **most capable** model according to the complexity of the request.
-
----
-
-# Available Models and Capabilities
-## Models
-
-- **gpt-5-chat-latest**
-  - Fast, general-purpose, and creative.
-  - Best for writing, drafting, and chat-based interactions.
-  - ⚠️ Does **not** support tool calling—select only when tools are not required.
-
-- **gpt-5-mini**
-  - Lightweight, supports tool usage, and is rapidly responsive.
-  - Suited for **simple tasks that may use tools** but don't demand extensive reasoning.
-  - ✅ Function calling supported—offers a strong balance between speed and utility.
-
-- **gpt-5**
-  - Strong at reasoning and complex, multi-step analysis.
-  - Designed for **complex or deeply analytical tasks**.
-  - ✅ Supports function calling and advanced operations—choose for tool-reliant or high-complexity reasoning needs.
-
----
-
-# Routing Checklist
-- Assess whether tool integration could improve the response.
-- Evaluate how much reasoning or problem-solving is required.
-- Match model to requirements:
-  - No tool usage required → use `gpt-5-chat-latest`
-  - Tools required, simple task → use `gpt-5-mini`
-  - Tools required, complex task → use `gpt-5`
-- When in doubt, prioritize a tool-capable model (prefer `gpt-5`).
-- Ask for more information if requirements are ambiguous.
-
----
-
-# Output Format
-Respond only with a JSON object containing your model selection and a concise explanation. If the requirements are unclear, include an appropriate error message in the JSON response.
-
----
-
-# Examples
-- **What's the weather in Vancouver right now?**
-  ```json
-  {
-    "model": "gpt-5-mini",
-    "explanation": "Quick tool lookup; simple enough for a fast model."
-  }
-  ```
-
-- **Compare the newest M3 laptops and cite sources.**
-  ```json
-  {
-    "model": "gpt-5",
-    "explanation": "Research and synthesis with tools requires reasoning depth."
-  }
-  ```
-
-- **Summarize this email draft and make it more formal.**
-  ```json
-  {
-    "model": "gpt-5-chat-latest",
-    "explanation": "Polishing text only; no tools needed."
-  }
-  ```
-
-- **Summarize this uploaded PDF into bullet points.**
-  ```json
-  {
-    "model": "gpt-5",
-    "explanation": "Document parsing may require tools; complex enough for gpt-5."
-  }
-  ```
-
-- **Translate this paragraph into Spanish.**
-  ```json
-  {
-    "model": "gpt-5-chat-latest",
-    "explanation": "Simple translation; tools not required."
-  }
-  ```
-
-- **List my upcoming meetings tomorrow.**
-  ```json
-  {
-    "model": "gpt-5-mini",
-    "explanation": "Calendar tool lookup is simple; mini is efficient."
-  }
-  ```
-"""
-
-def _summarize_tools(tools: list[dict[str, Any]]) -> str:
-    if not tools:
-        return "No tools are provided for this request."
-
-    labels: list[str] = []
-    for tool in tools:
-        tool_type = tool.get("type")
-        if tool_type == "function":
-            name = tool.get("name")
-            if isinstance(name, str):
-                labels.append(f"function:{name}")
-        elif isinstance(tool_type, str):
-            labels.append(tool_type)
-
-    deduped = sorted({label for label in labels if label})
-    joined = ", ".join(deduped) if deduped else "unspecified tools"
-    return f"Tools available: {joined}. Prefer a tool-capable model when tools may be used."
 
 __all__ = ["route_auto_model"]
 
 # === domain/engine.py ===
-"""Streaming orchestration and tool loop for the Responses manifold.
-
-The flow is deliberately linear and explicit:
-1) Stream a response from OpenAI Responses API.
-2) Emit deltas, statuses, and persist structured items as they arrive.
-3) If the model requested tool calls, run local tools, append outputs, and loop.
-"""
-
-import asyncio
+import datetime
 import json
 import logging
-import random
-from dataclasses import dataclass, field
-from time import perf_counter
-from typing import Any, Awaitable, Callable, Literal
-
-try:  # pragma: no cover - fallback for test stubs without aiohttp
-    from aiohttp.client_exceptions import ClientResponseError
-except Exception:  # pragma: no cover
-    ClientResponseError = Exception  # type: ignore[assignment]
+from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
-# from openai_responses_manifold.adapters.openai.events import (
-#     ErrorEvent,
-#     ResponseCompletedEvent,
-#     ResponseCreatedEvent,
-#     ResponseFailedEvent,
-#     ResponseIncompleteEvent,
-#     ResponseInProgressEvent,
-#     ResponseOutputItemAddedEvent,
-#     ResponseOutputItemDoneEvent,
-#     ResponseOutputTextDeltaEvent,
-#     ResponseOutputTextDoneEvent,
-#     ResponseQueuedEvent,
-#     ResponseReasoningSummaryTextDoneEvent,
-# )
-# from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
+# from openai_responses_manifold.core.config import RuntimeConfig
 # from openai_responses_manifold.core.logging import (
 #     OWUI_SESSION_ID,
-#     clear_session_logs,
+#     consume_session_logs,
 #     get_logger,
-#     get_session_logs,
-#     truncate_for_log,
 # )
-# from openai_responses_manifold.core.model_catalog import supports
-# from openai_responses_manifold.domain.events import NullRuntimeEvents, RuntimeEvents
-# from openai_responses_manifold.domain.history import HistoryPersistence, HistoryStore
-# from openai_responses_manifold.domain.code_interpreter import (
-#     handle_code_interpreter_event,
-#     handle_code_interpreter_item,
-#     emit_pending_code_interpreter_result,
+# from openai_responses_manifold.domain.types import (
+#     Citation,
+#     RuntimeEvents,
+#     ToolCall,
+#     ToolResult,
+#     TurnContext,
+#     TurnResult,
+#     TurnState,
 # )
-# from openai_responses_manifold.domain.turn_context import TurnContext
-# from openai_responses_manifold.domain.tasks import run_task_model
-# from openai_responses_manifold.domain.tools import ToolExecutor, tool_summaries_for_log
+# from openai_responses_manifold.openai_api import (
+#     OpenAIClient,
+#     ResponseCompletedEvent,
+#     ResponseEvent,
+#     ResponseFailedEvent,
+#     ResponseIncompleteEvent,
+#     ResponseOutputItemAddedEvent,
+#     ResponseOutputItemDoneEvent,
+#     ResponseOutputTextAnnotationAddedEvent,
+#     ResponseOutputTextDeltaEvent,
+#     ResponseReasoningSummaryTextDoneEvent,
+#     ResponsesRequest,
+# )
+
+# [build.py] internal imports removed in monolith:
+# from .history import MARKER_PLACEHOLDER, HistoryManager
+
+_LOGGER = get_logger(__name__)
 
-
-@dataclass
-class _StreamState:
-    """Streaming scratch space for a single turn."""
-
-    response_text: str = ""
-    usage_summary: dict[str, Any] | None = None
-    citations: list[dict[str, Any]] = field(default_factory=list)
-    tool_calls_executed: int = 0
-    completed_response: dict[str, Any] | None = None
-    error_message: str | None = None
-    has_error: bool = False
-    last_tool_result: str | None = None
-    has_sent_status: bool = False
-    has_any_status: bool = False
-    thinking_tasks: list[asyncio.Task[Any]] = field(default_factory=list)
-    code_snippets: dict[int, str] = field(default_factory=dict)
-    last_code_output_index: int | None = None
-    pending_ci_results: set[int] = field(default_factory=set)
-    pending_ci_code_snippets: dict[int, str] = field(default_factory=dict)
-
-    def reset_for_next_response(self) -> None:
-        self.completed_response = None
-        self.usage_summary = None
-        self.has_sent_status = False
-        self.code_snippets.clear()
-        self.last_code_output_index = None
-        self.pending_ci_results.clear()
-        self.pending_ci_code_snippets.clear()
-
-
-@dataclass
-class TurnResult:
-    """Result of a streaming turn, reusable outside Open WebUI."""
-
-    text: str
-    usage: dict[str, Any] | None
-    citations: list[dict[str, Any]]
-    error_message: str | None = None
-
-
-@dataclass
-class StreamOutcome:
-    """Result of a single Responses stream."""
-
-    text: str
-    output_items: list[dict[str, Any]]
-    usage: dict[str, Any] | None
-    citations: list[dict[str, Any]]
-    error: str | None = None
-    last_tool_result: str | None = None
-
-
-class _StreamSession:
-    """Consumes stream events while coordinating a single turn."""
-
-    def __init__(
-        self,
-        engine: ResponsesEngine,
-        body: ResponseCreateParams,
-        ctx: TurnContext,
-        events: RuntimeEvents,
-        *,
-        state: _StreamState | None = None,
-    ) -> None:
-        self.engine = engine
-        self.body = body
-        self.valves = ctx.valves
-        self.metadata = ctx.metadata
-        self.events = events or NullRuntimeEvents()
-        self.state = state or _StreamState()
-        self.debug_enabled = engine.logger.isEnabledFor(logging.DEBUG)
-        self.state.thinking_tasks = self.engine._schedule_reasoning_statuses(body, self.emit_status)
-
-    async def emit_status(
-        self,
-        description: str,
-        *,
-        done: bool = False,
-        hidden: bool = False,
-        require_previous: bool = False,
-    ) -> None:
-        if require_previous and not self.state.has_any_status:
-            return
-        self.state.has_sent_status = True
-        self.state.has_any_status = True
-        await self.events.status(description, done=done, hidden=hidden)
-
-    async def handle_event(self, event: Any) -> bool:
-        """Process a single stream event. Returns True when the stream should stop."""
-
-        if isinstance(event, ResponseOutputTextDeltaEvent):
-            await self._handle_text_delta(event)
-            return False
-
-        if isinstance(event, ResponseOutputItemAddedEvent):
-            await self._handle_item_added(event)
-            return False
-
-        if isinstance(event, ResponseOutputItemDoneEvent):
-            await self._handle_item_done(event)
-            return False
-
-        if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
-            await self._handle_reasoning_summary(event)
-            return False
-
-        if isinstance(event, ResponseOutputTextDoneEvent):
-            await self._handle_text_done(event)
-            return False
-
-        handled_ci = await handle_code_interpreter_event(
-            event,
-            self.state,
-            self.emit_status,
-            self.engine.logger,
-        )
-        if handled_ci:
-            return True
-
-        if isinstance(event, ResponseCompletedEvent):
-            await self.engine._cancel_tasks(self.state.thinking_tasks)
-            self.state.completed_response = event.response
-            self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
-            if self.debug_enabled:
-                usage_keys = sorted((self.state.usage_summary or {}).keys())
-                self.engine.logger.debug("event=response.completed usage_keys=%s", usage_keys)
-            return True
-
-        if isinstance(event, (ResponseFailedEvent, ErrorEvent)):
-            await self.engine._cancel_tasks(self.state.thinking_tasks)
-            self.state.has_error = True
-            if isinstance(event, ErrorEvent):
-                self.state.error_message = event.message
-            else:
-                response_payload = event.response
-                self.state.error_message = (response_payload.get("error") or {}).get(
-                    "message", "OpenAI returned an error."
-                )
-            self.engine.logger.error("turn.error type=response_error message=%s", self.state.error_message)
-            await self.engine._handle_stream_error(self.events, self.state.error_message or "")
-            return True
-
-        if isinstance(event, ResponseIncompleteEvent):
-            await self.engine._cancel_tasks(self.state.thinking_tasks)
-            self.state.completed_response = event.response
-            self.state.usage_summary = self.engine._extract_usage_from_final_response(event.response)
-            if self.debug_enabled:
-                usage_keys = sorted((self.state.usage_summary or {}).keys())
-                self.engine.logger.debug("event=response.incomplete usage_keys=%s", usage_keys)
-            await self.emit_status("Response was incomplete (e.g., max_output_tokens or content filter).")
-            return True
-
-        if isinstance(event, (ResponseCreatedEvent, ResponseInProgressEvent, ResponseQueuedEvent)):
-            if self.debug_enabled:
-                self.engine.logger.debug(
-                    "event=%s model=%s", event.type.value, getattr(event, "response", {}).get("model")
-                )
-            return False
-
-        return False
-
-    async def collect_output_items(self) -> list[dict[str, Any]]:
-        if not self.state.completed_response:
-            return []
-
-        output_items = self.engine._sanitize_output_items(
-            (self.state.completed_response or {}).get("output") or [], store=self.body.store
-        )
-
-        if output_items:
-            if isinstance(self.body.input, list):
-                self.body.input.extend(output_items)
-            else:
-                self.body.input = output_items
-
-        return output_items
-
-    async def append_tool_outputs(self, function_outputs: list[dict[str, Any]]) -> bool:
-        if not function_outputs:
-            return False
-
-        self.state.last_tool_result = str(function_outputs[-1].get("output", ""))
-        if getattr(self.valves, "PERSIST_TOOL_RESULTS", True):
-            await self._persist_items(function_outputs)
-
-        for output in function_outputs:
-            output_str = output.get("output", "")
-            if output_str:
-                await self.emit_status(f"Received tool result\n{output_str}")
-
-        if isinstance(self.body.input, list):
-            self.body.input.extend(function_outputs)
-        else:
-            self.body.input = list(function_outputs)
-        return True
-
-    def _capture_action_sources(self, item: dict[str, Any]) -> None:
-        action = item.get("action")
-        if not isinstance(action, dict):
-            return
-        sources = action.get("sources")
-        if not isinstance(sources, list):
-            return
-
-        item_type = item.get("type") or ""
-        provider_map = {
-            "web_search_call": "openai:web_search",
-            "file_search_call": "openai:file_search",
-            "mcp_call": "openai:mcp",
-            "code_interpreter_call": "openai:code_interpreter",
-        }
-        provider = provider_map.get(item_type, "openai:tool")
-        prefix = provider.split(":")[-1] or "source"
-
-        for idx, source in enumerate(sources, start=1):
-            if not isinstance(source, dict):
-                continue
-            url = source.get("url") or source.get("link")
-            if not url:
-                continue
-            title = source.get("title") or url
-            snippet = source.get("snippet") or source.get("content") or ""
-            self.state.citations.append(
-                {
-                    "provider": provider,
-                    "id": f"{prefix}-{len(self.state.citations) + 1}",
-                    "title": title,
-                    "url": url,
-                    "snippet": snippet,
-                    "metadata": {"rank": idx, "item_type": item_type},
-                }
-            )
-
-    async def _handle_text_delta(self, event: ResponseOutputTextDeltaEvent) -> None:
-        delta_val = event.delta
-        if delta_val:
-            self.state.response_text += delta_val
-            await self.events.delta(delta_val)
-
-    async def _handle_item_added(self, event: ResponseOutputItemAddedEvent) -> None:
-        item = event.item or {}
-        if item.get("type") == "message" and item.get("status") == "in_progress":
-            await self.emit_status("Responding to the user…", require_previous=True)
-
-    async def _handle_item_done(self, event: ResponseOutputItemDoneEvent) -> None:
-        item = event.item or {}
-        item_type = item.get("type") or ""
-
-        should_persist = False
-        if item_type == "reasoning":
-            should_persist = getattr(self.valves, "PERSIST_REASONING_TOKENS", "disabled") == "conversation"
-        elif item_type in ("message", "web_search_call"):
-            should_persist = False
-        else:
-            should_persist = getattr(self.valves, "PERSIST_TOOL_RESULTS", True)
-
-        if should_persist:
-            await self._persist_items([item])
-
-        if item_type == "code_interpreter_call":
-            await handle_code_interpreter_item(
-                item,
-                self.state,
-                self.events,
-                self.engine.logger,
-                self.emit_status,
-                output_index=event.output_index,
-            )
-
-        status_desc = self.engine._status_from_output_item(item)
-        if status_desc:
-            await self.emit_status(status_desc)
-        self._capture_action_sources(item)
-
-    async def _handle_reasoning_summary(self, event: ResponseReasoningSummaryTextDoneEvent) -> None:
-        text_val = (event.text or "").strip()
-        if text_val:
-            title, content = self.engine._parse_reasoning_summary(text_val)
-            await self.engine._cancel_tasks(self.state.thinking_tasks)
-            await self.emit_status(f"{title}\n{content}")
-
-    async def _handle_text_done(self, event: ResponseOutputTextDoneEvent) -> None:
-        text_val = event.text
-        if self.debug_enabled:
-            self.engine.logger.debug("event=response.output_text.done text_len=%d", len(text_val or ""))
-        await self.engine._cancel_tasks(self.state.thinking_tasks)
-        if text_val and not self.state.response_text:
-            self.state.response_text = text_val
-        await self.events.replace(self.state.response_text or text_val)
-        await emit_pending_code_interpreter_result(
-            self.state,
-            self.events,
-            self.engine.logger,
-            assistant_text=text_val,
-        )
-
-    async def _persist_items(self, items: list[dict[str, Any]]) -> None:
-        chat_id = self.metadata.get("chat_id")
-        message_id = self.metadata.get("message_id")
-        model_id = (self.metadata.get("model") or {}).get("id")
-        if chat_id and message_id and model_id:
-            try:
-                hidden_markers = self.engine.history_persistence.persist_items_for_message(
-                    chat_id,
-                    message_id,
-                    items,
-                    model_id=model_id,
-                )
-            except Exception as exc:  # pragma: no cover
-                self.engine.logger.warning("Failed to persist output items: %s", exc)
-                hidden_markers = ""
-            if hidden_markers:
-                self.state.response_text += hidden_markers
-                await self.events.replace(self.state.response_text)
-
-
-class SSEStreamRunner:
-    """Run a single Responses stream and return structured outcome."""
-
-    def __init__(self, engine: ResponsesEngine, *, logger: logging.Logger | None = None) -> None:
-        self.engine = engine
-        self.logger = logger or get_logger(__name__)
-        self.state = _StreamState()
-        self.session: _StreamSession | None = None
-
-    async def stream(
-        self,
-        body: ResponseCreateParams,
-        ctx: TurnContext,
-        events: RuntimeEvents,
-    ) -> StreamOutcome:
-        self.state.reset_for_next_response()
-        self.session = _StreamSession(self.engine, body, ctx, events, state=self.state)
-        await self.engine._stream_response(self.session, body, ctx.valves)
-
-        if self.session.debug_enabled and self.state.completed_response:
-            try:
-                payload_str = json.dumps(self.state.completed_response, ensure_ascii=False)
-                preview, truncated = truncate_for_log(payload_str, limit=1000)
-                self.logger.debug(
-                    "response.payload_preview enabled=true truncated=%s len=%d payload=%s",
-                    truncated,
-                    len(payload_str),
-                    preview,
-                )
-            except Exception:
-                pass
-
-        output_items = await self.session.collect_output_items()
-        error_message = self.state.error_message if self.state.has_error else None
-        return StreamOutcome(
-            text=self.state.response_text,
-            output_items=output_items,
-            usage=self.state.usage_summary,
-            citations=list(self.state.citations),
-            error=error_message,
-            last_tool_result=self.state.last_tool_result,
-        )
-
-
-class ToolLoop:
-    """Loop streaming + tool execution until no more tool calls or limits hit."""
-
-    def __init__(
-        self,
-        runner: SSEStreamRunner,
-        executor: ToolExecutor,
-        *,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        self.runner = runner
-        self.executor = executor
-        self.logger = logger or get_logger(__name__)
-
-    async def run_turn(
-        self,
-        body: ResponseCreateParams,
-        ctx: TurnContext,
-        events: RuntimeEvents,
-        tool_registry: dict[str, dict[str, Any]],
-        *,
-        max_loops: int,
-        function_calls_supported: bool,
-    ) -> TurnResult:
-        citations: list[dict[str, Any]] = []
-        last_text = ""
-        last_error: str | None = None
-        usage: dict[str, Any] | None = None
-
-        for _ in range(max_loops):
-            outcome = await self.runner.stream(body, ctx, events)
-            citations = outcome.citations
-            last_text = outcome.text
-            usage = outcome.usage
-            last_error = outcome.error
-
-            if outcome.error or not function_calls_supported:
-                break
-
-            output_items = outcome.output_items or []
-            tool_calls = self._find_tool_calls(output_items)
-            if not tool_calls:
-                break
-
-            executed_before = self.runner.state.tool_calls_executed
-            if body.max_tool_calls is not None:
-                remaining = max(body.max_tool_calls - executed_before, 0)
-                if remaining <= 0:
-                    await self._emit_status("Tool call limit reached; ignoring further tool requests.")
-                    break
-                if len(tool_calls) > remaining:
-                    tool_calls = tool_calls[:remaining]
-                    if not tool_calls:
-                        await self._emit_status("Tool call limit reached; ignoring further tool requests.")
-                        break
-
-            outputs = await self.executor.run(
-                tool_calls,
-                tool_registry,
-                emit_status=self._emit_status,
-                valves=ctx.valves,
-            )
-            if not outputs:
-                break
-
-            self.runner.state.tool_calls_executed = executed_before + len(outputs)
-            session = self.runner.session
-            appended = False
-            if session:
-                appended = await session.append_tool_outputs(outputs)
-            if not appended:
-                break
-
-        return TurnResult(
-            text=last_text,
-            usage=usage,
-            citations=citations,
-            error_message=last_error,
-        )
-
-    def _find_tool_calls(self, output_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [item for item in output_items if item.get("type") == "function_call"]
-
-    async def _emit_status(self, description: str) -> None:
-        session = self.runner.session
-        if session:
-            await session.emit_status(description)
 
 class ResponsesEngine:
-    """Encapsulates streaming and tool orchestration."""
+    """Orchestrate a single streaming turn against the Responses API."""
 
     def __init__(
         self,
-        *,
-        client: OpenAIResponsesClient | None = None,
-        item_store: HistoryStore | None = None,
-        history_persistence: HistoryPersistence | None = None,
+        client: OpenAIClient,
+        history_manager: HistoryManager,
         logger: logging.Logger | None = None,
-    ) -> None:
-        self.client = client or OpenAIResponsesClient()
-        self.history_persistence = history_persistence or HistoryPersistence(item_store)
-        self.logger = logger or get_logger(__name__)
+    ):
+        self._client = client
+        self._history_manager = history_manager
+        self._logger = logger or _LOGGER
 
     async def run_streaming_turn(
         self,
-        body: ResponseCreateParams,
-        *,
+        request: ResponsesRequest,
         ctx: TurnContext,
-        events: RuntimeEvents | None,
-        tool_registry: dict[str, dict[str, Any]] | None = None,
+        events: RuntimeEvents,
+        history_key: dict[str, Any],
+        tool_registry,
+        tool_executor,
     ) -> TurnResult:
-        runtime_events = events or NullRuntimeEvents()
-        tool_registry = tool_registry or {}
-        runner = SSEStreamRunner(self, logger=self.logger)
-        executor = ToolExecutor(self.logger)
-        loop = ToolLoop(runner, executor, logger=self.logger)
-        self._log_tool_summaries(body.tools or [], logging.DEBUG, reason="request")
+        cfg: RuntimeConfig = ctx.runtime_config
+        state = TurnState()
 
-        model_router_result = body.model_router_result
-        if model_router_result:
-            body.model_router_result = None
-            explanation = model_router_result.get("explanation", "")
-            await runtime_events.status(
-                description=(
-                    f"Routing to {model_router_result.get('model')} "
-                    f"(effort: {model_router_result.get('reasoning_effort')})\n"
-                    f"Explanation: {explanation}"
-                )
+        if request.model_router_result:
+            await self._emit_routing_status(request.model_router_result, events)
+            request.model_router_result = None
+
+        last_response: dict[str, Any] | None = None
+        for _ in range(cfg.MAX_FUNCTION_CALL_LOOPS):
+            response = await self._stream_single_response(
+                request=request,
+                ctx=ctx,
+                state=state,
+                events=events,
+                base_url=cfg.BASE_URL,
+                api_key=cfg.API_KEY,
             )
+            if response is None:
+                break
+            last_response = response
+            self._merge_usage(state, response)
 
-        self.logger.info("turn.start model=%s task=chat", body.model)
-        start_time = perf_counter()
-        function_calls_supported = supports("function_calling", body.model)
-
-        try:
-            loop_result = await loop.run_turn(
-                body,
-                ctx,
-                runtime_events,
-                tool_registry,
-                max_loops=getattr(ctx.valves, "MAX_FUNCTION_CALL_LOOPS", 10),
-                function_calls_supported=function_calls_supported,
-            )
-            runner_state = runner.state
-
-            usage_summary = loop_result.usage or runner_state.usage_summary or {}
-            tokens_in = usage_summary.get("input_tokens")
-            tokens_out = usage_summary.get("output_tokens")
-            respond_time = perf_counter() - start_time
-            summary_kwargs = {
-                "status": "error" if loop_result.error_message else "ok",
-                "model": body.model,
-                "duration_sec": respond_time,
-                "tool_calls": runner_state.tool_calls_executed,
-                "citations": len(loop_result.citations),
-                "input_tokens": tokens_in,
-                "output_tokens": tokens_out,
-            }
-            if loop_result.error_message:
-                summary_kwargs["last_error"] = loop_result.error_message
-            self.logger.info(
-                "Streaming summary status=%(status)s model=%(model)s duration_sec=%(duration_sec).2f "
-                "tool_calls=%(tool_calls)d citations=%(citations)d "
-                "input_tokens=%(input_tokens)s output_tokens=%(output_tokens)s"
-                + (" last_error=%(last_error)s" if loop_result.error_message else ""),
-                summary_kwargs,
-            )
-        except ClientResponseError as exc:
-            await self._cancel_tasks(runner.state.thinking_tasks)
-            runner.state.has_error = True
-            runner.state.error_message = f"{exc.status} {exc.message}"
-            request_url = ""
-            try:
-                request_url = str(exc.request_info.real_url) if exc.request_info else ""
-            except Exception:
-                request_url = ""
-            self.logger.error(
-                "turn.error type=ClientResponseError status=%s url=%s message=%s",
-                exc.status,
-                request_url,
-                exc.message,
-            )
-            self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
-            await self._handle_stream_error(runtime_events, runner.state.error_message or "")
-            loop_result = TurnResult(
-                text="",
-                usage=None,
-                citations=runner.state.citations,
-                error_message=runner.state.error_message,
-            )
-        except Exception as exc:  # pragma: no cover
-            await self._cancel_tasks(runner.state.thinking_tasks)
-            runner.state.has_error = True
-            runner.state.error_message = str(exc)
-            self.logger.error("turn.error type=%s message=%s", type(exc).__name__, runner.state.error_message)
-            self._log_tool_summaries(body.tools or [], logging.ERROR, reason="request")
-            await self._handle_stream_error(runtime_events, runner.state.error_message or "")
-            loop_result = TurnResult(
-                text="",
-                usage=None,
-                citations=runner.state.citations,
-                error_message=runner.state.error_message,
-            )
-
-        # Finalize and emit completion
-        await self._emit_log_citation(runtime_events, loop_result.citations)
-        if not loop_result.text and not loop_result.error_message and runner.state.last_tool_result:
-            loop_result.text = runner.state.last_tool_result
-        usage_for_completion = (
-            loop_result.usage
-            or runner.state.usage_summary
-            or self._extract_usage_from_final_response(runner.state.completed_response or {})
-            or None
-        )
-        if runner.session:
-            await runner.session.emit_status("Done", done=True, hidden=False, require_previous=True)
-        completion_payload: dict[str, Any] = {"done": True}
-        if loop_result.error_message:
-            completion_payload["error"] = {"message": loop_result.error_message}
-        else:
-            completion_payload.update({"content": loop_result.text, "usage": usage_for_completion})
-        await runtime_events.chat_completion(completion_payload)
-
-        return TurnResult(
-            text=loop_result.text,
-            usage=usage_for_completion,
-            citations=loop_result.citations if loop_result.citations else [],
-            error_message=loop_result.error_message,
-        )
-
-    async def run_task_model(
-        self,
-        body: dict[str, Any],
-        valves: Any,
-    ) -> str:
-        return await run_task_model(self.client, body, valves)
-
-    async def emit_notification(
-        self,
-        events: RuntimeEvents | None,
-        content: str,
-        *,
-        level: Literal["info", "success", "warning", "error"] = "info",
-    ) -> None:
-        if not events:
-            return
-        await events.notification(content, level=level)
-
-    async def emit_error(
-        self,
-        events: RuntimeEvents | None,
-        error_obj: Exception | str,
-        *,
-        show_error_message: bool = True,
-        done: bool = False,
-    ) -> None:
-        if not show_error_message:
-            return
-        if not events:
-            return
-        await events.chat_completion({"error": {"message": str(error_obj)}, "done": done})
-
-    def _schedule_reasoning_statuses(
-        self, body: ResponseCreateParams, status_fn: Callable[[str], Awaitable[Any]]
-    ) -> list[asyncio.Task[Any]]:
-        if not supports("reasoning", body.model):
-            return []
-
-        async def _later(delay: float, msg: str) -> None:
-            await asyncio.sleep(delay)
-            await status_fn(msg)
-
-        tasks: list[asyncio.Task[Any]] = []
-        for delay, msg in [
-            (0, "Thinking…"),
-            (1.5, "Reading the user's question…"),
-            (4.0, "Gathering my thoughts…"),
-            (6.0, "Exploring possible responses…"),
-            (7.0, "Building a plan…"),
-        ]:
-            tasks.append(asyncio.create_task(_later(delay + random.uniform(0, 0.5), msg)))
-        return tasks
-
-    async def _cancel_tasks(self, tasks: list[asyncio.Task[Any]]) -> None:
-        if not tasks:
-            return
-        to_cancel = list(tasks)
-        tasks.clear()
-        for task in to_cancel:
-            task.cancel()
-        await asyncio.gather(*to_cancel, return_exceptions=True)
-
-    async def _emit_log_citation(
-        self,
-        events: RuntimeEvents | None,
-        emitted_citations: list[dict[str, Any]],
-    ) -> None:
-        session_id = OWUI_SESSION_ID.get()
-        if not session_id or not events or isinstance(events, NullRuntimeEvents):
-            return
-        logs = get_session_logs(session_id)
-        if not logs:
-            return
-        log_text = "\n".join(logs)
-        truncated = len(log_text) > 4000
-        self.logger.debug("Emitting log citation lines=%d truncated=%s", len(logs), truncated)
-        await events.citation(
-            {
-                "document": [log_text],
-                "metadata": [{"source": "Logs"}],
-                "source": {"name": "Logs"},
-            }
-        )
-        snippet = log_text if len(log_text) <= 4000 else log_text[-4000:]
-        emitted_citations.append(
-            {
-                "provider": "openai:logs",
-                "id": str(len(emitted_citations) + 1),
-                "title": "Logs",
-                "snippet": snippet,
-                "metadata": {
-                    "source": "Logs",
-                    "total_lines": len(logs),
-                    "truncated": len(snippet) < len(log_text),
-                },
-            }
-        )
-        clear_session_logs(session_id)
-
-    def _sanitize_output_items(self, items: list[dict[str, Any]], *, store: bool | None) -> list[dict[str, Any]]:
-        """Strip server-side IDs when store=False to avoid lookups on replay."""
-
-        if store is not False:
-            return [item for item in items if isinstance(item, dict)]
-
-        cleaned: list[dict[str, Any]] = []
-        for item in items:
-            if isinstance(item, dict):
-                clone = dict(item)
-                clone.pop("id", None)
-                cleaned.append(clone)
-        return cleaned
-
-    def _extract_usage_from_final_response(self, final_response: dict[str, Any]) -> dict[str, Any]:
-        if "usage" in final_response:
-            usage = final_response.get("usage")
-            return usage if isinstance(usage, dict) else {}
-
-        response_payload = final_response.get("response")
-        if isinstance(response_payload, dict):
-            usage = response_payload.get("usage")
-            if isinstance(usage, dict):
-                return usage
-
-        return {}
-
-    async def _handle_stream_error(
-        self,
-        events: RuntimeEvents | None,
-        message: str,
-    ) -> None:
-        self.logger.error("Streaming error: %s", message)
-        if events:
-            await events.chat_completion({"error": {"message": message}, "done": False})
-
-    def _log_tool_summaries(
-        self,
-        tools: list[dict[str, Any]],
-        level: int,
-        *,
-        reason: str,
-    ) -> None:
-        if not self.logger.isEnabledFor(level):
-            return
-        summaries = tool_summaries_for_log(tools)
-        if not summaries:
-            self.logger.log(level, "%s.tools count=0", reason)
-            return
-        self.logger.log(
-            level,
-            "%s.tools count=%d summary=%s",
-            reason,
-            len(tools),
-            "; ".join(summaries),
-        )
-
-    async def _stream_response(
-        self,
-        session: _StreamSession,
-        body: ResponseCreateParams,
-        valves: Any,
-    ) -> None:
-        async for event in self.client.stream(
-            body.model_dump(exclude_none=True),
-            api_key=valves.API_KEY,
-            base_url=valves.BASE_URL,
-            typed=True,
-        ):
-            if await session.handle_event(event):
+            tool_calls = self._extract_tool_calls(response, cfg)
+            if not tool_calls:
                 break
 
-    def _status_from_output_item(self, item: dict[str, Any]) -> str | None:
-        """Return a user-facing status string for a completed output item."""
+            if cfg.MAX_TOOL_CALLS is not None and (
+                state.tool_calls_executed + len(tool_calls) > cfg.MAX_TOOL_CALLS
+            ):
+                await events.status(
+                    f"Tool call limit ({cfg.MAX_TOOL_CALLS}) reached. Stopping further tool calls.",
+                    done=False,
+                )
+                break
 
-        item_type = item.get("type")
-        if not item_type:
+            tool_results = await tool_executor.execute(tool_calls)
+            state.tool_calls_executed += len(tool_results)
+            items = self._tool_results_to_output_items(tool_results)
+            for item in items:
+                self._record_structured_item(item, state, cfg)
+            request.input = (request.input or []) + items
+
+        final_text = state.assistant_internal_text
+        items_to_persist = [
+            item for item in state.structured_items if _should_persist_item(item, cfg)
+        ]
+        final_text = self._history_manager.persist_items_for_message(
+            chat_key=history_key,
+            message_id=str(ctx.metadata.get("message_id", "")),
+            items=items_to_persist,
+            model_id=ctx.model_id,
+            openwebui_model_id=str(ctx.metadata.get("owui_model_id", "")),
+            current_assistant_text=final_text,
+            marker_placeholder=MARKER_PLACEHOLDER,
+        )
+
+        result = TurnResult(
+            text=final_text,
+            usage=state.usage,
+            citations=list(state.citations),
+            error=state.error_message,
+        )
+
+        await events.chat_completion({
+            "content": state.assistant_visible_text,
+            "usage": state.usage,
+            "error": state.error_message,
+            "done": True,
+        })
+        await self._emit_log_citation(ctx, state, events)
+        return result
+
+    async def run_task(self, request: ResponsesRequest, ctx: TurnContext) -> str:
+        request.stream = False
+        request.store = False
+        request.tools = None
+        request.include = None
+        response = await self._client.create_response(
+            request,
+            base_url=ctx.runtime_config.BASE_URL,
+            api_key=ctx.runtime_config.API_KEY,
+        )
+        try:
+            outputs = response.get("output") or []
+            text_blocks = []
+            for item in outputs:
+                if item.get("type") == "output_text":
+                    content = item.get("content") or []
+                    if isinstance(content, str):
+                        text_blocks.append(str(content))
+                    else:
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "output_text":
+                                text_blocks.append(str(block.get("text", "")))
+                if item.get("type") == "message":
+                    for block in item.get("content", []):
+                        if isinstance(block, dict) and block.get("type") in {"text", "output_text"}:
+                            text_blocks.append(str(block.get("text", "")))
+            return "".join(text_blocks)
+        except Exception:
+            return json.dumps(response)
+
+    async def _stream_single_response(
+        self,
+        *,
+        request: ResponsesRequest,
+        ctx: TurnContext,
+        state: TurnState,
+        events: RuntimeEvents,
+        base_url: str,
+        api_key: str,
+    ) -> dict[str, Any] | None:
+        response_payload: dict[str, Any] | None = None
+        async for event in self._client.stream_responses(request, base_url=base_url, api_key=api_key):
+            response_payload = await self._handle_event(event, state, events, ctx)
+            if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent)):
+                break
+        return response_payload
+
+    async def _handle_event(
+        self,
+        event: ResponseEvent,
+        state: TurnState,
+        events: RuntimeEvents,
+        ctx: TurnContext,
+    ) -> dict[str, Any] | None:
+        if isinstance(event, ResponseOutputTextDeltaEvent):
+            delta = event.delta or ""
+            if delta:
+                state.assistant_visible_text += delta
+                state.assistant_internal_text += delta
+                await events.delta(delta)
             return None
 
-        if item_type == "function_call":
-            name = item.get("name", "tool")
-            try:
-                arguments = json.loads(item.get("arguments") or "{}")
-                args_formatted = ", ".join(f"{k}={json.dumps(v)}" for k, v in arguments.items())
-                return f"Running the {name} tool…\n{name}({args_formatted})"
-            except Exception:
-                return f"Running the {name} tool…"
+        if isinstance(event, ResponseReasoningSummaryTextDoneEvent):
+            if event.text:
+                await events.status(event.text, done=False)
+            return None
 
-        if item_type == "web_search_call":
-            action = item.get("action") or {}
-            if action.get("type") == "search":
-                query = action.get("query")
-                return f"Searching\n{query}" if query else "Searching the web…"
-            return "Web search in progress…"
+        if isinstance(event, ResponseOutputTextAnnotationAddedEvent):
+            annotation = event.annotation or {}
+            if annotation.get("type") == "url_citation":
+                url = annotation.get("url")
+                if not url:
+                    return None
 
-        if item_type == "file_search_call":
-            return "Let me skim those files…"
-        if item_type == "image_generation_call":
-            return "Let me create that image…"
-        if item_type == "mcp_call":
-            return "Querying the MCP server…"
-        if item_type == "code_interpreter_call":
-            return "Running code interpreter…"
+                url = _strip_tracking_params(url)
+                source_name = _host_from_url(url) or "source"
+                title = annotation.get("title") or url
+                if url not in state.citation_ordinals:
+                    state.citation_ordinals[url] = len(state.citation_ordinals) + 1
+                ordinal = state.citation_ordinals[url]
+                citation = Citation(
+                    source_name=source_name,
+                    url=url,
+                    document=[title],
+                    metadata={
+                        "source": url,
+                        "date_accessed": datetime.date.today().isoformat(),
+                        "ordinal": ordinal,
+                    },
+                )
+                state.citations.append(citation)
+                payload = {
+                    "source": {"name": citation.source_name, "url": citation.url},
+                    "document": citation.document,
+                    "metadata": [citation.metadata],
+                }
+                await events.source(payload)
+                await events.citation(payload)
+            return None
+
+        if isinstance(event, (ResponseOutputItemAddedEvent, ResponseOutputItemDoneEvent)):
+            item = event.item or {}
+            if item:
+                self._record_structured_item(item, state, ctx.runtime_config)
+            return None
+
+        if isinstance(event, ResponseCompletedEvent):
+            state.response_text = json.dumps(event.response)
+            return event.response
+
+        if isinstance(event, ResponseIncompleteEvent):
+            state.error_message = event.error_message or "Response incomplete"
+            return event.response or {}
+
+        if isinstance(event, ResponseFailedEvent):
+            state.error_message = event.error_message or "Response failed"
+            return event.response or {}
 
         return None
 
-    def _parse_reasoning_summary(self, text_val: str) -> tuple[str, str]:
-        """Extract a title/content pair from reasoning summary text."""
-
-        title = "Thinking…"
-        content = text_val
-        if "**" in text_val:
-            try:
-                parts = text_val.split("**")
-                bold_segments = [parts[i] for i in range(1, len(parts), 2)]
-                if bold_segments:
-                    title = bold_segments[-1].strip()
-                    content = text_val.replace(f"**{bold_segments[-1]}**", "").strip()
-            except Exception:
-                pass
-        return title, content
-
-
-__all__ = ["ResponsesEngine", "TurnResult"]
-
-# === adapters/openwebui/events.py ===
-"""Minimal Open WebUI event helpers matching the documented event catalog."""
-
-import asyncio
-import inspect
-from typing import Any, Awaitable, Callable, Literal
-
-from pydantic import BaseModel, ConfigDict
-
-EventEmitterFn = Callable[[dict[str, Any]], Awaitable[Any] | Any]
-EventCallerFn = Callable[[dict[str, Any]], Awaitable[Any] | Any]
-
-
-# -------------------------
-# Event payload definitions
-# -------------------------
-
-
-class StatusEventData(BaseModel):
-    """Status/progress updates shown in the chat UI."""
-
-    model_config = ConfigDict(extra="allow")
-
-    description: str
-    done: bool = False
-    hidden: bool = False
-
-
-class NotificationEventData(BaseModel):
-    """Toast notification payload consumed by the UI."""
-
-    type: Literal["info", "success", "error", "warning"]
-    content: str
-
-
-class FileModelResponse(BaseModel):
-    """Open WebUI file object (mirrors backend FileModelResponse used by the UI)."""
-
-    model_config = ConfigDict(extra="allow")
-
-    id: str
-    user_id: str
-    hash: str | None = None
-
-    filename: str
-    data: dict[str, Any] | None = None
-    meta: dict[str, Any]
-
-    created_at: int
-    updated_at: int
-
-
-class MessageDeltaEventData(BaseModel):
-    """Streaming/append content for an in-progress message."""
-
-    model_config = ConfigDict(extra="allow")
-
-    content: str
-
-
-class ChatMessageEventData(BaseModel):
-    """Complete replacement content for a message."""
-
-    model_config = ConfigDict(extra="allow")
-
-    content: str
-
-
-class FilesEventData(BaseModel):
-    """Files attached to a message; UI expects a list of FileModelResponse objects."""
-
-    files: list[FileModelResponse]
-
-
-class ChatTitleEventData(BaseModel):
-    """Conversation title update."""
-
-    title: str
-
-
-class ChatTagsEventData(BaseModel):
-    """Conversation tags update."""
-
-    tags: list[str]
-
-
-class SourceEventData(BaseModel):
-    """Source/citation payload; UI appends to message sources."""
-
-    model_config = ConfigDict(extra="allow")
-
-
-class ChatCompletionEventData(BaseModel):
-    """
-    Payload for ``chat:completion`` events (custom/implementation-defined).
-
-    Frontend reads ``done`` and optionally ``content``/``title`` when ``done`` is true
-    to trigger toasts/notifications; other fields are passed through.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    done: bool | None = None
-    content: str | None = None
-    title: str | None = None
-    usage: dict[str, Any] | None = None
-
-
-class ConfirmationEventData(BaseModel):
-    """Confirmation dialog payload returned via __event_call__."""
-
-    title: str
-    message: str
-
-
-class InputEventData(BaseModel):
-    """Input dialog payload returned via __event_call__."""
-
-    title: str
-    message: str
-    placeholder: str | None = None
-    value: str | None = None
-
-
-class ExecuteEventData(BaseModel):
-    """Client-side code execution payload returned via __event_call__."""
-
-    code: str
-
-
-class ExecutePythonEventData(BaseModel):
-    """
-    Non-documented type used via ``__event_call__``: ``execute:python``.
-
-    Backend (`utils/middleware.py`) invokes __event_call__ with ``id``, ``code``, and
-    optional ``session_id``; the frontend runs the code client-side.
-    """
-
-    id: str
-    code: str
-    session_id: str
-
-
-class ExecuteToolEventData(BaseModel):
-    """
-    Non-documented type used via ``__event_call__``: ``execute:tool``.
-
-    Backend (`utils/middleware.py`) invokes __event_call__ with these fields to run a tool in the frontend.
-    """
-
-    id: str
-    name: str
-    params: dict[str, Any] = {}
-    server: dict[str, Any] = {}
-    session_id: str
-    model_config = ConfigDict(extra="allow")
-
-
-class RequestChatCompletionEventData(BaseModel):
-    """
-    Non-documented type used via ``__event_call__``: ``request:chat:completion``.
-
-    Backend (`utils/chat.py`) calls __event_call__ with this so the frontend performs a chat completion
-    (direct connection flow). The frontend issues the completion request and streams over the provided channel.
-    """
-
-    session_id: str
-    channel: str
-    form_data: dict[str, Any]
-    model: dict[str, Any]
-
-
-def _to_dict(obj: BaseModel | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(obj, BaseModel):
-        return obj.model_dump()
-    return obj
-
-
-async def _maybe_await(value: Any) -> Any:
-    if asyncio.isfuture(value) or inspect.isawaitable(value):
-        return await value
-    return value
-
-
-# ---------------
-# Event emitting
-# ---------------
-
-
-class EventEmitter:
-    """Thin wrapper around ``__event_emitter__`` for documented chat events."""
-
-    def __init__(self, event_emitter: EventEmitterFn | None) -> None:
-        self.event_emitter = event_emitter
-
-    async def _emit(self, event_type: str, data: BaseModel | dict[str, Any]) -> dict[str, Any]:
-        payload = {"type": event_type, "data": _to_dict(data)}
-        if self.event_emitter:
-            await _maybe_await(self.event_emitter(payload))
-        return payload
-
-    # docs: type = "status"
-    async def status(self, description: str, *, done: bool = False, hidden: bool = False) -> dict[str, Any]:
-        return await self._emit("status", StatusEventData(description=description, done=done, hidden=hidden))
-
-    # docs: type = "chat:message:delta"
-    async def delta(self, content: str) -> dict[str, Any]:
-        return await self._emit("chat:message:delta", MessageDeltaEventData(content=content))
-
-    # docs: type = "message"
-    async def message(self, content: str) -> dict[str, Any]:
-        return await self._emit("message", MessageDeltaEventData(content=content))
-
-    # docs: type = "chat:message"
-    async def replace(self, content: str) -> dict[str, Any]:
-        return await self._emit("chat:message", ChatMessageEventData(content=content))
-
-    # docs: type = "files" (alias: "chat:message:files")
-    async def files(self, files: list[FileModelResponse] | list[dict[str, Any]]) -> dict[str, Any]:
-        normalized = [f if isinstance(f, FileModelResponse) else FileModelResponse(**f) for f in files]
-        return await self._emit("files", FilesEventData(files=normalized))
-
-    # docs: type = "chat:title"
-    async def title(self, title: str | ChatTitleEventData) -> dict[str, Any]:
-        payload = title.model_dump() if isinstance(title, ChatTitleEventData) else {"title": title}
-        return await self._emit("chat:title", payload)
-
-    # docs: type = "chat:tags"
-    async def tags(self, tags: list[str] | ChatTagsEventData) -> dict[str, Any]:
-        payload = tags.model_dump() if isinstance(tags, ChatTagsEventData) else {"tags": tags}
-        return await self._emit("chat:tags", payload)
-
-    # docs: type = "source"
-    async def source(self, data: SourceEventData | dict[str, Any]) -> dict[str, Any]:
-        payload = data if isinstance(data, SourceEventData) else SourceEventData(**data)
-        return await self._emit("source", payload)
-
-    # docs: type = "citation"
-    async def citation(self, data: SourceEventData | dict[str, Any]) -> dict[str, Any]:
-        payload = data if isinstance(data, SourceEventData) else SourceEventData(**data)
-        return await self._emit("citation", payload)
-
-    # docs: type = "notification"
-    async def notification(
+    def _merge_usage(self, state: TurnState, response: dict[str, Any]) -> None:
+        usage = _extract_usage(response)
+        if usage:
+            if state.usage is None:
+                state.usage = dict(usage)
+            else:
+                for key, value in usage.items():
+                    try:
+                        state.usage[key] = state.usage.get(key, 0) + value
+                    except Exception:
+                        state.usage[key] = value
+
+    def _extract_tool_calls(self, response: dict[str, Any], cfg: RuntimeConfig) -> list[ToolCall]:
+        output_items = response.get("output") or []
+        calls: list[ToolCall] = []
+        for item in output_items:
+            if item.get("type") != "function_call":
+                continue
+            call_id = str(item.get("call_id") or item.get("id") or "")
+            name = str(item.get("name") or "")
+            arguments = item.get("arguments")
+            arguments_json = json.dumps(arguments) if arguments is not None else "{}"
+            if call_id and name:
+                calls.append(ToolCall(call_id=call_id, name=name, arguments_json=arguments_json))
+        return calls
+
+    def _tool_results_to_output_items(self, results: list[ToolResult]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for result in results:
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": result.call_id,
+                    "output": result.output,
+                    "status": result.status,
+                    "error": result.error_message,
+                }
+            )
+        return items
+
+    async def _emit_routing_status(self, router_result: dict[str, Any], events: RuntimeEvents) -> None:
+        model = router_result.get("model")
+        effort = router_result.get("reasoning_effort")
+        explanation = router_result.get("reason") or router_result.get("explanation")
+        parts = [str(model or "")]
+        if effort:
+            parts.append(f"effort={effort}")
+        if explanation:
+            parts.append(str(explanation))
+        message = ": ".join(filter(None, [", ".join(filter(None, parts[:-1])), parts[-1] if len(parts) > 1 else None]))
+        await events.status(message or "Routing decision applied", done=False)
+
+    def _record_structured_item(self, item: dict[str, Any], state: TurnState, cfg: RuntimeConfig) -> None:
+        state.structured_items.append(item)
+        if _should_persist_item(item, cfg):
+            state.assistant_internal_text += MARKER_PLACEHOLDER
+
+
+    async def _emit_log_citation(
         self,
-        content: str,
-        *,
-        level: Literal["info", "success", "error", "warning"] = "info",
-    ) -> dict[str, Any]:
-        return await self._emit("notification", NotificationEventData(type=level, content=content))
+        ctx: TurnContext,
+        state: TurnState,
+        events: RuntimeEvents,
+    ) -> None:
+        session_id = ctx.metadata.get("session_id") or OWUI_SESSION_ID.get()
+        if not session_id:
+            return
 
-    # docs: type = "chat:completion"
-    async def chat_completion(self, data: ChatCompletionEventData) -> dict[str, Any]:
-        return await self._emit("chat:completion", data)
+        logs = consume_session_logs(session_id)
+        if not logs:
+            return
 
-
-# -----------------
-# Interactive calls
-# -----------------
-
-
-class EventCall:
-    """Wrapper around ``__event_call__`` for documented and non-documented interactive events."""
-
-    def __init__(self, event_call: EventCallerFn | None = None) -> None:
-        self._call = event_call
-
-    async def _send(self, event_type: str, data: BaseModel | dict[str, Any]) -> Any:
-        if not self._call:
-            raise RuntimeError("__event_call__ not provided")
-        payload = {"type": event_type, "data": _to_dict(data)}
-        result = self._call(payload)
-        return await _maybe_await(result)
-
-    # docs: type = "input"
-    async def input(
-        self,
-        title: str,
-        message: str,
-        *,
-        placeholder: str | None = None,
-        default: str | None = None,
-    ) -> Any:
-        data = InputEventData(title=title, message=message, placeholder=placeholder, value=default)
-        result = await self._send("input", data)
-        if isinstance(result, dict) and "value" in result:
-            return result["value"]
-        return result
-
-    # docs: type = "confirmation"
-    async def confirmation(self, title: str, message: str) -> Any:
-        data = ConfirmationEventData(title=title, message=message)
-        result = await self._send("confirmation", data)
-        if isinstance(result, dict) and "value" in result:
-            return result["value"]
-        return result
-
-    # docs: type = "execute"
-    async def execute(self, code: str) -> Any:
-        data = ExecuteEventData(code=code)
-        return await self._send("execute", data)
-
-    # Undocumented: type = "execute:python"
-    async def execute_python(self, data: ExecutePythonEventData | dict[str, Any]) -> Any:
-        payload = data if isinstance(data, ExecutePythonEventData) else ExecutePythonEventData(**data)
-        return await self._send("execute:python", payload)
-
-    # Undocumented: type = "execute:tool"
-    async def execute_tool(
-        self,
-        data: ExecuteToolEventData | dict[str, Any],
-    ) -> Any:
-        payload = data if isinstance(data, ExecuteToolEventData) else ExecuteToolEventData(**data)
-        return await self._send("execute:tool", payload)
-
-    # Undocumented: type = "request:chat:completion"
-    async def request_chat_completion(
-        self,
-        data: RequestChatCompletionEventData | dict[str, Any],
-    ) -> Any:
-        payload = data if isinstance(data, RequestChatCompletionEventData) else RequestChatCompletionEventData(**data)
-        return await self._send("request:chat:completion", payload)
+        source_name = "Error Logs" if state.error_message else "Logs"
+        log_text = "\n".join(logs)
+        truncated = len(log_text) > 4000
+        self._logger.debug(
+            "Emitting log citation lines=%d truncated=%s", len(logs), truncated
+        )
+        await events.citation(
+            {
+                "document": [log_text],
+                "metadata": [
+                    {
+                        "source": source_name,
+                        "total_lines": len(logs),
+                        "truncated": truncated,
+                    }
+                ],
+                "source": {"name": source_name},
+            }
+        )
 
 
-__all__ = [
-    "EventEmitterFn",
-    "EventCallerFn",
-    "EventEmitter",
-    "EventCall",
-    "StatusEventData",
-    "NotificationEventData",
-    "FileModelResponse",
-    "MessageDeltaEventData",
-    "ChatMessageEventData",
-    "FilesEventData",
-    "ChatTitleEventData",
-    "ChatTagsEventData",
-    "SourceEventData",
-    "ChatCompletionEventData",
-    "ConfirmationEventData",
-    "InputEventData",
-    "ExecuteEventData",
-    # Non-documented frontend-handled types (used via __event_call__)
-    "ExecutePythonEventData",
-    "ExecuteToolEventData",
-    "RequestChatCompletionEventData",
-]
+def _should_persist_item(item: dict[str, Any], cfg: RuntimeConfig) -> bool:
+    item_type = item.get("type")
+    if item_type in {"function_call", "function_call_output", "code_interpreter_call"}:
+        return bool(cfg.PERSIST_TOOL_RESULTS)
+    if item_type == "reasoning":
+        return cfg.PERSIST_REASONING_TOKENS == "conversation"
+    return False
 
-# === adapters/openwebui/store.py ===
-"""Persistence helpers for storing Responses items in OpenWebUI."""
 
-import secrets
-from datetime import datetime, timezone
+def _extract_usage(response: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(response, dict):
+        return {}
+
+    usage = response.get("usage")
+    if isinstance(usage, dict):
+        return usage
+
+    nested = response.get("response")
+    if isinstance(nested, dict):
+        nested_usage = nested.get("usage")
+        if isinstance(nested_usage, dict):
+            return nested_usage
+
+    return {}
+
+
+def _strip_tracking_params(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.query:
+        return url
+    query_params = parsed.query.split("&")
+    filtered = [
+        param
+        for param in query_params
+        if param
+        and not param.lower().startswith("utm_")
+        and not param.lower().startswith("ref=")
+    ]
+    return urlunparse(parsed._replace(query="&".join(filtered)))
+
+
+def _host_from_url(url: str) -> str | None:
+    try:
+        return urlparse(url).hostname
+    except Exception:
+        return None
+
+
+__all__ = ["ResponsesEngine"]
+
+# === openwebui/store.py ===
+"""Open WebUI-backed history store implementation.
+
+This adapter owns the ``chat.chat["openai_responses_pipe"]`` layout and
+implements the :class:`~openai_responses_manifold.domain.history.HistoryStore`
+protocol so the domain layer can persist and reload structured items.
+"""
+
+import time
 from typing import Any
 
-from open_webui.models.chats import Chats
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.markers import generate_ulid
+# from openai_responses_manifold.domain.history import HistoryStore
 
-_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
+class OpenWebUIHistoryStore(HistoryStore):
+    """Persist history items using Open WebUI's ``Chats`` model."""
 
-class ItemStore:
-    """Adapter around ``open_webui.models.chats.Chats``."""
+    VERSION = 3
 
-    def __init__(self, *, store_key: str = "openai_responses_pipe") -> None:
-        self.store_key = store_key
+    def __init__(self, chats_model: Any | None = None):
+        if chats_model is not None:
+            self._Chats = chats_model
+        else:
+            try:
+                self._Chats = self._import_chats()
+            except Exception:  # pragma: no cover - defensive fallback for missing deps
+                self._Chats = None
+
+    def _import_chats(self):  # pragma: no cover - exercised via injection in tests
+        from open_webui.models.chats import Chats
+
+        return Chats
 
     def save_items(
         self,
-        chat_id: str,
+        chat_key: dict,
         message_id: str,
-        items: list[dict[str, Any]],
+        items: list[dict],
         model_id: str,
     ) -> list[str]:
-        """
-        Persist items and return the generated ULIDs.
-
-        Note: ``model_id`` is the OpenWebUI model identifier (not the underlying OpenAI model id).
-        Items are filtered by this id on retrieval.
-        """
-
-        if not items:
+        if not self._Chats:
+            return []
+        chat_id = chat_key.get("chat_id") if isinstance(chat_key, dict) else None
+        if not chat_id:
             return []
 
-        chat_model = Chats.get_chat_by_id(chat_id)
-        if not chat_model:
+        chat = self._Chats.get_chat_by_id(chat_id)
+        if not chat:
             return []
 
-        pipe_root = chat_model.chat.setdefault(self.store_key, {"__v": 3})
+        pipe_root = chat.chat.setdefault("openai_responses_pipe", {"__v": self.VERSION})
         items_store = pipe_root.setdefault("items", {})
         messages_index = pipe_root.setdefault("messages_index", {})
-        message_bucket = messages_index.setdefault(
-            message_id,
-            {"role": "assistant", "done": True, "item_ids": []},
+        bucket = messages_index.setdefault(
+            message_id, {"role": "assistant", "done": True, "item_ids": []}
         )
 
-        now = int(datetime.now(timezone.utc).timestamp())
-        stored_ids: list[str] = []
+        now = int(time.time())
+        created: list[str] = []
         for payload in items:
-            item_id = _generate_item_id()
-            items_store[item_id] = {
+            ulid = generate_ulid()
+            items_store[ulid] = {
                 "model": model_id,
                 "created_at": now,
                 "payload": payload,
                 "message_id": message_id,
             }
-            message_bucket["item_ids"].append(item_id)
-            stored_ids.append(item_id)
+            bucket.setdefault("item_ids", []).append(ulid)
+            created.append(ulid)
 
-        Chats.update_chat_by_id(chat_id, chat_model.chat)
-        return stored_ids
+        self._Chats.update_chat_by_id(chat_id, chat.chat)
+        return created
 
     def load_items(
-        self,
-        chat_id: str,
-        item_ids: list[str],
-        *,
-        model_id: str | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        """Fetch persisted items by ULID, optionally filtered by model id."""
-
-        if not item_ids:
+        self, chat_key: dict, item_ids: list[str], model_id: str | None = None
+    ) -> dict[str, dict]:
+        if not self._Chats:
             return {}
-        chat_model = Chats.get_chat_by_id(chat_id)
-        if not chat_model:
+        chat_id = chat_key.get("chat_id") if isinstance(chat_key, dict) else None
+        if not chat_id:
             return {}
 
-        items_store = chat_model.chat.get(self.store_key, {}).get("items", {})
-        lookup: dict[str, dict[str, Any]] = {}
-        for item_id in item_ids:
-            item = items_store.get(item_id)
+        chat = self._Chats.get_chat_by_id(chat_id)
+        if not chat:
+            return {}
+
+        items_store = chat.chat.get("openai_responses_pipe", {}).get("items", {})
+        result: dict[str, dict] = {}
+        for ulid in item_ids:
+            item = items_store.get(ulid)
             if not item:
                 continue
-            if model_id and item.get("model") != model_id:
+            if model_id is not None and item.get("model") != model_id:
                 continue
-            payload = item.get("payload")
-            if isinstance(payload, dict):
-                lookup[item_id] = payload
-        return lookup
+            result[ulid] = item.get("payload") or {}
+        return result
 
 
-def _generate_item_id(length: int = 16) -> str:
-    return "".join(secrets.choice(_CROCKFORD) for _ in range(length))
+__all__ = ["OpenWebUIHistoryStore"]
 
+# === openwebui/events.py ===
+"""Event adapter that maps domain runtime events to Open WebUI."""
 
-__all__ = ["ItemStore"]
-
-# === adapters/openwebui/request_builder.py ===
-"""Build ResponseCreateParams from OpenWebUI-style inputs."""
-
-from typing import Any
+import inspect
+from typing import Any, Literal
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core.logging import get_logger
-# from openai_responses_manifold.adapters.openai.requests import ResponseCreateParams
-# from openai_responses_manifold.adapters.openwebui.store import ItemStore
-# from openai_responses_manifold.domain.history import HistoryResult, HistoryService, extract_system_instructions
-# from openai_responses_manifold.domain.turn_context import TurnContext
-
-logger = get_logger(__name__)
-
-
-async def build_responses_body(
-    owui_request: dict[str, Any],
-    *,
-    ctx: TurnContext,
-    item_store: ItemStore,
-) -> ResponseCreateParams:
-    """
-    Convert an OpenWebUI-style payload plus valves/metadata into a validated ResponsesBody.
-    """
-
-    payload: dict[str, Any] = {"stream": True, "store": False}
-
-    valves = ctx.valves
-    metadata = ctx.metadata
-
-    default_model = getattr(valves, "MODEL_ID", "") or ""
-    default_model = default_model.split(",")[0].strip() if default_model else ""
-    model_id = owui_request.get("model") or (default_model or None)
-    if not model_id:
-        raise ValueError("model is required for ResponsesBody")
-    payload["model"] = model_id
-    payload["truncation"] = owui_request.get("truncation", getattr(valves, "TRUNCATION", None))
-    payload["parallel_tool_calls"] = owui_request.get(
-        "parallel_tool_calls", getattr(valves, "PARALLEL_TOOL_CALLS", True)
-    )
-    if "temperature" in owui_request:
-        payload["temperature"] = owui_request.get("temperature")
-    if "top_p" in owui_request:
-        payload["top_p"] = owui_request.get("top_p")
-    if "max_output_tokens" in owui_request:
-        payload["max_output_tokens"] = owui_request.get("max_output_tokens")
-    elif "max_tokens" in owui_request:
-        payload["max_output_tokens"] = owui_request.get("max_tokens")
-
-    passthrough_keys = [
-        "tool_choice",
-        "store",
-        "background",
-        "include",
-        "metadata",
-        "text",
-        "service_tier",
-        "prompt_cache_key",
-        "prompt_cache_retention",
-        "previous_response_id",
-        "conversation",
-        "prompt",
-    ]
-    for key in passthrough_keys:
-        if key in owui_request:
-            payload[key] = owui_request[key]
-
-    raw_stream_options = owui_request.get("stream_options")
-    if isinstance(raw_stream_options, dict):
-        stream_options: dict[str, Any] = {}
-        if "include_obfuscation" in raw_stream_options:
-            stream_options["include_obfuscation"] = raw_stream_options.get("include_obfuscation")
-        if stream_options:
-            payload["stream_options"] = stream_options
-
-    messages = owui_request.get("messages") or []
-    provided_input = owui_request.get("input")
-    instructions = owui_request.get("instructions")
-    history_result: HistoryResult | None = None
-
-    if provided_input is None and messages:
-        history_service = HistoryService(item_store)
-        history_result = history_service.build_input_and_instructions(messages, ctx=ctx)
-        provided_input = history_result.input_items
-
-    if instructions is None:
-        if history_result:
-            instructions = history_result.instructions
-        else:
-            instructions = extract_system_instructions(messages)
-
-    payload["input"] = provided_input
-    if payload["input"] is None:
-        raise ValueError("input must be provided to build a ResponsesBody")
-
-    if instructions and instructions.strip():
-        payload["instructions"] = instructions
-
-    effort = owui_request.get("reasoning_effort")
-    if effort:
-        reasoning = payload.get("reasoning") or {}
-        reasoning["effort"] = effort
-        payload["reasoning"] = reasoning
-
-    if "max_tool_calls" in owui_request:
-        payload["max_tool_calls"] = owui_request.get("max_tool_calls")
-    elif getattr(valves, "MAX_TOOL_CALLS", None) is not None:
-        payload["max_tool_calls"] = valves.MAX_TOOL_CALLS
-
-    if ctx.user_identifier:
-        payload["user"] = ctx.user_identifier
-    elif metadata.get("user_id"):
-        payload["user"] = metadata["user_id"]
-
-    try:
-        responses_body = ResponseCreateParams.model_validate(payload)
-    except Exception as exc:
-        logger.error("Failed to build ResponseCreateParams: %s payload_keys=%s", exc, list(payload.keys()))
-        raise
-
-    return responses_body
-
-
-__all__ = ["build_responses_body"]
-
-# === adapters/openwebui/runtime_events.py ===
-"""Adapter that maps the domain RuntimeEvents protocol to Open WebUI's emitter."""
-
-from typing import Any
-
-# [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.domain.events import RuntimeEvents
-
-# [build.py] internal imports removed in monolith:
-# from .events import EventEmitter
+# from openai_responses_manifold.domain.types import RuntimeEvents
 
 
 class OpenWebUIRuntimeEvents(RuntimeEvents):
-    def __init__(self, emitter: EventEmitter) -> None:
+    """Wrap ``__event_emitter__`` with the runtime events protocol."""
+
+    def __init__(self, emitter: Any):
         self._emitter = emitter
 
-    async def status(self, description: str, *, done: bool = False, hidden: bool = False) -> None:
-        await self._emitter.status(description, done=done, hidden=hidden)
+    async def _emit(self, payload: dict[str, Any]) -> None:
+        if not self._emitter:
+            return
+        if inspect.iscoroutinefunction(self._emitter):
+            await self._emitter(payload)
+            return
+        result = self._emitter(payload)
+        if inspect.isawaitable(result):
+            await result
+
+    async def status(self, description: str, *, done: bool = False, **extra: Any) -> None:
+        await self._emit({"type": "status", "data": {"description": description, "done": done, **extra}})
 
     async def delta(self, content: str) -> None:
-        await self._emitter.delta(content)
+        await self._emit({"type": "chat:message", "data": {"content": content}})
 
     async def replace(self, content: str) -> None:
-        await self._emitter.replace(content)
+        await self._emit({"type": "chat:message", "data": {"content": content}})
 
     async def citation(self, data: dict[str, Any]) -> None:
-        await self._emitter.citation(data)
+        await self._emit({"type": "citation", "data": data})
 
-    async def files(self, files: list[dict[str, Any]]) -> None:
-        await self._emitter.files(files)
+    async def source(self, data: dict[str, Any]) -> None:
+        await self._emit({"type": "source", "data": data})
 
     async def chat_completion(self, data: dict[str, Any]) -> None:
-        await self._emitter.chat_completion(data)
+        await self._emit({"type": "chat:completion", "data": data})
 
-    async def notification(self, content: str, *, level: str = "info") -> None:
-        await self._emitter.notification(content, level=level)
+    async def notification(
+        self,
+        content: str,
+        *,
+        level: Literal["info", "success", "warning", "error"] = "info",
+    ) -> None:
+        await self._emit({"type": "notification", "data": {"type": level, "content": content}})
 
 
 __all__ = ["OpenWebUIRuntimeEvents"]
 
-# === adapters/openwebui/pipe.py ===
-"""Open WebUI pipe implementation that delegates to the Responses engine."""
+# === openwebui/tools.py ===
+"""Open WebUI tool registry and executor wrappers."""
 
-import logging
-from collections.abc import Awaitable
-from typing import Any
-
-from open_webui.models.chats import Chats
-from open_webui.models.models import ModelForm, Models
+import asyncio
+import inspect
+import json
+from typing import Any, Iterable
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.config.settings import PipeValves, UserValves
-# from openai_responses_manifold.core.logging import get_logger, logging_context
-# from openai_responses_manifold.core.model_catalog import supports
-# from openai_responses_manifold.adapters.openai.client import OpenAIResponsesClient
-# from openai_responses_manifold.adapters.openai.requests import CompletionCreateParams
-# from openai_responses_manifold.adapters.openwebui.events import (
-#     EventCall,
-#     EventCallerFn,
-#     EventEmitter,
-#     EventEmitterFn,
+# from openai_responses_manifold.domain.tools import ToolDefinition, ToolExecutor, ToolRegistry
+# from openai_responses_manifold.domain.types import ToolCall, ToolResult
+
+
+def _normalize_parameters(schema: object) -> dict:
+    if isinstance(schema, dict):
+        return schema
+    return {"type": "object", "properties": {}}
+
+
+class OpenWebUIToolRegistry(ToolRegistry):
+    """Wrap ``__tools__`` registry into ``ToolDefinition`` objects."""
+
+    def __init__(self, registry: dict[str, Any]):
+        definitions: list[ToolDefinition] = []
+        for entry in (registry or {}).values():
+            spec = entry.get("spec") if isinstance(entry, dict) else None
+            if not isinstance(spec, dict):
+                continue
+            name = spec.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            definitions.append(
+                ToolDefinition(
+                    name=name,
+                    description=str(spec.get("description") or ""),
+                    parameters=_normalize_parameters(spec.get("parameters")),
+                    strict=False,
+                    source="registry",
+                )
+            )
+        self._definitions = {d.name: d for d in definitions}
+
+    def get(self, name: str) -> ToolDefinition | None:
+        return self._definitions.get(name)
+
+    def iter_definitions(self) -> Iterable[ToolDefinition]:
+        return list(self._definitions.values())
+
+
+class OpenWebUIToolExecutor(ToolExecutor):
+    """Execute tool calls using callables from ``__tools__``."""
+
+    def __init__(self, registry: dict[str, Any]):
+        callables: dict[str, Any] = {}
+        for entry in (registry or {}).values():
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("spec", {}).get("name") if isinstance(entry.get("spec"), dict) else None
+            fn = entry.get("callable")
+            if isinstance(name, str) and name and fn is not None:
+                callables[name] = fn
+        self._callables = callables
+
+    async def execute(self, calls: list[ToolCall]) -> list[ToolResult]:
+        results: list[ToolResult] = []
+        for call in calls:
+            fn = self._callables.get(call.name)
+            if not fn:
+                results.append(
+                    ToolResult(
+                        call_id=call.call_id,
+                        output="Tool not found",
+                        status="error",
+                        error_message="Tool not found",
+                    )
+                )
+                continue
+
+            try:
+                args = json.loads(call.arguments_json or "{}")
+            except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+                results.append(
+                    ToolResult(
+                        call_id=call.call_id,
+                        output=f"Invalid JSON arguments: {exc}",
+                        status="error",
+                        error_message=str(exc),
+                    )
+                )
+                continue
+
+            try:
+                if inspect.iscoroutinefunction(fn):
+                    value = await fn(**args)
+                else:
+                    value = await asyncio.to_thread(fn, **args)
+                output = json.dumps(value, default=str)
+                results.append(
+                    ToolResult(
+                        call_id=call.call_id,
+                        output=output,
+                        status="ok",
+                        error_message=None,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                results.append(
+                    ToolResult(
+                        call_id=call.call_id,
+                        output=f"Tool error: {exc}",
+                        status="error",
+                        error_message=str(exc),
+                    )
+                )
+        return results
+
+
+__all__ = ["OpenWebUIToolRegistry", "OpenWebUIToolExecutor"]
+
+# === openwebui/bridge.py ===
+"""Helpers that translate Open WebUI inputs into Responses requests."""
+
+import json
+from typing import Any, Tuple
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core import model_catalog
+# from openai_responses_manifold.core.config import RuntimeConfig
+# from openai_responses_manifold.domain.history import HistoryManager
+# from openai_responses_manifold.domain.types import TurnContext
+# from openai_responses_manifold.openai_api.types import ResponsesRequest
+
+
+def build_turn_context(
+    *,
+    pipe_valves,
+    user_valves,
+    runtime_cfg: RuntimeConfig,
+    __user__: dict | None,
+    __metadata__: dict | None,
+) -> TurnContext:
+    metadata = __metadata__ or {}
+    owui_model_id = metadata.get("model", {}).get("id") if isinstance(metadata.get("model"), dict) else None
+    model_id = model_catalog.base_model(owui_model_id or runtime_cfg.MODEL_ID)
+    features = model_catalog.features(model_id)
+    ctx_metadata = {
+        "session_id": metadata.get("session_id"),
+        "chat_id": metadata.get("chat_id"),
+        "message_id": metadata.get("message_id"),
+        "user_id": (__user__ or {}).get("id"),
+        "user_email": (__user__ or {}).get("email"),
+        "owui_model_id": owui_model_id,
+    }
+    return TurnContext(runtime_config=runtime_cfg, model_id=model_id, features=features, metadata=ctx_metadata)
+
+
+def map_completions_to_responses(
+    *,
+    body: dict,
+    ctx: TurnContext,
+    history_manager: HistoryManager,
+    history_key: dict,
+) -> Tuple[ResponsesRequest, list[dict], list[dict]]:
+    messages = body.get("messages") or []
+    input_items, instructions = history_manager.build_input_from_messages(
+        messages=messages,
+        chat_key=history_key,
+        model_id=ctx.model_id,
+        openwebui_model_id=ctx.metadata.get("owui_model_id"),
+    )
+
+    request = ResponsesRequest(
+        model=ctx.model_id,
+        input=input_items,
+        instructions=instructions,
+        stream=True,
+        store=True,
+        temperature=body.get("temperature"),
+        top_p=body.get("top_p"),
+        top_logprobs=body.get("top_logprobs"),
+        truncation=body.get("truncation"),
+        max_output_tokens=body.get("max_tokens"),
+        reasoning={"effort": body.get("reasoning_effort")}
+        if body.get("reasoning_effort")
+        else None,
+        user=ctx.metadata.get("user_id") or ctx.metadata.get("user_email"),
+    )
+
+    base_tools = body.get("tools") or []
+    extra_tools = body.get("extra_tools") or []
+    return request, base_tools, extra_tools
+
+
+def build_mcp_tools(cfg: RuntimeConfig) -> list[dict]:
+    raw = cfg.REMOTE_MCP_SERVERS_JSON
+    if not raw:
+        return []
+
+    try:
+        entries = json.loads(raw)
+    except Exception:
+        return []
+
+    tools: list[dict] = []
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            label = entry.get("server_label")
+            url = entry.get("server_url")
+            if not isinstance(label, str) or not isinstance(url, str):
+                continue
+            tool = {"type": "mcp", "server_label": label, "server_url": url, "source": "mcp"}
+            if "require_approval" in entry:
+                tool["require_approval"] = entry.get("require_approval")
+            if "allowed_tools" in entry:
+                tool["allowed_tools"] = entry.get("allowed_tools")
+            if "headers" in entry:
+                tool["headers"] = entry.get("headers")
+            tools.append(tool)
+    return tools
+
+
+__all__ = ["build_turn_context", "map_completions_to_responses", "build_mcp_tools"]
+
+# === pipe.py ===
+"""Open WebUI pipe entrypoint for the OpenAI Responses manifold."""
+
+import inspect
+import logging
+from typing import Any, Iterable
+
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.config import PipeValves, UserValves, merge_valves
+# from openai_responses_manifold.core.logging import logging_context
+# from openai_responses_manifold.domain import (
+#     ResponsesEngine,
+#     ToolPolicy,
+#     build_web_search_tools,
+#     route_auto_model,
 # )
-# from openai_responses_manifold.adapters.openwebui.request_builder import build_responses_body
-# from openai_responses_manifold.adapters.openwebui.runtime_events import OpenWebUIRuntimeEvents
-# from openai_responses_manifold.adapters.openwebui.store import ItemStore
-# from openai_responses_manifold.domain.engine import ResponsesEngine
-# from openai_responses_manifold.domain.events import RuntimeEvents
-# from openai_responses_manifold.domain.routing import route_auto_model
-# from openai_responses_manifold.domain.tools import ToolSpecBuilder, apply_tool_policy
-# from openai_responses_manifold.domain.turn_context import TurnContext
+# from openai_responses_manifold.domain.history import HistoryManager
+# from openai_responses_manifold.openai_api import OpenAIClient
+# from openai_responses_manifold.openwebui import (
+#     OpenWebUIHistoryStore,
+#     OpenWebUIRuntimeEvents,
+#     OpenWebUIToolExecutor,
+#     OpenWebUIToolRegistry,
+#     build_mcp_tools,
+#     build_turn_context,
+#     map_completions_to_responses,
+# )
 
 
 class Pipe:
+    """Open WebUI pipe implementation for the Responses manifold."""
+
+    id = "openai_responses"
+
     class Valves(PipeValves):
-        """Admin-level valve configuration."""
+        pass
 
     class UserValves(UserValves):
-        """Per-user valve overrides."""
+        pass
 
     def __init__(self) -> None:
-        self.type = "manifold"
-        self.id = "openai_responses"
         self.valves = self.Valves()
-        self.logger = get_logger(__name__)
-        self.store = ItemStore()
-        self.engine = ResponsesEngine(
-            client=OpenAIResponsesClient(),
-            item_store=self.store,
-            logger=self.logger,
-        )
-
-    async def pipes(self) -> list[dict[str, str]]:
-        model_ids = [
-            model_id.strip() for model_id in self.valves.MODEL_ID.split(",") if model_id.strip()
-        ]
-        return [{"id": model_id, "name": f"OpenAI: {model_id}"} for model_id in model_ids]
-
-    async def pipe(
-        self,
-        body: dict[str, Any],
-        __user__: dict[str, Any],
-        __event_emitter__: EventEmitterFn,
-        __event_call__: EventCallerFn | None,
-        __metadata__: dict[str, Any],
-        __tools__: list[dict[str, Any]] | dict[str, Any] | None,
-        __task__: dict[str, Any] | None = None,
-        __task_body__: dict[str, Any] | None = None,
-    ) -> Awaitable[str] | str | None:
-        valves = self._merge_valves(
-            self.valves, self.UserValves.model_validate(__user__.get("valves", {}))
-        )
-        openwebui_model_id = __metadata__.get("model", {}).get("id", "")
-        user_identifier = __user__.get(valves.PROMPT_CACHE_KEY) or __user__.get("id")
-        features = __metadata__.get("features", {}).get("openai_responses", {})
-        ctx = TurnContext(
-            valves=valves,
-            metadata=__metadata__,
-            user_identifier=user_identifier,
-            owui_model_id=openwebui_model_id,
-            features=features,
-        )
-
-        with logging_context(
-            __metadata__.get("session_id"),
-            getattr(logging, valves.LOG_LEVEL.upper(), logging.INFO),
-            chat_id=__metadata__.get("chat_id"),
-            message_id=__metadata__.get("message_id"),
-            user_id=__metadata__.get("user_id"),
-        ):
-            await self._maybe_unclamp_status(__event_call__)
-            emitter = EventEmitter(__event_emitter__)
-            runtime_events: RuntimeEvents = OpenWebUIRuntimeEvents(emitter)
-
-            completions_body = CompletionCreateParams.model_validate(body)
-            responses_body = await build_responses_body(
-                completions_body.model_dump(),
-                ctx=ctx,
-                item_store=self.store,
-            )
-            provided_tools = __tools__ if __tools__ is not None else body.get("tools")
-            extra_tools = getattr(completions_body, "extra_tools", None) or body.get("extra_tools")
-            if isinstance(provided_tools, list):
-                if not provided_tools:
-                    provided_tools = None
-                else:
-                    registry: dict[str, dict[str, Any]] = {}
-                    for entry in provided_tools:
-                        if not isinstance(entry, dict):
-                            continue
-                        spec = entry.get("spec") or {}
-                        name = spec.get("name")
-                        if isinstance(name, str) and name:
-                            registry[name] = entry
-                    provided_tools = registry or None
-            elif provided_tools is not None and not isinstance(provided_tools, dict):
-                await self.engine.emit_error(
-                    runtime_events,
-                    (
-                        "Tools must be provided as a registry dict or a list of {spec, callable} entries."
-                    ),
-                    done=True,
-                )
-                return None
-            spec_builder = ToolSpecBuilder()
-            tools, tool_registry = await spec_builder.build_for_turn(
-                responses_body,
-                ctx,
-                provided_tools,
-                extra_tools=extra_tools if isinstance(extra_tools, list) else None,
-            )
-            if tools:
-                responses_body.tools = tools
-
-            try:
-                responses_body = await self._apply_model_policies(
-                    responses_body,
-                    valves,
-                    openwebui_model_id,
-                    runtime_events,
-                )
-            except RuntimeError:
-                return None
-
-            if __task__:
-                self.logger.info("Detected task model: %s", __task__)
-                # Task models are simple, non-streamed calls; avoid sending tool specs.
-                responses_body.tools = None
-                task_body = responses_body.model_dump()
-                if isinstance(__task_body__, dict):
-                    task_body = {**task_body, **__task_body__}
-                return await self.engine.run_task_model(task_body, valves)
-
-            result = await self.engine.run_streaming_turn(
-                responses_body,
-                ctx=ctx,
-                events=runtime_events,
-                tool_registry=tool_registry,
-            )
-
-            if result.citations and __metadata__.get("chat_id") and __metadata__.get("message_id"):
-                Chats.upsert_message_to_chat_by_id_and_message_id(
-                    __metadata__["chat_id"],
-                    __metadata__["message_id"],
-                    {"id": __metadata__["message_id"], "sources": result.citations},
-                )
-
-            return result.text
-
-    def _merge_valves(self, pipe_valves: PipeValves, user_valves: UserValves) -> PipeValves:
-        merged = pipe_valves.model_copy(deep=True)
-        if user_valves.LOG_LEVEL != "INHERIT":
-            merged.LOG_LEVEL = user_valves.LOG_LEVEL
-        return merged
+        self.client = OpenAIClient()
+        self.history_store = OpenWebUIHistoryStore()
+        self.history_manager = HistoryManager(self.history_store)
+        self.engine = ResponsesEngine(self.client, self.history_manager)
 
     @staticmethod
     def _status_unclamp_script() -> str:
@@ -5143,111 +2978,160 @@ class Pipe:
         })();
         """
 
-    async def _maybe_unclamp_status(self, event_call: EventCallerFn | None) -> None:
+    async def _maybe_unclamp_status(self, event_call: Any | None) -> None:
         if not event_call:
             return
-        # Temporary UI hack to unclamp status text so reasoning tokens can be shown multi-line.
-        call = EventCall(event_call)
-        await call.execute(self._status_unclamp_script())
+        payload = {"type": "execute", "data": {"code": self._status_unclamp_script()}}
+        try:
+            result = event_call(payload)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            return
 
-    async def _apply_model_policies(
+    async def pipes(self) -> list[dict[str, Any]]:
+        cfg = self.valves
+        ids = [m.strip() for m in (cfg.MODEL_ID or "").split(",") if m.strip()]
+        return [{"id": model_id, "name": f"OpenAI Responses: {model_id}"} for model_id in ids]
+
+    async def _resolve_tools(self, __tools__: Any) -> Any:
+        if inspect.isawaitable(__tools__):
+            return await __tools__
+        return __tools__
+
+    async def pipe(
         self,
-        responses_body: Any,
-        valves: PipeValves,
-        openwebui_model_id: str,
-        events: RuntimeEvents,
+        body: dict[str, Any] | None = None,
+        __user__: dict[str, Any] | None = None,
+        __assistant__: dict[str, Any] | None = None,
+        __event_emitter__: Any | None = None,
+        __event_call__: Any | None = None,
+        __tools__: Iterable[Any] | None = None,
+        __tasks__: Iterable[Any] | None = None,
+        __task__: Any | None = None,
+        __task_body__: dict[str, Any] | None = None,
+        __metadata__: dict[str, Any] | None = None,
     ) -> Any:
-        responses_body = await self._ensure_native_function_calling_if_needed(
-            responses_body, openwebui_model_id, events
-        )
-        responses_body = await self._ensure_routed_auto_model(
-            responses_body, valves, openwebui_model_id, events
-        )
-        self._apply_reasoning_options(responses_body, valves)
-        self._apply_parallel_tool_policy(responses_body, valves)
-        return responses_body
+        body = body or {}
+        pipe_valves = self.valves
+        user_valves = self.UserValves.model_validate((__user__ or {}).get("valves") or {})
+        cfg = merge_valves(pipe_valves, user_valves)
 
-    async def _ensure_native_function_calling_if_needed(
-        self,
-        responses_body: Any,
-        openwebui_model_id: str,
-        events: RuntimeEvents,
-    ) -> Any:
-        tools = responses_body.tools or []
-        has_function_tools = any(
-            isinstance(tool, dict) and tool.get("type") == "function" for tool in tools
-        )
-        if not (has_function_tools and supports("function_calling", responses_body.model)):
-            return responses_body
-        model = Models.get_model_by_id(openwebui_model_id)
-        if not model:
-            return responses_body
-        params = dict(model.params or {})
-        if params.get("function_calling") == "native":
-            return responses_body
+        events = OpenWebUIRuntimeEvents(__event_emitter__)
+        level = getattr(logging, cfg.LOG_LEVEL.upper(), logging.INFO)
 
-        await self.engine.emit_notification(
-            events,
-            content=(
-                f"Enabling native function calling for model: {openwebui_model_id}. "
-                "Please re-run your query."
-            ),
-            level="info",
-        )
-        params["function_calling"] = "native"
-        form_data = model.model_dump()
-        form_data["params"] = params
-        Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
-        await self.engine.emit_error(
-            events,
-            "Function calling enabled; please re-run your query.",
-            done=True,
-        )
-        raise RuntimeError("Function calling not yet enabled; user must retry")
-
-    async def _ensure_routed_auto_model(
-        self,
-        responses_body: Any,
-        valves: PipeValves,
-        openwebui_model_id: str,
-        events: RuntimeEvents,
-    ):
-        if openwebui_model_id.endswith(".gpt-5-auto-dev"):
-            return await route_auto_model(
-                self.engine.client,
-                router_model="gpt-4.1-mini",
-                responses_body=responses_body,
-                valves=valves,
-                tools=responses_body.tools or [],
-                events=events,
-            )
-
-        if openwebui_model_id.endswith(".gpt-5-auto"):
-            responses_body.model = "gpt-5-chat-latest"
-            await self.engine.emit_notification(
-                events,
-                content="Model router coming soon — using gpt-5-chat-latest (GPT-5 Fast).",
-                level="warning",
-            )
-        return responses_body
-
-    def _apply_reasoning_options(self, responses_body: Any, valves: PipeValves) -> None:
-        if supports("reasoning_summary", responses_body.model) and valves.REASONING_SUMMARY != "disabled":
-            existing_reasoning = (
-                responses_body.reasoning if isinstance(responses_body.reasoning, dict) else {}
-            )
-            responses_body.reasoning = {**existing_reasoning, "summary": valves.REASONING_SUMMARY}
-
-        if (
-            supports("reasoning", responses_body.model)
-            and valves.PERSIST_REASONING_TOKENS != "disabled"
-            and responses_body.store is False
+        with logging_context(
+            (__metadata__ or {}).get("session_id"),
+            level,
+            chat_id=(__metadata__ or {}).get("chat_id"),
+            message_id=(__metadata__ or {}).get("message_id"),
+            user_id=(__user__ or {}).get("id"),
         ):
-            responses_body.include = responses_body.include or []
-            if "reasoning.encrypted_content" not in responses_body.include:
-                responses_body.include.append("reasoning.encrypted_content")
+            await self._maybe_unclamp_status(__event_call__)
+            ctx = build_turn_context(
+                pipe_valves=pipe_valves,
+                user_valves=user_valves,
+                runtime_cfg=cfg,
+                __user__=__user__,
+                __metadata__=__metadata__,
+            )
+            history_key = {"chat_id": (__metadata__ or {}).get("chat_id"), "pipe_id": self.id}
+            registry = OpenWebUIToolRegistry(await self._resolve_tools(__tools__ or {}))
+            executor = OpenWebUIToolExecutor(await self._resolve_tools(__tools__ or {}))
 
-    def _apply_parallel_tool_policy(self, responses_body: Any, valves: PipeValves) -> None:
-        apply_tool_policy(responses_body, valves)
+            if __task__ is not None:
+                task_body = __task_body__ if __task_body__ is not None else body or {}
+                request = map_completions_to_responses(
+                    body=task_body, ctx=ctx, history_manager=self.history_manager, history_key=history_key
+                )[0]
+                request.stream = False
+                request.store = False
+                request.tools = None
+                request.include = None
+                return await self.engine.run_task(request, ctx)
+
+            if body.get("stream") is False:
+                await events.notification("Non-streaming chat is not supported by this manifold.", level="error")
+                await events.chat_completion({"done": True, "error": "Streaming required"})
+                return ""
+
+            request, base_tools, extra_tools = map_completions_to_responses(
+                body=body, ctx=ctx, history_manager=self.history_manager, history_key=history_key
+            )
+
+            mcp_tools = build_mcp_tools(cfg)
+            web_search_tools = build_web_search_tools(
+                model_id=ctx.model_id, features=ctx.features, cfg=cfg
+            )
+            tools_for_responses = ToolPolicy.build_responses_tools(
+                model_id=ctx.model_id,
+                features=ctx.features,
+                cfg=cfg,
+                registry=registry,
+                body_tools=base_tools,
+                extra_tools=extra_tools,
+                mcp_tools=mcp_tools,
+                web_search_tools=web_search_tools,
+            )
+            if tools_for_responses:
+                request.tools = tools_for_responses
+
+            request.truncation = cfg.TRUNCATION
+            request.prompt_cache_key = cfg.PROMPT_CACHE_KEY
+
+            if "reasoning_summary" in ctx.features and cfg.REASONING_SUMMARY != "disabled":
+                request.reasoning = request.reasoning or {}
+                request.reasoning["summary"] = cfg.REASONING_SUMMARY
+
+            if "reasoning" in ctx.features and cfg.PERSIST_REASONING_TOKENS != "disabled":
+                request.include = list(request.include or [])
+                if "reasoning.encrypted_content" not in request.include:
+                    request.include.append("reasoning.encrypted_content")
+
+            if any(t.get("type") == "web_search" for t in (request.tools or [])):
+                request.include = list(request.include or [])
+                if "web_search_call.action.sources" not in request.include:
+                    request.include.append("web_search_call.action.sources")
+
+            owui_model_id = (ctx.metadata.get("owui_model_id") or "").lower()
+            if owui_model_id.endswith(".gpt-5-auto") or owui_model_id.endswith(".gpt-5-auto-dev"):
+                request = await route_auto_model(
+                    client=self.client, request=request, ctx=ctx, tools=request.tools or [], events=events
+                )
+
+            result = await self.engine.run_streaming_turn(
+                request=request,
+                ctx=ctx,
+                events=events,
+                history_key=history_key,
+                tool_registry=registry,
+                tool_executor=executor,
+            )
+
+            if result.citations and (__metadata__ or {}).get("chat_id") and (__metadata__ or {}).get("message_id"):
+                try:
+                    from open_webui.models.chats import Chats
+
+                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                        (__metadata__ or {}).get("chat_id"),
+                        (__metadata__ or {}).get("message_id"),
+                        {
+                            "sources": [
+                                {
+                                    "source": {"name": c.source_name, "url": c.url},
+                                    "document": c.document,
+                                    "metadata": [c.metadata],
+                                }
+                                for c in result.citations
+                            ]
+                        },
+                    )
+                except Exception:
+                    pass
+
+            return result.text
+
+
+__all__ = ["Pipe"]
 
 # fmt: on
