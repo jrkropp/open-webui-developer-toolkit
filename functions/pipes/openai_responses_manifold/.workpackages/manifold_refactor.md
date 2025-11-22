@@ -58,51 +58,51 @@ They provide focused deep‑dives for each critical part of the manifold:
 
 ### Phase 0 – Skeleton & wiring
 
-* [ ] Create new `src/openai_responses_manifold/` package with `core`, `openai_api`, `domain`, `openwebui`, `pipe.py`
-* [ ] Create mirrored `tests/` structure for the new packages
-* [ ] Ensure `Pipe` is importable from `openai_responses_manifold.pipe` and passes a trivial smoke test
-* [ ] Create initial docs index at `functions/pipes/openai_responses_manifold/docs/index.md` and link this workpackage
+* [x] Create new `src/openai_responses_manifold/` package with `core`, `openai_api`, `domain`, `openwebui`, `pipe.py`
+* [x] Create mirrored `tests/` structure for the new packages
+* [x] Ensure `Pipe` is importable from `openai_responses_manifold.pipe` and passes a trivial smoke test (see `tests/test_pipe_smoke.py`)
+* [x] Create initial docs index at `functions/pipes/openai_responses_manifold/docs/index.md` and link this workpackage
 
 ### Phase 1 – Core & OpenAI client
 
-* [ ] Implement `core.config` (PipeValves, UserValves, RuntimeConfig, merge helper) — see `docs/config_and_valves.md`
-* [ ] Implement `core.logging` (SessionLogger-style context + log buffer) — see `docs/config_and_valves.md` (logging section)
-* [ ] Implement `core.model_catalog` (normalize, aliases, feature flags, supports) — see `docs/routing_and_model_catalog.md`
-* [ ] Implement `core.markers` (v2 marker format encode/decode/split) — see `docs/markers_and_persistence.md`
-* [ ] Implement `openai_api.types` (ResponsesRequest + ResponsesEvent union)
-* [ ] Implement `openai_api.client` (stream + non-stream) with tests using faked HTTP — see `docs/responses_engine.md` (event expectations)
+* [x] Implement `core.config` (PipeValves, UserValves, RuntimeConfig, merge helper) — see `docs/config_and_valves.md`
+* [x] Implement `core.logging` (SessionLogger-style context + log buffer) — see `docs/config_and_valves.md` (logging section)
+* [x] Implement `core.model_catalog` (normalize, aliases, feature flags, supports) — see `docs/routing_and_model_catalog.md`
+* [x] Implement `core.markers` (v2 marker format encode/decode/split) — see `docs/markers_and_persistence.md`
+* [x] Implement `openai_api.types` (ResponsesRequest + ResponsesEvent union)
+* [x] Implement `openai_api.client` (stream + non-stream) with tests using faked HTTP — see `docs/responses_engine.md` (event expectations)
 
 ### Phase 2 – Domain (engine, history, tools, routing)
 
-* [ ] Implement `domain.types` (TurnContext, TurnState, TurnResult, ToolCall, ToolResult, Citation, RuntimeEvents protocol)
-* [ ] Implement `domain.history` (HistoryStore + HistoryManager using markers + DB layout compatible with old manifold) — see `docs/history_manager.md` + `docs/markers_and_persistence.md`
-* [ ] Implement `domain.tools` (ToolDefinition, ToolRegistry, ToolExecutor, ToolPolicy incl. `extra_tools` merge & dedupe) — see `docs/tools_and_extra_tools.md`
-* [ ] Implement `domain.web_search` (build & tune web_search tools) — see `docs/web_search_and_citations.md`
-* [ ] Implement `domain.code_interpreter` (handle code_interpreter events & outputs → status/citation)
-* [ ] Implement `domain.routing` (gpt‑5‑auto router helper) — see `docs/routing_and_model_catalog.md`
-* [ ] Implement `domain.engine.ResponsesEngine` (streaming loop + tool loops + reasoning summary + usage merge) — see `docs/responses_engine.md`
-* [ ] Add unit tests for history, tools, engine (no OpenWebUI imports)
+* [x] Implement `domain.types` (TurnContext, TurnState, TurnResult, ToolCall, ToolResult, Citation, RuntimeEvents protocol)
+* [x] Implement `domain.history` (HistoryStore + HistoryManager using markers + DB layout compatible with old manifold) — see `docs/history_manager.md` + `docs/markers_and_persistence.md`
+* [x] Implement `domain.tools` (ToolDefinition, ToolRegistry, ToolExecutor, ToolPolicy incl. `extra_tools` merge & dedupe)
+* [x] Implement `domain.web_search` (build & tune web_search tools) — see `docs/web_search_and_citations.md`
+* [x] Implement `domain.code_interpreter` (handle code_interpreter events & outputs → status/citation)
+* [x] Implement `domain.routing` (gpt‑5‑auto router helper) — see `docs/routing_and_model_catalog.md`
+* [x] Implement `domain.engine.ResponsesEngine` (streaming loop + tool loops + reasoning summary + usage merge) — see `docs/responses_engine.md`
+* [x] Add unit tests for history, tools, engine (no OpenWebUI imports)
 
 ### Phase 3 – OpenWebUI integration
 
-* [ ] Implement `openwebui.store.OpenWebUIHistoryStore` using `Chats` and the `openai_responses_pipe` structure — see `docs/openwebui_integration.md` + `docs/markers_and_persistence.md`
-* [ ] Implement `openwebui.events.OpenWebUIRuntimeEvents` (wrap `__event_emitter__`) — see `docs/openwebui_integration.md`
-* [ ] Implement `openwebui.tools` (OpenWebUIToolRegistry + OpenWebUIToolExecutor) — see `docs/tools_and_extra_tools.md`
-* [ ] Implement `openwebui.bridge` (Completions → Responses mapping, including filter `extra_tools`) — see `docs/history_manager.md` + `docs/tools_and_extra_tools.md`
-* [ ] Implement `pipe.Pipe` wiring everything together, including **task** path — see `docs/openwebui_integration.md`
-* [ ] Add integration tests for `Pipe.pipe()` with mocked OpenAI client, Chats, Models, and event emitter
+* [x] Implement `openwebui.store.OpenWebUIHistoryStore` using `Chats` and the `openai_responses_pipe` structure — see `docs/openwebui_integration.md` + `docs/markers_and_persistence.md`
+* [x] Implement `openwebui.events.OpenWebUIRuntimeEvents` (wrap `__event_emitter__`) — see `docs/openwebui_integration.md`
+* [x] Implement `openwebui.tools` (OpenWebUIToolRegistry + OpenWebUIToolExecutor) — see `docs/tools_and_extra_tools.md`
+* [x] Implement `openwebui.bridge` (Completions → Responses mapping, including filter `extra_tools`) — see `docs/history_manager.md` + `docs/tools_and_extra_tools.md`
+* [x] Implement `pipe.Pipe` wiring everything together, including **task** path — see `docs/openwebui_integration.md`
+* [x] Add integration tests for `Pipe.pipe()` with mocked OpenAI client, Chats, Models, and event emitter
 
 ### Phase 4 – Persistence, filters, UX & polish
 
-* [ ] Implement marker-based persistence & replay end‑to‑end (tool calls, tool results, reasoning) — see `docs/markers_and_persistence.md` + `docs/history_manager.md`
-* [ ] Ensure compatibility with filter-injected tools via `body.extra_tools` — see `docs/tools_and_extra_tools.md`
-* [ ] Implement SessionLogger → log-as-citation behavior at the end of the turn — see `docs/config_and_valves.md`
-* [ ] Implement citation handling (url_citation annotations, Chats.upsert_message_to_chat_by_id_and_message_id) — see `docs/web_search_and_citations.md`
-* [ ] Implement non-streaming task path via Responses API for `__task__` models (titles, tags, etc.) — see `docs/openwebui_integration.md`
-* [ ] Optionally re-introduce status UI tweaks (multi-line status line) via `__event_call__` — see `docs/openwebui_integration.md`
-* [ ] Port any critical behavior from `src_old/` (usage merging, reasoning summary flags, PERSIST_REASONING_TOKENS) into the new layers — cross-check with `docs/responses_engine.md` and `docs/config_and_valves.md`
-* [ ] Add README / developer docs summarizing architecture and flows — link from `docs/index.md`
-* [ ] Clearly mark `src_old/` and `test_old/` as legacy in docs — e.g., in `docs/index.md` and `docs/openwebui_integration.md`
+* [x] Implement marker-based persistence & replay end‑to‑end (tool calls, tool results, reasoning) — see `docs/markers_and_persistence.md` + `docs/history_manager.md`
+* [x] Ensure compatibility with filter-injected tools via `body.extra_tools` — see `docs/tools_and_extra_tools.md`
+* [x] Implement SessionLogger → log-as-citation behavior at the end of the turn — see `docs/config_and_valves.md`
+* [x] Implement citation handling (url_citation annotations, Chats.upsert_message_to_chat_by_id_and_message_id) — see `docs/web_search_and_citations.md`
+* [x] Implement non-streaming task path via Responses API for `__task__` models (titles, tags, etc.) — see `docs/openwebui_integration.md`
+* [x] Optionally re-introduce status UI tweaks (multi-line status line) via `__event_call__` — see `docs/openwebui_integration.md`
+* [x] Port any critical behavior from `src_old/` (usage merging, reasoning summary flags, PERSIST_REASONING_TOKENS) into the new layers — cross-check with `docs/responses_engine.md` and `docs/config_and_valves.md`
+* [x] Add README / developer docs summarizing architecture and flows — link from `docs/index.md`
+* [x] Clearly mark `src_old/` and `test_old/` as legacy in docs — e.g., in `docs/index.md` and `docs/openwebui_integration.md`
 
 > **Agent note:**
 > Update bullets as you go, e.g.:
