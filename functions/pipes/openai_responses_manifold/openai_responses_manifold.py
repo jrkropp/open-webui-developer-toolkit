@@ -282,11 +282,26 @@ def push_logging_context(
     message_id: str | None = None,
     user_id: str | None = None,
 ) -> LoggingTokens:
-    """Apply session/log-level context; returns tokens to restore later."""
+    """Apply session/log-level context; returns tokens to restore later.
+
+    If no explicit ``session_id`` is provided, fall back to ``chat_id``, then
+    ``user_id``. This ensures logs always have a session key for
+    buffering/citations without cross-session bleed-through from a global
+    default.
+    """
 
     configure_logging()
+    logger = get_logger(__name__)
+    effective_session_id = session_id or chat_id or user_id
+
+    if not session_id:
+        if chat_id:
+            logger.debug("Using chat_id as fallback session_id for logging", extra={"chat_id": chat_id})
+        elif user_id:
+            logger.debug("Using user_id as fallback session_id for logging", extra={"user_id": user_id})
+
     return (
-        OWUI_SESSION_ID.set(session_id),
+        OWUI_SESSION_ID.set(effective_session_id),
         OWUI_CHAT_ID.set(chat_id),
         OWUI_MESSAGE_ID.set(message_id),
         OWUI_USER_ID.set(user_id),
@@ -1703,7 +1718,7 @@ from typing import Any, Awaitable, Callable
 
 # [build.py] internal imports removed in monolith:
 # from openai_responses_manifold.core.logging import truncate_for_log
-# from openai_responses_manifold.domain.types import RuntimeEvents, TurnState
+# from openai_responses_manifold.domain.types import Citation, RuntimeEvents, TurnState
 
 EmitStatusFn = Callable[..., Awaitable[Any]]
 
@@ -1887,12 +1902,11 @@ async def handle_code_interpreter_item(
         )
 
     result_snippet = "\n\n".join(snippet_parts)
-    citation = {
-        "provider": "openai:code_interpreter",
-        "id": f"ci-{len(state.citations) + 1}",
-        "title": "Code interpreter run",
-        "snippet": result_snippet,
-        "metadata": {
+    citation = Citation(
+        source_name="Code interpreter run",
+        url=None,
+        document=[result_snippet],
+        metadata={
             "item_type": "code_interpreter_call",
             "kind": "run",
             "has_logs": bool(log_chunks),
@@ -1902,13 +1916,13 @@ async def handle_code_interpreter_item(
             "pending_result_text": pending_result,
             "output_index": run_index,
         },
-    }
+    )
     state.citations.append(citation)
     await events.citation(
         {
-            "document": [result_snippet],
-            "metadata": [citation["metadata"]],
-            "source": {"name": citation["title"]},
+            "document": citation.document,
+            "metadata": [citation.metadata],
+            "source": {"name": citation.source_name},
         }
     )
 
@@ -1952,12 +1966,11 @@ async def emit_pending_code_interpreter_result(
             snippet_parts.append(f"Code:\n{code_snippet}")
 
         snippet = "\n\n".join(snippet_parts)
-        citation = {
-            "provider": "openai:code_interpreter",
-            "id": f"ci-{len(state.citations) + 1}",
-            "title": "Code interpreter result",
-            "snippet": snippet,
-            "metadata": {
+        citation = Citation(
+            source_name="Code interpreter result",
+            url=None,
+            document=[snippet],
+            metadata={
                 "item_type": "code_interpreter_call",
                 "kind": "result",
                 "has_logs": False,
@@ -1967,13 +1980,13 @@ async def emit_pending_code_interpreter_result(
                 "pending_result_text": False,
                 "output_index": run_index,
             },
-        }
+        )
         state.citations.append(citation)
         await events.citation(
             {
-                "document": [snippet],
-                "metadata": [citation["metadata"]],
-                "source": {"name": citation["title"]},
+                "document": citation.document,
+                "metadata": [citation.metadata],
+                "source": {"name": citation.source_name},
             }
         )
 
@@ -2159,6 +2172,7 @@ async def route_auto_model(
 __all__ = ["route_auto_model"]
 
 # === domain/engine.py ===
+import asyncio
 import datetime
 import json
 import logging
@@ -2349,10 +2363,24 @@ class ResponsesEngine:
         api_key: str,
     ) -> dict[str, Any] | None:
         response_payload: dict[str, Any] | None = None
-        async for event in self._client.stream_responses(request, base_url=base_url, api_key=api_key):
-            response_payload = await self._handle_event(event, state, events, ctx)
-            if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent)):
-                break
+
+        try:
+            async for event in self._client.stream_responses(
+                request,
+                base_url=base_url,
+                api_key=api_key,
+            ):
+                response_payload = await self._handle_event(event, state, events, ctx)
+                if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent)):
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not state.error_message:
+                state.error_message = f"Streaming error from Responses API: {exc}"
+            self._logger.exception("Error while streaming Responses API")
+            return {}
+
         return response_payload
 
     async def _handle_event(
@@ -2445,10 +2473,18 @@ class ResponsesEngine:
 
         if isinstance(event, ResponseIncompleteEvent):
             state.error_message = event.error_message or "Response incomplete"
+            self._logger.error(
+                "Responses API returned incomplete response: %s",
+                state.error_message,
+            )
             return event.response or {}
 
         if isinstance(event, ResponseFailedEvent):
             state.error_message = event.error_message or "Response failed"
+            self._logger.error(
+                "Responses API request failed: %s",
+                state.error_message,
+            )
             return event.response or {}
 
         return None
@@ -2518,30 +2554,49 @@ class ResponsesEngine:
         events: RuntimeEvents,
     ) -> None:
         session_id = ctx.metadata.get("session_id") or OWUI_SESSION_ID.get()
-        if not session_id:
-            return
+        logs = consume_session_logs(session_id) if session_id else []
 
-        logs = consume_session_logs(session_id)
-        if not logs:
+        has_logs = bool(logs)
+
+        if not has_logs and not state.error_message:
             return
 
         source_name = "Error Logs" if state.error_message else "Logs"
-        log_text = "\n".join(logs)
+
+        if has_logs:
+            log_text = "\n".join(logs)
+        else:
+            log_text = (
+                "No logs were captured for this turn, but an error occurred: "
+                f"{state.error_message}"
+            )
+
         truncated = len(log_text) > 4000
+        if truncated:
+            log_text = log_text[:4000]
+
         self._logger.debug(
             "Emitting log citation lines=%d truncated=%s", len(logs), truncated
         )
+
+        citation = Citation(
+            source_name=source_name,
+            url=None,
+            document=[log_text],
+            metadata={
+                "source": source_name,
+                "total_lines": len(logs),
+                "truncated": truncated,
+                "has_error": bool(state.error_message),
+            },
+        )
+        state.citations.append(citation)
+
         await events.citation(
             {
-                "document": [log_text],
-                "metadata": [
-                    {
-                        "source": source_name,
-                        "total_lines": len(logs),
-                        "truncated": truncated,
-                    }
-                ],
-                "source": {"name": source_name},
+                "document": citation.document,
+                "metadata": [citation.metadata],
+                "source": {"name": citation.source_name},
             }
         )
 

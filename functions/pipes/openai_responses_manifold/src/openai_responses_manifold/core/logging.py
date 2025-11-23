@@ -120,11 +120,26 @@ def push_logging_context(
     message_id: str | None = None,
     user_id: str | None = None,
 ) -> LoggingTokens:
-    """Apply session/log-level context; returns tokens to restore later."""
+    """Apply session/log-level context; returns tokens to restore later.
+
+    If no explicit ``session_id`` is provided, fall back to ``chat_id``, then
+    ``user_id``. This ensures logs always have a session key for
+    buffering/citations without cross-session bleed-through from a global
+    default.
+    """
 
     configure_logging()
+    logger = get_logger(__name__)
+    effective_session_id = session_id or chat_id or user_id
+
+    if not session_id:
+        if chat_id:
+            logger.debug("Using chat_id as fallback session_id for logging", extra={"chat_id": chat_id})
+        elif user_id:
+            logger.debug("Using user_id as fallback session_id for logging", extra={"user_id": user_id})
+
     return (
-        OWUI_SESSION_ID.set(session_id),
+        OWUI_SESSION_ID.set(effective_session_id),
         OWUI_CHAT_ID.set(chat_id),
         OWUI_MESSAGE_ID.set(message_id),
         OWUI_USER_ID.set(user_id),
