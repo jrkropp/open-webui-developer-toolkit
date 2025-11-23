@@ -12,12 +12,22 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal, Protocol, Type
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from openai_responses_manifold.core.config import RuntimeConfig
+from openai_responses_manifold.core.logging import get_logger
 from openai_responses_manifold.core.model_catalog import supports
 
 from .types import ToolCall, ToolResult
+
+_logger = get_logger(__name__)
 
 
 @dataclass
@@ -109,6 +119,31 @@ class FunctionTool(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_shapes(cls, data: Any) -> Any:
+        """Accept both Responses- and legacy Chat Completions-style tool shapes."""
+
+        if not isinstance(data, dict):
+            return data
+
+        # Already Responses-style (top-level name/parameters)
+        if "name" in data and ("parameters" in data or "description" in data):
+            return data
+
+        # Legacy shape: {"type": "function", "function": {...}}
+        fn = data.get("function")
+        if isinstance(fn, dict):
+            return {
+                "type": data.get("type", "function"),
+                "name": fn.get("name"),
+                "description": fn.get("description"),
+                "parameters": fn.get("parameters"),
+                "strict": data.get("strict"),
+            }
+
+        return data
+
     @field_validator("parameters", mode="before")
     @classmethod
     def _ensure_params(cls, value: object) -> dict[str, Any]:
@@ -159,7 +194,10 @@ def _coerce_tool(raw: dict) -> dict | None:
         return cleaned
     try:
         return model.model_validate(cleaned).model_dump(exclude_none=True)
-    except ValidationError:
+    except ValidationError as exc:
+        name = cleaned.get("name") if isinstance(cleaned.get("name"), str) else None
+        descriptor = f"{tool_type}:{name}" if name else str(tool_type)
+        _logger.warning("Dropping tool %s after validation error: %s", descriptor, exc)
         return None
 
 

@@ -1855,14 +1855,24 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal, Protocol, Type
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 # [build.py] internal imports removed in monolith:
 # from openai_responses_manifold.core.config import RuntimeConfig
+# from openai_responses_manifold.core.logging import get_logger
 # from openai_responses_manifold.core.model_catalog import supports
 
 # [build.py] internal imports removed in monolith:
 # from .types import ToolCall, ToolResult
+
+_logger = get_logger(__name__)
 
 
 @dataclass
@@ -1954,6 +1964,31 @@ class FunctionTool(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_shapes(cls, data: Any) -> Any:
+        """Accept both Responses- and legacy Chat Completions-style tool shapes."""
+
+        if not isinstance(data, dict):
+            return data
+
+        # Already Responses-style (top-level name/parameters)
+        if "name" in data and ("parameters" in data or "description" in data):
+            return data
+
+        # Legacy shape: {"type": "function", "function": {...}}
+        fn = data.get("function")
+        if isinstance(fn, dict):
+            return {
+                "type": data.get("type", "function"),
+                "name": fn.get("name"),
+                "description": fn.get("description"),
+                "parameters": fn.get("parameters"),
+                "strict": data.get("strict"),
+            }
+
+        return data
+
     @field_validator("parameters", mode="before")
     @classmethod
     def _ensure_params(cls, value: object) -> dict[str, Any]:
@@ -2004,7 +2039,10 @@ def _coerce_tool(raw: dict) -> dict | None:
         return cleaned
     try:
         return model.model_validate(cleaned).model_dump(exclude_none=True)
-    except ValidationError:
+    except ValidationError as exc:
+        name = cleaned.get("name") if isinstance(cleaned.get("name"), str) else None
+        descriptor = f"{tool_type}:{name}" if name else str(tool_type)
+        _logger.warning("Dropping tool %s after validation error: %s", descriptor, exc)
         return None
 
 
@@ -2690,78 +2728,106 @@ class ResponsesEngine:
     ) -> TurnResult:
         cfg: RuntimeConfig = ctx.runtime_config
         state = TurnState()
+        result: TurnResult | None = None
+        final_text: str = ""
 
-        if request.model_router_result:
-            await self._emit_routing_status(request.model_router_result, events)
-            request.model_router_result = None
+        try:
+            await events.status("Calling OpenAI Responses API…", done=False)
+        except Exception:
+            self._logger.debug("Failed to emit start status", exc_info=True)
 
-        last_response: dict[str, Any] | None = None
-        for _ in range(cfg.MAX_FUNCTION_CALL_LOOPS):
-            response = await self._stream_single_response(
-                request=request,
-                ctx=ctx,
-                state=state,
-                events=events,
-                base_url=cfg.BASE_URL,
-                api_key=cfg.API_KEY,
-            )
-            if response is None:
-                break
-            last_response = response
-            self._merge_usage(state, response)
+        try:
+            if request.model_router_result:
+                await self._emit_routing_status(request.model_router_result, events)
+                request.model_router_result = None
 
-            tool_calls = self._extract_tool_calls(response)
-            if not tool_calls:
-                break
-
-            if cfg.MAX_TOOL_CALLS is not None and (
-                state.tool_calls_executed + len(tool_calls) > cfg.MAX_TOOL_CALLS
-            ):
-                await events.status(
-                    f"Tool call limit ({cfg.MAX_TOOL_CALLS}) reached. Stopping further tool calls.",
-                    done=False,
+            for _ in range(cfg.MAX_FUNCTION_CALL_LOOPS):
+                response = await self._stream_single_response(
+                    request=request,
+                    ctx=ctx,
+                    state=state,
+                    events=events,
+                    base_url=cfg.BASE_URL,
+                    api_key=cfg.API_KEY,
                 )
-                break
+                if response is None:
+                    break
+                self._merge_usage(state, response)
 
-            tool_results = await tool_executor.execute(tool_calls)
-            state.tool_calls_executed += len(tool_results)
-            items = self._tool_results_to_output_items(tool_results)
-            for item in items:
-                self._record_structured_item(item, state, cfg)
-            request.input = (request.input or []) + items
+                tool_calls = self._extract_tool_calls(response)
+                if not tool_calls:
+                    break
 
-        final_text = state.assistant_internal_text
-        items_to_persist = [
-            item for item in state.structured_items if _should_persist_item(item, cfg)
-        ]
-        final_text = self._history_manager.persist_items_for_message(
-            chat_key=history_key,
-            message_id=str(ctx.metadata.get("message_id", "")),
-            items=items_to_persist,
-            model_id=ctx.model_id,
-            openwebui_model_id=str(ctx.metadata.get("owui_model_id", "")),
-            current_assistant_text=final_text,
-            marker_placeholder=MARKER_PLACEHOLDER,
-        )
+                if cfg.MAX_TOOL_CALLS is not None and (
+                    state.tool_calls_executed + len(tool_calls) > cfg.MAX_TOOL_CALLS
+                ):
+                    await events.status(
+                        f"Tool call limit ({cfg.MAX_TOOL_CALLS}) reached. Stopping further tool calls.",
+                        done=False,
+                    )
+                    break
 
-        await emit_pending_code_interpreter_result(
-            state, events, self._logger, assistant_text=final_text
-        )
+                tool_results = await tool_executor.execute(tool_calls)
+                state.tool_calls_executed += len(tool_results)
+                items = self._tool_results_to_output_items(tool_results)
+                for item in items:
+                    self._record_structured_item(item, state, cfg)
+                request.input = (request.input or []) + items
+        except Exception as exc:
+            self._logger.exception("Streaming turn failed")
+            state.error_message = state.error_message or f"Internal error: {exc}"
+            if not state.assistant_internal_text:
+                state.assistant_internal_text = state.error_message or ""
+            try:
+                await events.status("Request failed — see logs for details.", done=True, level="error")
+            except Exception:
+                self._logger.debug("Failed to emit failure status", exc_info=True)
+        finally:
+            final_text = state.assistant_internal_text or state.error_message or ""
+            items_to_persist = [
+                item for item in state.structured_items if _should_persist_item(item, cfg)
+            ]
+            try:
+                final_text = self._history_manager.persist_items_for_message(
+                    chat_key=history_key,
+                    message_id=str(ctx.metadata.get("message_id", "")),
+                    items=items_to_persist,
+                    model_id=ctx.model_id,
+                    openwebui_model_id=str(ctx.metadata.get("owui_model_id", "")),
+                    current_assistant_text=final_text,
+                    marker_placeholder=MARKER_PLACEHOLDER,
+                )
+            except Exception:
+                self._logger.exception("Failed to persist history items")
 
-        result = TurnResult(
-            text=final_text,
-            usage=state.usage,
-            citations=list(state.citations),
-            error=state.error_message,
-        )
+            try:
+                await emit_pending_code_interpreter_result(
+                    state, events, self._logger, assistant_text=final_text
+                )
+            except Exception:
+                self._logger.exception("Failed to emit pending CI result citation")
 
-        await events.chat_completion({
-            "content": state.assistant_visible_text,
-            "usage": state.usage,
-            "error": state.error_message,
-            "done": True,
-        })
-        await self._emit_log_citation(ctx, state, events)
+            result = TurnResult(
+                text=final_text,
+                usage=state.usage,
+                citations=list(state.citations),
+                error=state.error_message,
+            )
+
+            try:
+                await events.chat_completion({
+                    "content": state.assistant_visible_text or final_text,
+                    "usage": state.usage,
+                    "error": state.error_message,
+                    "done": True,
+                })
+            except Exception:
+                self._logger.exception("Failed to emit chat_completion")
+            try:
+                await self._emit_log_citation(ctx, state, events)
+            except Exception:
+                self._logger.exception("Failed to emit log citation")
+
         return result
 
     async def run_task(self, request: ResponsesRequest, ctx: TurnContext) -> str:
@@ -2805,7 +2871,14 @@ class ResponsesEngine:
         api_key: str,
     ) -> dict[str, Any] | None:
         response_payload: dict[str, Any] | None = None
+        first_event = True
         async for event in self._client.stream_responses(request, base_url=base_url, api_key=api_key):
+            if first_event:
+                first_event = False
+                try:
+                    await events.status("Streaming response from model…", done=False)
+                except Exception:
+                    self._logger.debug("Failed to emit streaming status", exc_info=True)
             response_payload = await self._handle_event(event, state, events, ctx)
             if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent)):
                 break
@@ -2983,21 +3056,31 @@ class ResponsesEngine:
 
         source_name = "Error Logs" if state.error_message else "Logs"
         log_text = "\n".join(logs)
-        truncated = len(log_text) > 4000
+        max_len = 4000
+        truncated = len(log_text) > max_len
+        if truncated:
+            log_text = log_text[:max_len] + "\n… (truncated)"
+
+        citation = Citation(
+            source_name=source_name,
+            url=None,
+            document=[log_text],
+            metadata={
+                "source": source_name,
+                "total_lines": len(logs),
+                "truncated": truncated,
+            },
+        )
+        state.citations.append(citation)
+
         self._logger.debug(
             "Emitting log citation lines=%d truncated=%s", len(logs), truncated
         )
         await events.citation(
             {
-                "document": [log_text],
-                "metadata": [
-                    {
-                        "source": source_name,
-                        "total_lines": len(logs),
-                        "truncated": truncated,
-                    }
-                ],
-                "source": {"name": source_name},
+                "document": citation.document,
+                "metadata": [citation.metadata],
+                "source": {"name": citation.source_name},
             }
         )
 
