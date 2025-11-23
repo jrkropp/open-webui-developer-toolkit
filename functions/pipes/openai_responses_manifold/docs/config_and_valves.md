@@ -79,6 +79,13 @@ class PipeValves(BaseModel):
     ENABLE_WEB_SEARCH_TOOL: bool
     WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None]
     WEB_SEARCH_USER_LOCATION: Optional[str]
+    WEB_SEARCH_ALLOWED_DOMAINS: Optional[str]
+    WEB_SEARCH_EXTERNAL_WEB_ACCESS: bool
+    WEB_SEARCH_INCLUDE_SOURCES: bool
+
+    # Built-in tools
+    ENABLE_CODE_INTERPRETER_TOOL: bool
+    CODE_INTERPRETER_CONTAINER_JSON: Optional[str]
 
     # Integrations
     REMOTE_MCP_SERVERS_JSON: Optional[str]
@@ -131,6 +138,11 @@ class RuntimeConfig(BaseModel):
     ENABLE_WEB_SEARCH_TOOL: bool
     WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None]
     WEB_SEARCH_USER_LOCATION: Optional[str]
+    WEB_SEARCH_ALLOWED_DOMAINS: Optional[str]
+    WEB_SEARCH_EXTERNAL_WEB_ACCESS: bool
+    WEB_SEARCH_INCLUDE_SOURCES: bool
+    ENABLE_CODE_INTERPRETER_TOOL: bool
+    CODE_INTERPRETER_CONTAINER_JSON: Optional[str]
     REMOTE_MCP_SERVERS_JSON: Optional[str]
     TRUNCATION: Literal["auto", "disabled"]
     PROMPT_CACHE_KEY: Literal["id", "email"]

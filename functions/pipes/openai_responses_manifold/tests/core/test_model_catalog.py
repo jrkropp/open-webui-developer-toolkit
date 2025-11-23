@@ -33,6 +33,9 @@ def test_features_and_supports_match_specs():
         "function_calling",
         "reasoning",
         "reasoning_summary",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
         "web_search_tool",
         "verbosity",
     }

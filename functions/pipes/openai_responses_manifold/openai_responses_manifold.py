@@ -21,9 +21,9 @@ Use the version in the alpha-preview or main branches instead.
 # For the development layout and more details, see README.md.
 #
 # Logical module layout (source → sections below):
-# - core/config.py              Configuration models for the OpenAI Responses manifold.
+# - core/config.py              Shared pipe settings and defaults.
 # - core/logging.py             Session-aware logging helpers for the manifold.
-# - core/model_catalog.py       Model catalog helpers for the OpenAI Responses manifold.
+# - core/model_catalog.py       Single source of truth for OpenAI model IDs, aliases, and capabilities.
 # - core/markers.py             Helpers for encoding and parsing invisible history markers.
 # - openai_api/types.py         Typed models for the OpenAI Responses API.
 # - openai_api/client.py        Thin aiohttp-based client for the OpenAI Responses API.
@@ -46,54 +46,171 @@ Use the version in the alpha-preview or main branches instead.
 from __future__ import annotations
 
 # === core/config.py ===
-"""Configuration models for the OpenAI Responses manifold.
+"""Shared pipe settings and defaults."""
+import os
+from typing import Literal, cast
 
-This module defines the pipe-level and per-user valve schemas along
-with the runtime configuration merged from both sources. See
-``docs/config_and_valves.md`` for field semantics.
-"""
-from typing import Literal, Optional
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from pydantic import BaseModel, field_validator
+_PIPE_LOG_LEVELS: tuple[Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], ...] = (
+    "DEBUG",
+    "INFO",
+    "WARNING",
+    "ERROR",
+    "CRITICAL",
+)
+_default_pipe_log_level = (os.getenv("GLOBAL_LOG_LEVEL", "INFO") or "INFO").upper()
+if _default_pipe_log_level not in _PIPE_LOG_LEVELS:
+    _default_pipe_log_level = "INFO"
+DEFAULT_PIPE_LOG_LEVEL = cast(
+    Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], _default_pipe_log_level
+)
 
 
 class PipeValves(BaseModel):
-    """Pipe-level configuration shared by all users."""
+    model_config = ConfigDict(extra="forbid")
 
-    BASE_URL: str = "https://api.openai.com/v1"
-    API_KEY: str = ""
-
-    MODEL_ID: str = "gpt-5.1-chat-latest"
-
-    REASONING_SUMMARY: Literal["auto", "concise", "detailed", "disabled"] = "disabled"
-    PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"] = "disabled"
-
-    PERSIST_TOOL_RESULTS: bool = True
-    PARALLEL_TOOL_CALLS: bool = True
-    ENABLE_STRICT_TOOL_CALLING: bool = True
-    MAX_TOOL_CALLS: Optional[int] = None
-    MAX_FUNCTION_CALL_LOOPS: int = 10
-
-    ENABLE_WEB_SEARCH_TOOL: bool = False
-    WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None] = "medium"
-    WEB_SEARCH_USER_LOCATION: Optional[str] = None
-
-    REMOTE_MCP_SERVERS_JSON: Optional[str] = None
-
-    TRUNCATION: Literal["auto", "disabled"] = "auto"
-
-    PROMPT_CACHE_KEY: Literal["id", "email"] = "id"
-
-    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    BASE_URL: str = Field(
+        default=((os.getenv("OPENAI_API_BASE_URL") or "").strip() or "https://api.openai.com/v1"),
+        description="The base URL to use with the OpenAI SDK. Defaults to the official OpenAI API endpoint. Supports LiteLLM and other custom endpoints.",
+    )
+    API_KEY: str = Field(
+        default=(os.getenv("OPENAI_API_KEY") or "").strip(),
+        description="Your OpenAI API key. Defaults to the value of the OPENAI_API_KEY environment variable (blank if unset).",
+    )
+    MODEL_ID: str = Field(
+        default="gpt-5-auto, gpt-5-chat-latest, gpt-5-thinking, gpt-5-thinking-high, gpt-5-thinking-minimal, gpt-4.1-nano, chatgpt-4o-latest, o3, gpt-4o",
+        description=(
+            "Comma separated OpenAI model IDs. Each ID becomes a model entry in WebUI. "
+            "Supports all official OpenAI model IDs and pseudo IDs (see README.md for full list)."
+        ),
+    )
+    REASONING_SUMMARY: Literal["auto", "concise", "detailed", "disabled"] = Field(
+        default="disabled",
+        description="REQUIRES VERIFIED OPENAI ORG. Visible reasoning summary (auto | concise | detailed | disabled). Works on gpt-5, o3, o4-mini; ignored otherwise. Docs: https://platform.openai.com/docs/api-reference/responses/create#responses-create-reasoning",
+    )
+    PERSIST_REASONING_TOKENS: Literal["response", "conversation", "disabled"] = Field(
+        default="disabled",
+        description=(
+            "REQUIRES VERIFIED OPENAI ORG. If `disabled` (default) = never request encrypted "
+            "reasoning tokens; if `response` = request encrypted reasoning tokens for this response "
+            "only (not reused across turns); if `conversation` = also persist encrypted reasoning "
+            "items for future turns (reuse not yet wired in)."
+        ),
+    )
+    PERSIST_TOOL_RESULTS: bool = Field(
+        default=True,
+        description="Persist tool call results across conversation turns. When disabled, tool results are not stored in the chat history.",
+    )
+    PARALLEL_TOOL_CALLS: bool = Field(
+        default=True,
+        description="Whether tool calls can be parallelized. Defaults to True if not set. Read more: https://platform.openai.com/docs/api-reference/responses/create#responses-create-parallel_tool_calls",
+    )
+    ENABLE_STRICT_TOOL_CALLING: bool = Field(
+        default=True,
+        description=(
+            "When True, converts Open WebUI registry tools to strict JSON Schema for OpenAI tools, "
+            "enforcing explicit types, required fields, and disallowing additionalProperties."
+        ),
+    )
+    MAX_TOOL_CALLS: int | None = Field(
+        default=None,
+        description=(
+            "Maximum number of individual tool or function calls the model can make "
+            "within a single response. Applies to the total number of calls across "
+            "all built-in tools. Further tool-call attempts beyond this limit will be ignored."
+        ),
+    )
+    MAX_FUNCTION_CALL_LOOPS: int = Field(
+        default=10,
+        description=(
+            "Maximum number of full execution cycles (loops) allowed per request. "
+            "Each loop involves the model generating one or more function/tool calls, "
+            "executing all requested functions, and feeding the results back into the model. "
+            "Looping stops when this limit is reached or when the model no longer requests "
+            "additional tool or function calls."
+        ),
+    )
+    ENABLE_WEB_SEARCH_TOOL: bool = Field(
+        default=False,
+        description="Enable OpenAI's built-in 'web_search' tool when supported. Read more: https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses",
+    )
+    WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None] = Field(
+        default="medium",
+        description="Controls web_search.search_context_size when the tool is enabled. Set to null to omit.",
+    )
+    WEB_SEARCH_USER_LOCATION: str | None = Field(
+        default=None,
+        description='User location for web search context. Leave blank to disable. Must be in valid JSON format according to OpenAI spec.  E.g., {"type": "approximate","country": "US","city": "San Francisco","region": "CA"}.',
+    )
+    WEB_SEARCH_ALLOWED_DOMAINS: str | None = Field(
+        default=None,
+        description=(
+            "Comma-separated or JSON array of domains for web_search filters.allowed_domains. "
+            "Per OpenAI docs, omit http/https (e.g., openai.com). Applies to Responses API only."
+        ),
+    )
+    WEB_SEARCH_EXTERNAL_WEB_ACCESS: bool = Field(
+        default=True,
+        description=(
+            "When False, sets web_search.external_web_access=false to use cached/indexed results "
+            "instead of live internet access."
+        ),
+    )
+    WEB_SEARCH_INCLUDE_SOURCES: bool = Field(
+        default=True,
+        description=(
+            "Automatically request web_search_call.action.sources when a web_search tool is present, "
+            "surfacing the full list of consulted URLs alongside inline citations."
+        ),
+    )
+    ENABLE_CODE_INTERPRETER_TOOL: bool = Field(
+        default=False,
+        description=(
+            "Enable OpenAI's built-in 'code_interpreter' tool when supported by the model. "
+            "Docs: https://platform.openai.com/docs/assistants/tools/code-interpreter"
+        ),
+    )
+    CODE_INTERPRETER_CONTAINER_JSON: str | None = Field(
+        default=None,
+        description=(
+            "Optional JSON for the code_interpreter tool's 'container' field. "
+            "If unset, defaults to {'type': 'auto'}."
+        ),
+    )
+    REMOTE_MCP_SERVERS_JSON: str | None = Field(
+        default=None,
+        description=(
+            "[EXPERIMENTAL] A JSON-encoded list (or single JSON object) defining one or more "
+            "remote MCP servers to be automatically attached to each request. This can be useful "
+            "for globally enabling tools across all chats."
+        ),
+    )
+    TRUNCATION: Literal["auto", "disabled"] = Field(
+        default="auto",
+        description="OpenAI truncation strategy. 'auto' drops middle context items if the conversation exceeds the context window; 'disabled' returns a 400 error instead.",
+    )
+    PROMPT_CACHE_KEY: Literal["id", "email"] = Field(
+        default="id",
+        description="Controls which user identifier is sent in the 'user' parameter to OpenAI.",
+    )
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+        default=DEFAULT_PIPE_LOG_LEVEL,
+        description="Select logging level. Recommend INFO or WARNING for production use.",
+    )
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod
     def _normalize_pipe_log_level(cls, value: str) -> str:
-        return value.upper()
+        return (value or "").upper()
 
 
 class UserValves(BaseModel):
-    """Per-user valve overrides."""
+    """
+    User-level overrides. Currently only LOG_LEVEL is honored; all other settings are pipe-global.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     LOG_LEVEL: Literal[
         "DEBUG",
@@ -102,16 +219,19 @@ class UserValves(BaseModel):
         "ERROR",
         "CRITICAL",
         "INHERIT",
-    ] = "INHERIT"
+    ] = Field(
+        default="INHERIT",
+        description="Select logging level. 'INHERIT' uses the pipe default.",
+    )
 
     @field_validator("LOG_LEVEL", mode="before")
     @classmethod
     def _normalize_user_log_level(cls, value: str) -> str:
-        return value.upper()
+        return (value or "").upper()
 
 
 class RuntimeConfig(BaseModel):
-    """Effective configuration for a single turn."""
+    model_config = ConfigDict(extra="forbid")
 
     BASE_URL: str
     API_KEY: str
@@ -124,20 +244,26 @@ class RuntimeConfig(BaseModel):
     PERSIST_TOOL_RESULTS: bool
     PARALLEL_TOOL_CALLS: bool
     ENABLE_STRICT_TOOL_CALLING: bool
-    MAX_TOOL_CALLS: Optional[int]
+    MAX_TOOL_CALLS: int | None
     MAX_FUNCTION_CALL_LOOPS: int
 
-    ENABLE_WEB_SEARCH_TOOL: bool
-    WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None]
-    WEB_SEARCH_USER_LOCATION: Optional[str]
+    ENABLE_WEB_SEARCH_TOOL: bool = False
+    WEB_SEARCH_CONTEXT_SIZE: Literal["low", "medium", "high", None] = "medium"
+    WEB_SEARCH_USER_LOCATION: str | None = None
+    WEB_SEARCH_ALLOWED_DOMAINS: str | None = None
+    WEB_SEARCH_EXTERNAL_WEB_ACCESS: bool = True
+    WEB_SEARCH_INCLUDE_SOURCES: bool = True
 
-    REMOTE_MCP_SERVERS_JSON: Optional[str]
+    ENABLE_CODE_INTERPRETER_TOOL: bool = False
+    CODE_INTERPRETER_CONTAINER_JSON: str | None = None
 
-    TRUNCATION: Literal["auto", "disabled"]
+    REMOTE_MCP_SERVERS_JSON: str | None = None
 
-    PROMPT_CACHE_KEY: Literal["id", "email"]
+    TRUNCATION: Literal["auto", "disabled"] = "auto"
 
-    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    PROMPT_CACHE_KEY: Literal["id", "email"] = "id"
+
+    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = DEFAULT_PIPE_LOG_LEVEL
 
 
 def merge_valves(pipe_valves: PipeValves, user_valves: UserValves) -> RuntimeConfig:
@@ -397,28 +523,47 @@ __all__ = [
 ]
 
 # === core/model_catalog.py ===
-"""Model catalog helpers for the OpenAI Responses manifold.
-
-This module centralizes model normalization, alias defaults, and
-capability flags so other layers can stay agnostic of naming quirks.
-See ``docs/routing_and_model_catalog.md`` for the authoritative
-behavioral contract.
-"""
+"""Single source of truth for OpenAI model IDs, aliases, and capabilities."""
 
 import re
 from copy import deepcopy
-from typing import Mapping
+from typing import Any, Mapping
 
-_PREFIX = "openai_responses."
-_DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+# [build.py] internal imports removed in monolith:
+# from openai_responses_manifold.core.logging import get_logger
 
-# Base model → feature flags. Keep in sync with docs.
-_SPECS: dict[str, set[str]] = {
-    "gpt-5.1-chat-latest": {
+# =============================================================================
+# Change Log
+# 2025-11-20: Align model feature flags with current OpenAI docs (web search,
+#             file search, image generation, and code interpreter coverage),
+#             add gpt-5-pro and Codex models, adjust deep-research and chat
+#             model capabilities to match Responses API model cards.
+# =============================================================================
+
+# Update MODEL_FEATURES whenever OpenAI adds or removes model capabilities.
+#
+# Feature flags:
+# - function_calling       → Supports custom tools / function calling in Responses.
+# - reasoning              → Supports `reasoning` options (reasoning models).
+# - reasoning_summary      → Supports reasoning summaries / traces.
+# - web_search_tool        → Built-in Web search tool in Responses.
+# - file_search_tool       → Built-in File search / retrieval tool in Responses.
+# - image_gen_tool         → Built-in Image generation tool in Responses.
+# - code_interpreter_tool  → Built-in Code interpreter tool in Responses.
+# - deep_research          → Deep research orchestration models.
+# - verbosity              → Supports `text.verbosity` parameter.
+MODEL_FEATURES: dict[str, set[str]] = {
+    # -------------------------------------------------------------------------
+    # GPT-5 family (reasoning + tools)
+    # -------------------------------------------------------------------------
+    "gpt-5-auto": {
         "function_calling",
         "reasoning",
         "reasoning_summary",
         "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
         "verbosity",
     },
     "gpt-5.1": {
@@ -426,6 +571,29 @@ _SPECS: dict[str, set[str]] = {
         "reasoning",
         "reasoning_summary",
         "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+        "verbosity",
+    },
+    "gpt-5.1-pro": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+        "verbosity",
+    },
+    "gpt-5-pro": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
         "verbosity",
     },
     "gpt-5": {
@@ -433,6 +601,9 @@ _SPECS: dict[str, set[str]] = {
         "reasoning",
         "reasoning_summary",
         "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
         "verbosity",
     },
     "gpt-5-mini": {
@@ -440,66 +611,274 @@ _SPECS: dict[str, set[str]] = {
         "reasoning",
         "reasoning_summary",
         "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
         "verbosity",
+    },
+    "gpt-5-nano": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+        "verbosity",
+    },
+    # Codex variants (reasoning models, tool-heavy, no verbosity param)
+    "gpt-5.1-codex": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "code_interpreter_tool",
+    },
+    "gpt-5.1-codex-max": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "code_interpreter_tool",
+    },
+    "gpt-5.1-codex-mini": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "code_interpreter_tool",
+    },
+    "gpt-5-codex": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "code_interpreter_tool",
+    },
+    "codex-mini-latest": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "code_interpreter_tool",
+    },
+    # Chat-tuned GPT-5 models (non-reasoning, supports tools)
+    "gpt-5.1-chat-latest": {
+        "function_calling",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+    },
+    "gpt-5-chat-latest": {
+        "function_calling",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+    },
+    # -------------------------------------------------------------------------
+    # GPT-4.x family
+    # -------------------------------------------------------------------------
+    "gpt-4.1": {
+        "function_calling",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+    },
+    "gpt-4.1-mini": {
+        "function_calling",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+    },
+    "gpt-4.1-nano": {
+        "function_calling",
+        "image_gen_tool",
+        "code_interpreter_tool",
     },
     "gpt-4o": {
         "function_calling",
         "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
     },
+    "gpt-4o-mini": {
+        "function_calling",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+    },
+    # ChatGPT-branded 4o model (no tools / function calling in Responses)
     "chatgpt-4o-latest": set(),
+    # -------------------------------------------------------------------------
+    # o-series reasoning models
+    # -------------------------------------------------------------------------
+    "o3": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+    },
+    "o3-mini": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+    },
+    "o3-pro": {
+        "function_calling",
+        "reasoning",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+    },
+    "o4-mini": {
+        "function_calling",
+        "reasoning",
+        "reasoning_summary",
+        "web_search_tool",
+        "file_search_tool",
+        "image_gen_tool",
+        "code_interpreter_tool",
+    },
+    # -------------------------------------------------------------------------
+    # Deep research models
+    # -------------------------------------------------------------------------
+    "o3-deep-research": {
+        "reasoning",
+        "reasoning_summary",
+        "deep_research",
+        "web_search_tool",
+        "file_search_tool",
+    },
+    "o4-mini-deep-research": {
+        "reasoning",
+        "reasoning_summary",
+        "deep_research",
+        "web_search_tool",
+        "file_search_tool",
+    },
 }
 
-# Alias / pseudo ID → base model + default params overlay.
-_ALIASES: dict[str, dict[str, object]] = {
-    # Reasoning-flavored GPT-5.
-    "gpt-5-thinking": {"base_model": "gpt-5"},
-    "gpt-5-thinking-high": {
-        "base_model": "gpt-5",
+# Add entries to MODEL_ALIASES for any pseudo-model name users can pick.
+# Each alias is a preset that points to a base model and optional default params,
+# e.g. gpt-5-thinking-high -> gpt-5 with reasoning effort fixed to high.
+MODEL_ALIASES: dict[str, dict[str, dict | str]] = {
+    "gpt-5.1-thinking": {
+        "base_model": "gpt-5.1",
+        "params": {"reasoning": {"effort": "medium"}},
+    },
+    "gpt-5.1-thinking-minimal": {
+        "base_model": "gpt-5.1",
+        "params": {"reasoning": {"effort": "minimal"}},
+    },
+    "gpt-5.1-thinking-high": {
+        "base_model": "gpt-5.1",
         "params": {"reasoning": {"effort": "high"}},
+    },
+    "gpt-5-thinking": {
+        "base_model": "gpt-5",
+        "params": {"reasoning": {"effort": "medium"}},
     },
     "gpt-5-thinking-minimal": {
         "base_model": "gpt-5",
         "params": {"reasoning": {"effort": "minimal"}},
     },
-
-    # Reasoning-flavored GPT-5 Mini.
-    "gpt-5-thinking-mini": {"base_model": "gpt-5-mini"},
+    "gpt-5-thinking-high": {
+        "base_model": "gpt-5",
+        "params": {"reasoning": {"effort": "high"}},
+    },
+    "gpt-5-thinking-mini": {
+        "base_model": "gpt-5-mini",
+        "params": {"reasoning": {"effort": "medium"}},
+    },
+    "gpt-5-thinking-mini-minimal": {
+        "base_model": "gpt-5-mini",
+        "params": {"reasoning": {"effort": "minimal"}},
+    },
     "gpt-5-thinking-mini-high": {
         "base_model": "gpt-5-mini",
         "params": {"reasoning": {"effort": "high"}},
     },
-
-    # Optional 5.1-style aliases.
-    "gpt-5.1-thinking": {"base_model": "gpt-5.1-chat-latest"},
-    "gpt-5.1-thinking-high": {
-        "base_model": "gpt-5.1-chat-latest",
+    "gpt-5-thinking-nano": {
+        "base_model": "gpt-5-nano",
+        "params": {"reasoning": {"effort": "medium"}},
+    },
+    "gpt-5-thinking-nano-minimal": {
+        "base_model": "gpt-5-nano",
+        "params": {"reasoning": {"effort": "minimal"}},
+    },
+    "gpt-5-thinking-nano-high": {
+        "base_model": "gpt-5-nano",
+        "params": {"reasoning": {"effort": "high"}},
+    },
+    "o3-mini-high": {
+        "base_model": "o3-mini",
+        "params": {"reasoning": {"effort": "high"}},
+    },
+    "o4-mini-high": {
+        "base_model": "o4-mini",
         "params": {"reasoning": {"effort": "high"}},
     },
 }
 
+_PREFIX = "openai_responses."
+_DATE_SUFFIX_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+_KNOWN_IDS = frozenset({*MODEL_FEATURES.keys(), *MODEL_ALIASES.keys()})
+_logger = get_logger(__name__)
+_UNKNOWN_LOGGED: set[str] = set()
+
 
 def normalize(model_id: str) -> str:
-    """Normalize model identifiers.
+    """Normalize identifiers by lowercasing, trimming, and removing prefixes/dates."""
 
-    * Trim whitespace and lower-case.
-    * Strip the manifold prefix (``openai_responses.``) if present.
-    * Drop trailing date suffixes (``-YYYY-MM-DD``).
-    """
+    raw = (model_id or "").strip()
+    if raw.startswith(_PREFIX):
+        raw = raw[len(_PREFIX) :]
+    raw = raw.lower()
+    if not raw:
+        return ""
 
-    normalized = (model_id or "").strip()
-    if normalized.startswith(_PREFIX):
-        normalized = normalized[len(_PREFIX) :]
-    normalized = _DATE_RE.sub("", normalized)
-    return normalized.lower()
+    # Drop trailing date suffix if present (e.g. -2025-10-06).
+    no_date = _DATE_SUFFIX_RE.sub("", raw)
+    if no_date in _KNOWN_IDS:
+        return no_date
+
+    # Some official IDs are like gpt-5.1-2025-11-13; if the portion
+    # after the first dot matches a known ID, use that.
+    dot_index = no_date.find(".")
+    if dot_index != -1:
+        suffix = _DATE_SUFFIX_RE.sub("", no_date[dot_index + 1 :])
+        if suffix in _KNOWN_IDS:
+            return suffix
+
+    return no_date
 
 
 def base_model(
-    model_id: str, alias_lookup: Mapping[str, Mapping[str, object]] | None = None
+    model_id: str, alias_lookup: Mapping[str, Mapping[str, str | dict]] | None = None
 ) -> str:
     """Return the canonical base model for a given identifier."""
 
+    alias_map = alias_lookup or MODEL_ALIASES
     normalized = normalize(model_id)
-    alias_entry = (alias_lookup or _ALIASES).get(normalized)
+    alias_entry = alias_map.get(normalized)
     if alias_entry:
         base = alias_entry.get("base_model")
         if isinstance(base, str):
@@ -507,17 +886,25 @@ def base_model(
     return normalized
 
 
-def alias_defaults(model_id: str) -> dict:
+def alias_defaults(model_id: str) -> dict[str, Any]:
     """Return default parameters defined for a pseudo-model alias."""
 
-    params = _ALIASES.get(normalize(model_id), {}).get("params")
+    params = MODEL_ALIASES.get(normalize(model_id), {}).get("params")
     return deepcopy(params) if params else {}
 
 
 def features(model_id: str) -> set[str]:
     """Return the capability set for the canonical base model."""
 
-    return _SPECS.get(base_model(model_id), set())
+    canonical = base_model(model_id, MODEL_ALIASES)
+    feature_set = MODEL_FEATURES.get(canonical)
+    if feature_set is None and canonical and canonical not in _UNKNOWN_LOGGED:
+        _UNKNOWN_LOGGED.add(canonical)
+        _logger.warning(
+            "Unknown model_id in MODEL_FEATURES: %s (canonical=%s)", model_id, canonical
+        )
+        return set()
+    return feature_set or set()
 
 
 def supports(feature: str, model_id: str) -> bool:
@@ -527,11 +914,13 @@ def supports(feature: str, model_id: str) -> bool:
 
 
 __all__ = [
+    "MODEL_FEATURES",
+    "MODEL_ALIASES",
     "alias_defaults",
-    "base_model",
     "features",
-    "normalize",
     "supports",
+    "normalize",
+    "base_model",
 ]
 
 # === core/markers.py ===

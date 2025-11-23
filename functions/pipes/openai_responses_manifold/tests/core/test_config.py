@@ -13,7 +13,10 @@ def test_pipe_valves_defaults_match_docs():
 
     assert valves.BASE_URL == "https://api.openai.com/v1"
     assert valves.API_KEY == ""
-    assert valves.MODEL_ID == "gpt-5.1-chat-latest"
+    assert (
+        valves.MODEL_ID
+        == "gpt-5-auto, gpt-5-chat-latest, gpt-5-thinking, gpt-5-thinking-high, gpt-5-thinking-minimal, gpt-4.1-nano, chatgpt-4o-latest, o3, gpt-4o"
+    )
     assert valves.REASONING_SUMMARY == "disabled"
     assert valves.PERSIST_REASONING_TOKENS == "disabled"
     assert valves.PERSIST_TOOL_RESULTS is True
@@ -24,6 +27,11 @@ def test_pipe_valves_defaults_match_docs():
     assert valves.ENABLE_WEB_SEARCH_TOOL is False
     assert valves.WEB_SEARCH_CONTEXT_SIZE == "medium"
     assert valves.WEB_SEARCH_USER_LOCATION is None
+    assert valves.WEB_SEARCH_ALLOWED_DOMAINS is None
+    assert valves.WEB_SEARCH_EXTERNAL_WEB_ACCESS is True
+    assert valves.WEB_SEARCH_INCLUDE_SOURCES is True
+    assert valves.ENABLE_CODE_INTERPRETER_TOOL is False
+    assert valves.CODE_INTERPRETER_CONTAINER_JSON is None
     assert valves.REMOTE_MCP_SERVERS_JSON is None
     assert valves.TRUNCATION == "auto"
     assert valves.PROMPT_CACHE_KEY == "id"
@@ -42,5 +50,4 @@ def test_merge_valves_respects_user_log_level(user_level: str, expected: str):
 
     assert isinstance(config, RuntimeConfig)
     assert config.LOG_LEVEL == expected
-
 
