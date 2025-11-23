@@ -23,7 +23,7 @@ At runtime there are a few clear layers:
 Other important pieces:
 
 - `tests/` – pytest suite that imports modules directly from `src/` (via `tests/conftest.py` stubs) so helpers run against the editable package.
-- `scripts/build.py` – the bundler that flattens the package into the single file that Open WebUI imports.
+- `cli/openai_responses_manifold_cli/commands/build.py` – the bundler used by the developer CLI to flatten the package into the single file that Open WebUI imports.
 
 ## Folder map (current layout)
 
@@ -31,9 +31,11 @@ Other important pieces:
 functions/pipes/openai_responses_manifold/
 ├─ AGENTS.md
 ├─ pyproject.toml          # packaging + pytest/ruff + Open WebUI manifest metadata
-├─ Makefile                # dev shortcuts (install/test/lint/format/build/clean)
-├─ scripts/
-│  └─ build.py             # pytest + bundler entrypoint
+├─ cli/
+│  └─ openai_responses_manifold_cli/
+│     ├─ main.py                    # CLI entrypoint
+│     ├─ utils.py                   # shared path helpers + subprocess runner
+│     └─ commands/                  # build/test/lint commands
 ├─ src/
 │  └─ openai_responses_manifold/
 │     ├─ __init__.py       # re-exports Pipe, ResponsesEngine, helpers
@@ -49,10 +51,9 @@ functions/pipes/openai_responses_manifold/
 
 ## How the bundler works
 
-- `scripts/build.py` is the **single source of truth** for bundling:
+- `cli/openai_responses_manifold_cli/commands/build.py` is the **single source of truth** for bundling:
   - Runs `pytest` by default before bundling.
-  - Reads `src/openai_responses_manifold/` in a fixed `MODULE_ORDER`:
-
+  - Reads `src/openai_responses_manifold/` in a fixed `MODULE_ORDER`.
   - For each module in that order:
     - Removes `from __future__ import ...`.
     - Strips **relative imports** (`from .something import ...`) and relies on earlier sections in the bundle defining the referenced names.
@@ -62,9 +63,9 @@ functions/pipes/openai_responses_manifold/
 Key implications for agents:
 
 - If you add a new module under `src/openai_responses_manifold/`, you **must**:
-  - Add it to `MODULE_ORDER` in `scripts/build.py` at the correct place in the dependency order.
+  - Add it to `MODULE_ORDER` in `cli/openai_responses_manifold_cli/commands/build.py` at the correct place in the dependency order.
   - Use **relative imports** inside the package; the bundler will include the module and strip those imports, but the definitions will already be present in the bundle.
-- Never edit `openai_responses_manifold.py` by hand; it will be overwritten by `make build`.
+- Never edit `openai_responses_manifold.py` by hand; it will be overwritten by `orm build`.
 
 ## Pipe & valves contract
 
@@ -101,28 +102,27 @@ When modifying engine behavior:
 
   ```bash
   cd functions/pipes/openai_responses_manifold
-  make test
-  make build
+  orm test
+  orm build
   ```
 
 - The bundler will pick up `domain/engine.py` (via `MODULE_ORDER`) and regenerate the monolith after tests pass so Open WebUI sees the same behavior.
 
 ## Key commands (recap)
 
-- `make install` — editable install with runtime deps only.
-- `make install-dev` — editable install including the `dev` extra (pytest, ruff, etc.).
-- `make test` — run the pytest suite (against the package modules via `conftest.py`).
-- `make lint` — run Ruff checks over `src/` and `tests/`.
-- `make lint-fix` — Ruff with autofix over `src/` and `tests/`.
-- `make format` — apply Ruff formatting fixes.
-- `make build` — run pytest, then regenerate `openai_responses_manifold.py`.
-- `python scripts/build.py --tests-only` — run pytest without rebuilding.
-- `python scripts/build.py --skip-tests` — rebuild bundle without running tests (only use if tests already passed).
+- `python -m pip install -e .[dev]` — editable install including the `dev` extra (pytest, ruff, etc.).
+- `python -m pip install -e .` — editable install with runtime deps only.
+- `orm test` — run the pytest suite (against the package modules via `conftest.py`).
+- `orm lint` — run Ruff checks over `src/`, `tests/`, and `cli/`.
+- `orm lint --fix` — Ruff with autofix over `src/`, `tests/`, and `cli/`.
+- `orm build` — run pytest, then regenerate `openai_responses_manifold.py`.
+- `orm build --tests-only` — run pytest without rebuilding.
+- `orm build --skip-tests` — rebuild bundle without running tests (only use if tests already passed).
 
 ## Notes for agents
 
 - Always treat `openai_responses_manifold.py` as generated; edit the package under `src/openai_responses_manifold/` instead.
 - When adding new features:
   - Prefer to put pure logic in `core/`, orchestration in `domain/`, OpenAI/HTTP in `adapters/openai/`, Open WebUI glue in `adapters/openwebui/`, and keep the `Pipe` thin.
-  - Update `scripts/build.py` if you introduce new top‑level modules in the package so the bundler stays in sync.
+  - Update `cli/openai_responses_manifold_cli/commands/build.py` if you introduce new top‑level modules in the package so the bundler stays in sync.
 - Keep this guide in sync with structural changes so future agents don’t have to rediscover how the manifold and bundler work. 

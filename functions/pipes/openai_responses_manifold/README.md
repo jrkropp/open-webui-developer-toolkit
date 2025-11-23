@@ -52,7 +52,7 @@ This project started as an internal tool (200+ hours of optimization and testing
 
 ## Local Development
 
-Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything lives under `src/openai_responses_manifold/` in clear layers: `config/` (valves/defaults), `core/` (model catalog, markers/messages/errors, logging), `adapters/openai/` (OpenAI DTOs + streaming events + client), `adapters/openwebui/` (Open WebUI events/store, request builder, runtime event bridge, `Pipe`), and `domain/` (runtime events protocol plus engine, history, tools, tasks, routing). Run `make build` when you’re ready to regenerate the monolithic `openai_responses_manifold.py` that Open WebUI imports.
+Open WebUI can only import a **single Python file** per pipe. To keep the codebase maintainable and familiar to Python developers, everything lives under `src/openai_responses_manifold/` in clear layers: `config/` (valves/defaults), `core/` (model catalog, markers/messages/errors, logging), `adapters/openai/` (OpenAI DTOs + streaming events + client), `adapters/openwebui/` (Open WebUI events/store, request builder, runtime event bridge, `Pipe`), and `domain/` (runtime events protocol plus engine, history, tools, tasks, routing). Run `orm build` when you’re ready to regenerate the monolithic `openai_responses_manifold.py` that Open WebUI imports.
 
 ### Project layout
 
@@ -71,23 +71,23 @@ git clone https://github.com/jrkropp/open-webui-developer-toolkit.git
 cd open-webui-developer-toolkit/functions/pipes/openai_responses_manifold
 python -m venv .venv
 source .venv/bin/activate        # Windows: .\.venv\Scripts\activate
-make install-dev                 # editable install + dev extras (pytest, ruff, etc.)
+python -m pip install -e .[dev]  # editable install + dev extras (pytest, ruff, etc.)
 python -m pip install pre-commit && pre-commit install  # optional hooks (Ruff check/format + mypy)
 ```
 
-**Everyday commands**
+**Everyday commands (CLI)**
 
 ```
-make test       # run pytest
-make lint       # run Ruff checks
-make lint-fix   # Ruff checks with autofix
-make format     # apply Ruff formatting fixes
-make typecheck  # run mypy against openai_responses_manifold
-make build      # pytest + regenerate openai_responses_manifold.py for Open WebUI
-make clean      # remove build artefacts and caches
+orm test                     # run pytest (use -- to forward flags, e.g., orm test -- -k markers)
+orm lint                     # run Ruff checks
+orm lint --fix               # Ruff with autofix
+orm build                    # pytest + regenerate openai_responses_manifold.py for Open WebUI
+orm build --skip-tests       # bundle without running pytest
 ```
 
-Use `make install` when you only need runtime dependencies (e.g., smoke-testing inside Open WebUI). Otherwise stay in editable mode, make changes in `src/openai_responses_manifold/`, and run `make build` whenever you need a fresh single-file bundle to copy/paste or distribute. If you ever need sdists/wheels for PyPI-style distribution, invoke `python -m build` directly.
+`orm` is the console script installed from `pyproject.toml`; use `python -m openai_responses_manifold_cli …` if you prefer module-style invocation. An explicit alias `openai-responses-manifold` is also installed if you prefer longer command names.
+
+Use `python -m pip install -e .` when you only need runtime dependencies (e.g., smoke-testing inside Open WebUI). Otherwise stay in editable mode, make changes in `src/openai_responses_manifold/`, and run `orm build` whenever you need a fresh single-file bundle to copy/paste or distribute. If you ever need sdists/wheels for PyPI-style distribution, invoke `python -m build` directly.
 
 ### Testing approach
 
@@ -97,7 +97,7 @@ The pytest suite now mixes fast unit tests with scenario-style orchestrator test
 - Scenario coverage (`tests/test_runner_scenarios.py`) exercises `ResponsesEngine` end-to-end: streaming completions, tool loops, and error/log flushing behavior.
 - Module-focused tests (markers, request shaping, tool building, etc.) catch regressions in helpers used throughout the bundle.
 
-Run everything via `make test`. Scenario tests rely on asyncio; pytest is already configured with `asyncio` plugin, so no extra flags are needed.
+Run everything via `orm test`. Scenario tests rely on asyncio; pytest is already configured with `asyncio` plugin, so no extra flags are needed.
 
 Detailed design notes and release history live under `functions/pipes/openai_responses_manifold/docs/` (`DESIGN.md`, `CHANGELOG.md`). AI handoff workpackages live in `.workpackages/`.
 

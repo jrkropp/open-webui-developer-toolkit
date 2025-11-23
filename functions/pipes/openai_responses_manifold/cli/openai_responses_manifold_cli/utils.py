@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Sequence
 
 PACKAGE_NAME = "openai_responses_manifold"
-PIPE_ROOT = Path(__file__).resolve().parents[3]
+PIPE_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = PIPE_ROOT / "src"
 PACKAGE_DIR = SRC_DIR / PACKAGE_NAME
 OUTPUT_FILE = PIPE_ROOT / "openai_responses_manifold.py"

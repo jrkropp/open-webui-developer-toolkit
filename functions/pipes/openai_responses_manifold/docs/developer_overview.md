@@ -47,14 +47,14 @@ When Open WebUI uses the `__task__` model hint, `Pipe` bypasses streaming and ca
 
 ## Monolith build (for Open WebUI)
 
-* `scripts/build.py` flattens the layered source into `openai_responses_manifold.py` in the repository root.
+* `cli/openai_responses_manifold_cli/commands/build.py` flattens the layered source into `openai_responses_manifold.py` in the repository root (bundler used by the CLI).
 * It reads modules in dependency order, strips relative imports, and prefixes a manifest docstring sourced from `pyproject.toml`.
-* Run `make build` (or `python scripts/build.py`) after tests pass to keep the monolith in sync with the layered source.
+* Run `orm build` (or `python -m openai_responses_manifold_cli build`) after tests pass to keep the monolith in sync with the layered source.
 
 ## Testing & dev loop
 
-* Run `make install-dev` once per checkout for editable installs with pytest/ruff/mypy.
-* Use `make test` during development; `scripts/build.py` runs pytest before bundling by default.
+* Run `python -m pip install -e .[dev]` once per checkout for editable installs with pytest/ruff/mypy.
+* Use `orm test` during development; the CLI build command runs pytest before bundling by default.
 * Scenario tests in `tests/` drive the engine with fake clients and stores, while module-focused tests cover helpers (markers, routing, tools, etc.).
 
 ## Legacy directories
