@@ -101,14 +101,16 @@ class HistoryManager:
         """Build Responses ``input`` items plus instructions from messages."""
 
         items_lookup: dict[str, dict] = {}
-        if chat_key and openwebui_model_id:
+        target_model_id = openwebui_model_id or model_id
+
+        if chat_key and target_model_id:
             required_item_ids = self._collect_required_item_ids(messages)
             if required_item_ids:
                 try:
                     items_lookup = self._store.load_items(
                         chat_key=chat_key,
                         item_ids=list(required_item_ids),
-                        model_id=openwebui_model_id,
+                        model_id=target_model_id,
                     )
                 except Exception:  # pragma: no cover - defensive fallback
                     items_lookup = {}

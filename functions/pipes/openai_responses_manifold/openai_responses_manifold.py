@@ -712,7 +712,7 @@ from typing import Any, Mapping, Optional
 from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
 # [build.py] internal imports removed in monolith:
-# from ..core import model_catalog
+# from ..core import alias_defaults, base_model, normalize
 
 
 class StreamOptions(BaseModel):
@@ -774,10 +774,10 @@ class ResponsesRequest(BaseModel):
         """
 
         original_model = self.model or ""
-        canonical_model = model_catalog.base_model(original_model)
-        defaults = model_catalog.alias_defaults(original_model) or {}
+        canonical_model = base_model(original_model)
+        defaults = alias_defaults(original_model) or {}
 
-        if canonical_model == model_catalog.normalize(original_model) and not defaults:
+        if canonical_model == normalize(original_model) and not defaults:
             return self
 
         data = json.loads(self.model_dump_json(exclude_none=False))
@@ -877,6 +877,33 @@ class ResponseOutputItemDoneEvent(ResponseEvent):
     item: dict[str, Any] | None = None
 
 
+class ResponseCodeInterpreterCallInProgressEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.in_progress"
+    output_index: Optional[int] = None
+
+
+class ResponseCodeInterpreterCallInterpretingEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.interpreting"
+    output_index: Optional[int] = None
+
+
+class ResponseCodeInterpreterCallCodeDeltaEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.code.delta"
+    output_index: Optional[int] = None
+    delta: Optional[str] = None
+
+
+class ResponseCodeInterpreterCallCodeDoneEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.code.done"
+    output_index: Optional[int] = None
+    code: Optional[str] = None
+
+
+class ResponseCodeInterpreterCallCompletedEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.completed"
+    output_index: Optional[int] = None
+
+
 class ResponseCompletedEvent(ResponseEvent):
     type: str = "response.completed"
     response: dict[str, Any]
@@ -900,6 +927,11 @@ ResponsesEvent = (
     | ResponseOutputTextAnnotationAddedEvent
     | ResponseOutputItemAddedEvent
     | ResponseOutputItemDoneEvent
+    | ResponseCodeInterpreterCallInProgressEvent
+    | ResponseCodeInterpreterCallInterpretingEvent
+    | ResponseCodeInterpreterCallCodeDeltaEvent
+    | ResponseCodeInterpreterCallCodeDoneEvent
+    | ResponseCodeInterpreterCallCompletedEvent
     | ResponseCompletedEvent
     | ResponseIncompleteEvent
     | ResponseFailedEvent
@@ -932,6 +964,7 @@ def dump_responses_request(payload: ResponsesRequest | Mapping[str, Any]) -> dic
 
 
 __all__ = [
+    "ResponseEvent",
     "ResponsesEvent",
     "ResponsesRequest",
     "ResponseCompletedEvent",
@@ -939,6 +972,11 @@ __all__ = [
     "ResponseIncompleteEvent",
     "ResponseOutputItemAddedEvent",
     "ResponseOutputItemDoneEvent",
+    "ResponseCodeInterpreterCallInProgressEvent",
+    "ResponseCodeInterpreterCallInterpretingEvent",
+    "ResponseCodeInterpreterCallCodeDeltaEvent",
+    "ResponseCodeInterpreterCallCodeDoneEvent",
+    "ResponseCodeInterpreterCallCompletedEvent",
     "ResponseOutputTextAnnotationAddedEvent",
     "ResponseOutputTextDeltaEvent",
     "ResponseReasoningSummaryTextDoneEvent",
@@ -1276,14 +1314,16 @@ class HistoryManager:
         """Build Responses ``input`` items plus instructions from messages."""
 
         items_lookup: dict[str, dict] = {}
-        if chat_key and openwebui_model_id:
+        target_model_id = openwebui_model_id or model_id
+
+        if chat_key and target_model_id:
             required_item_ids = self._collect_required_item_ids(messages)
             if required_item_ids:
                 try:
                     items_lookup = self._store.load_items(
                         chat_key=chat_key,
                         item_ids=list(required_item_ids),
-                        model_id=openwebui_model_id,
+                        model_id=target_model_id,
                     )
                 except Exception:  # pragma: no cover - defensive fallback
                     items_lookup = {}
@@ -1415,7 +1455,6 @@ strict JSON Schema handling, and deterministic deduplication. See
 ``docs/tools_and_extra_tools.md`` for the authoritative contract.
 """
 
-from copy import deepcopy
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Iterable, Literal, Protocol
@@ -1960,16 +1999,16 @@ See ``docs/routing_and_model_catalog.md`` for behavior details.
 """
 
 import json
-import logging
 from typing import Any
 
 # [build.py] internal imports removed in monolith:
-# from ..core import model_catalog
+# from ..core import base_model, normalize, supports
+# from ..core.logging import get_logger
 # from ..openai_api.client import OpenAIClient
 # from ..openai_api.types import ResponsesRequest
 # from .types import RuntimeEvents, TurnContext
 
-logger = logging.getLogger(__name__)
+logger = get_logger("openai_responses_manifold.routing")
 
 
 def _extract_output_text(response: dict[str, Any]) -> str:
@@ -2022,8 +2061,8 @@ async def route_auto_model(
     if not isinstance(owui_model_id, str):
         return request
 
-    request.model = model_catalog.base_model(request.model)
-    normalized = model_catalog.normalize(owui_model_id)
+    request.model = base_model(request.model)
+    normalized = normalize(owui_model_id)
 
     if normalized.endswith("gpt-5-auto"):
         request.model = "gpt-5.1-chat-latest"
@@ -2096,7 +2135,7 @@ async def route_auto_model(
 
     request.model = model
 
-    if model_catalog.supports("reasoning", model):
+    if supports("reasoning", model):
         reasoning = dict(request.reasoning or {})
         reasoning["effort"] = effort
         request.reasoning = reasoning
@@ -2133,6 +2172,11 @@ from urllib.parse import urlparse, urlunparse
 #     consume_session_logs,
 #     get_logger,
 # )
+# from openai_responses_manifold.domain.code_interpreter import (
+#     emit_pending_code_interpreter_result,
+#     handle_code_interpreter_event,
+#     handle_code_interpreter_item,
+# )
 # from openai_responses_manifold.domain.types import (
 #     Citation,
 #     RuntimeEvents,
@@ -2144,6 +2188,11 @@ from urllib.parse import urlparse, urlunparse
 # )
 # from openai_responses_manifold.openai_api import (
 #     OpenAIClient,
+#     ResponseCodeInterpreterCallCodeDeltaEvent,
+#     ResponseCodeInterpreterCallCodeDoneEvent,
+#     ResponseCodeInterpreterCallCompletedEvent,
+#     ResponseCodeInterpreterCallInProgressEvent,
+#     ResponseCodeInterpreterCallInterpretingEvent,
 #     ResponseCompletedEvent,
 #     ResponseEvent,
 #     ResponseFailedEvent,
@@ -2181,7 +2230,6 @@ class ResponsesEngine:
         ctx: TurnContext,
         events: RuntimeEvents,
         history_key: dict[str, Any],
-        tool_registry,
         tool_executor,
     ) -> TurnResult:
         cfg: RuntimeConfig = ctx.runtime_config
@@ -2206,7 +2254,7 @@ class ResponsesEngine:
             last_response = response
             self._merge_usage(state, response)
 
-            tool_calls = self._extract_tool_calls(response, cfg)
+            tool_calls = self._extract_tool_calls(response)
             if not tool_calls:
                 break
 
@@ -2238,6 +2286,10 @@ class ResponsesEngine:
             openwebui_model_id=str(ctx.metadata.get("owui_model_id", "")),
             current_assistant_text=final_text,
             marker_placeholder=MARKER_PLACEHOLDER,
+        )
+
+        await emit_pending_code_interpreter_result(
+            state, events, self._logger, assistant_text=final_text
         )
 
         result = TurnResult(
@@ -2310,6 +2362,22 @@ class ResponsesEngine:
         events: RuntimeEvents,
         ctx: TurnContext,
     ) -> dict[str, Any] | None:
+        async def emit_status(description: str, **kwargs: Any) -> None:
+            await events.status(description, **kwargs)
+
+        if isinstance(
+            event,
+            (
+                ResponseCodeInterpreterCallInProgressEvent,
+                ResponseCodeInterpreterCallInterpretingEvent,
+                ResponseCodeInterpreterCallCodeDeltaEvent,
+                ResponseCodeInterpreterCallCodeDoneEvent,
+                ResponseCodeInterpreterCallCompletedEvent,
+            ),
+        ):
+            await handle_code_interpreter_event(event, state, emit_status, self._logger)
+            return None
+
         if isinstance(event, ResponseOutputTextDeltaEvent):
             delta = event.delta or ""
             if delta:
@@ -2359,6 +2427,15 @@ class ResponsesEngine:
         if isinstance(event, (ResponseOutputItemAddedEvent, ResponseOutputItemDoneEvent)):
             item = event.item or {}
             if item:
+                if item.get("type") == "code_interpreter_call":
+                    await handle_code_interpreter_item(
+                        item,
+                        state,
+                        events,
+                        self._logger,
+                        emit_status,
+                        output_index=getattr(event, "output_index", None),
+                    )
                 self._record_structured_item(item, state, ctx.runtime_config)
             return None
 
@@ -2388,7 +2465,7 @@ class ResponsesEngine:
                     except Exception:
                         state.usage[key] = value
 
-    def _extract_tool_calls(self, response: dict[str, Any], cfg: RuntimeConfig) -> list[ToolCall]:
+    def _extract_tool_calls(self, response: dict[str, Any]) -> list[ToolCall]:
         output_items = response.get("output") or []
         calls: list[ToolCall] = []
         for item in output_items:
@@ -2802,7 +2879,7 @@ import json
 from typing import Any, Tuple
 
 # [build.py] internal imports removed in monolith:
-# from openai_responses_manifold.core import model_catalog
+# from openai_responses_manifold.core import base_model, features
 # from openai_responses_manifold.core.config import RuntimeConfig
 # from openai_responses_manifold.domain.history import HistoryManager
 # from openai_responses_manifold.domain.types import TurnContext
@@ -2819,8 +2896,8 @@ def build_turn_context(
 ) -> TurnContext:
     metadata = __metadata__ or {}
     owui_model_id = metadata.get("model", {}).get("id") if isinstance(metadata.get("model"), dict) else None
-    model_id = model_catalog.base_model(owui_model_id or runtime_cfg.MODEL_ID)
-    features = model_catalog.features(model_id)
+    model_id = base_model(owui_model_id or runtime_cfg.MODEL_ID)
+    model_features = features(model_id)
     ctx_metadata = {
         "session_id": metadata.get("session_id"),
         "chat_id": metadata.get("chat_id"),
@@ -2829,7 +2906,12 @@ def build_turn_context(
         "user_email": (__user__ or {}).get("email"),
         "owui_model_id": owui_model_id,
     }
-    return TurnContext(runtime_config=runtime_cfg, model_id=model_id, features=features, metadata=ctx_metadata)
+    return TurnContext(
+        runtime_config=runtime_cfg,
+        model_id=model_id,
+        features=model_features,
+        metadata=ctx_metadata,
+    )
 
 
 def map_completions_to_responses(
@@ -3036,8 +3118,9 @@ class Pipe:
                 __metadata__=__metadata__,
             )
             history_key = {"chat_id": (__metadata__ or {}).get("chat_id"), "pipe_id": self.id}
-            registry = OpenWebUIToolRegistry(await self._resolve_tools(__tools__ or {}))
-            executor = OpenWebUIToolExecutor(await self._resolve_tools(__tools__ or {}))
+            resolved_tools = await self._resolve_tools(__tools__ or {})
+            registry = OpenWebUIToolRegistry(resolved_tools)
+            executor = OpenWebUIToolExecutor(resolved_tools)
 
             if __task__ is not None:
                 task_body = __task_body__ if __task_body__ is not None else body or {}
@@ -3104,7 +3187,6 @@ class Pipe:
                 ctx=ctx,
                 events=events,
                 history_key=history_key,
-                tool_registry=registry,
                 tool_executor=executor,
             )
 

@@ -13,7 +13,7 @@ from typing import Any, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
-from ..core import model_catalog
+from ..core import alias_defaults, base_model, normalize
 
 
 class StreamOptions(BaseModel):
@@ -75,10 +75,10 @@ class ResponsesRequest(BaseModel):
         """
 
         original_model = self.model or ""
-        canonical_model = model_catalog.base_model(original_model)
-        defaults = model_catalog.alias_defaults(original_model) or {}
+        canonical_model = base_model(original_model)
+        defaults = alias_defaults(original_model) or {}
 
-        if canonical_model == model_catalog.normalize(original_model) and not defaults:
+        if canonical_model == normalize(original_model) and not defaults:
             return self
 
         data = json.loads(self.model_dump_json(exclude_none=False))
@@ -178,6 +178,33 @@ class ResponseOutputItemDoneEvent(ResponseEvent):
     item: dict[str, Any] | None = None
 
 
+class ResponseCodeInterpreterCallInProgressEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.in_progress"
+    output_index: Optional[int] = None
+
+
+class ResponseCodeInterpreterCallInterpretingEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.interpreting"
+    output_index: Optional[int] = None
+
+
+class ResponseCodeInterpreterCallCodeDeltaEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.code.delta"
+    output_index: Optional[int] = None
+    delta: Optional[str] = None
+
+
+class ResponseCodeInterpreterCallCodeDoneEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.code.done"
+    output_index: Optional[int] = None
+    code: Optional[str] = None
+
+
+class ResponseCodeInterpreterCallCompletedEvent(ResponseEvent):
+    type: str = "response.code_interpreter_call.completed"
+    output_index: Optional[int] = None
+
+
 class ResponseCompletedEvent(ResponseEvent):
     type: str = "response.completed"
     response: dict[str, Any]
@@ -201,6 +228,11 @@ ResponsesEvent = (
     | ResponseOutputTextAnnotationAddedEvent
     | ResponseOutputItemAddedEvent
     | ResponseOutputItemDoneEvent
+    | ResponseCodeInterpreterCallInProgressEvent
+    | ResponseCodeInterpreterCallInterpretingEvent
+    | ResponseCodeInterpreterCallCodeDeltaEvent
+    | ResponseCodeInterpreterCallCodeDoneEvent
+    | ResponseCodeInterpreterCallCompletedEvent
     | ResponseCompletedEvent
     | ResponseIncompleteEvent
     | ResponseFailedEvent
@@ -233,6 +265,7 @@ def dump_responses_request(payload: ResponsesRequest | Mapping[str, Any]) -> dic
 
 
 __all__ = [
+    "ResponseEvent",
     "ResponsesEvent",
     "ResponsesRequest",
     "ResponseCompletedEvent",
@@ -240,6 +273,11 @@ __all__ = [
     "ResponseIncompleteEvent",
     "ResponseOutputItemAddedEvent",
     "ResponseOutputItemDoneEvent",
+    "ResponseCodeInterpreterCallInProgressEvent",
+    "ResponseCodeInterpreterCallInterpretingEvent",
+    "ResponseCodeInterpreterCallCodeDeltaEvent",
+    "ResponseCodeInterpreterCallCodeDoneEvent",
+    "ResponseCodeInterpreterCallCompletedEvent",
     "ResponseOutputTextAnnotationAddedEvent",
     "ResponseOutputTextDeltaEvent",
     "ResponseReasoningSummaryTextDoneEvent",

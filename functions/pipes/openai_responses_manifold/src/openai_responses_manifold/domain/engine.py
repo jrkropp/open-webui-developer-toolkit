@@ -12,6 +12,11 @@ from openai_responses_manifold.core.logging import (
     consume_session_logs,
     get_logger,
 )
+from openai_responses_manifold.domain.code_interpreter import (
+    emit_pending_code_interpreter_result,
+    handle_code_interpreter_event,
+    handle_code_interpreter_item,
+)
 from openai_responses_manifold.domain.types import (
     Citation,
     RuntimeEvents,
@@ -23,6 +28,11 @@ from openai_responses_manifold.domain.types import (
 )
 from openai_responses_manifold.openai_api import (
     OpenAIClient,
+    ResponseCodeInterpreterCallCodeDeltaEvent,
+    ResponseCodeInterpreterCallCodeDoneEvent,
+    ResponseCodeInterpreterCallCompletedEvent,
+    ResponseCodeInterpreterCallInProgressEvent,
+    ResponseCodeInterpreterCallInterpretingEvent,
     ResponseCompletedEvent,
     ResponseEvent,
     ResponseFailedEvent,
@@ -59,7 +69,6 @@ class ResponsesEngine:
         ctx: TurnContext,
         events: RuntimeEvents,
         history_key: dict[str, Any],
-        tool_registry,
         tool_executor,
     ) -> TurnResult:
         cfg: RuntimeConfig = ctx.runtime_config
@@ -84,7 +93,7 @@ class ResponsesEngine:
             last_response = response
             self._merge_usage(state, response)
 
-            tool_calls = self._extract_tool_calls(response, cfg)
+            tool_calls = self._extract_tool_calls(response)
             if not tool_calls:
                 break
 
@@ -116,6 +125,10 @@ class ResponsesEngine:
             openwebui_model_id=str(ctx.metadata.get("owui_model_id", "")),
             current_assistant_text=final_text,
             marker_placeholder=MARKER_PLACEHOLDER,
+        )
+
+        await emit_pending_code_interpreter_result(
+            state, events, self._logger, assistant_text=final_text
         )
 
         result = TurnResult(
@@ -188,6 +201,22 @@ class ResponsesEngine:
         events: RuntimeEvents,
         ctx: TurnContext,
     ) -> dict[str, Any] | None:
+        async def emit_status(description: str, **kwargs: Any) -> None:
+            await events.status(description, **kwargs)
+
+        if isinstance(
+            event,
+            (
+                ResponseCodeInterpreterCallInProgressEvent,
+                ResponseCodeInterpreterCallInterpretingEvent,
+                ResponseCodeInterpreterCallCodeDeltaEvent,
+                ResponseCodeInterpreterCallCodeDoneEvent,
+                ResponseCodeInterpreterCallCompletedEvent,
+            ),
+        ):
+            await handle_code_interpreter_event(event, state, emit_status, self._logger)
+            return None
+
         if isinstance(event, ResponseOutputTextDeltaEvent):
             delta = event.delta or ""
             if delta:
@@ -237,6 +266,15 @@ class ResponsesEngine:
         if isinstance(event, (ResponseOutputItemAddedEvent, ResponseOutputItemDoneEvent)):
             item = event.item or {}
             if item:
+                if item.get("type") == "code_interpreter_call":
+                    await handle_code_interpreter_item(
+                        item,
+                        state,
+                        events,
+                        self._logger,
+                        emit_status,
+                        output_index=getattr(event, "output_index", None),
+                    )
                 self._record_structured_item(item, state, ctx.runtime_config)
             return None
 
@@ -266,7 +304,7 @@ class ResponsesEngine:
                     except Exception:
                         state.usage[key] = value
 
-    def _extract_tool_calls(self, response: dict[str, Any], cfg: RuntimeConfig) -> list[ToolCall]:
+    def _extract_tool_calls(self, response: dict[str, Any]) -> list[ToolCall]:
         output_items = response.get("output") or []
         calls: list[ToolCall] = []
         for item in output_items:

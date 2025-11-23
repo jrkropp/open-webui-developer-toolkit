@@ -158,7 +158,6 @@ async def test_streaming_without_tools(runtime_config: RuntimeConfig) -> None:
         ctx=_ctx(runtime_config),
         events=events,
         history_key={"chat_id": "c1"},
-        tool_registry=None,
         tool_executor=_FakeToolExecutor([]),
     )
 
@@ -204,7 +203,6 @@ async def test_tool_call_loop(runtime_config: RuntimeConfig) -> None:
         ctx=_ctx(runtime_config),
         events=events,
         history_key={"chat_id": "c1"},
-        tool_registry=None,
         tool_executor=tool_executor,
     )
 
@@ -240,7 +238,6 @@ async def test_persists_reasoning_items_when_conversation(runtime_config: Runtim
         ctx=_ctx(cfg),
         events=events,
         history_key={"chat_id": "c1"},
-        tool_registry=None,
         tool_executor=_FakeToolExecutor([]),
     )
 
@@ -268,7 +265,6 @@ async def test_emits_log_citation(runtime_config: RuntimeConfig) -> None:
             ctx=_ctx(runtime_config),
             events=events,
             history_key={"chat_id": "c1"},
-            tool_registry=None,
             tool_executor=_FakeToolExecutor([]),
         )
 
@@ -305,7 +301,6 @@ async def test_url_citation_handling(runtime_config: RuntimeConfig) -> None:
         ctx=_ctx(runtime_config),
         events=events,
         history_key={"chat_id": "c1"},
-        tool_registry=None,
         tool_executor=_FakeToolExecutor([]),
     )
 

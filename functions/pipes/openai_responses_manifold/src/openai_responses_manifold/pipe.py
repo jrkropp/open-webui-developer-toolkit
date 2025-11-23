@@ -133,8 +133,9 @@ class Pipe:
                 __metadata__=__metadata__,
             )
             history_key = {"chat_id": (__metadata__ or {}).get("chat_id"), "pipe_id": self.id}
-            registry = OpenWebUIToolRegistry(await self._resolve_tools(__tools__ or {}))
-            executor = OpenWebUIToolExecutor(await self._resolve_tools(__tools__ or {}))
+            resolved_tools = await self._resolve_tools(__tools__ or {})
+            registry = OpenWebUIToolRegistry(resolved_tools)
+            executor = OpenWebUIToolExecutor(resolved_tools)
 
             if __task__ is not None:
                 task_body = __task_body__ if __task_body__ is not None else body or {}
@@ -201,7 +202,6 @@ class Pipe:
                 ctx=ctx,
                 events=events,
                 history_key=history_key,
-                tool_registry=registry,
                 tool_executor=executor,
             )
 
