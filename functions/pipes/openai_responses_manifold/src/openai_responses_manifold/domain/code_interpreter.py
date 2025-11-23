@@ -11,7 +11,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from openai_responses_manifold.core.logging import truncate_for_log
-from openai_responses_manifold.domain.types import Citation, RuntimeEvents, TurnState
+from openai_responses_manifold.domain.types import RuntimeEvents, TurnState
 
 EmitStatusFn = Callable[..., Awaitable[Any]]
 
@@ -195,11 +195,12 @@ async def handle_code_interpreter_item(
         )
 
     result_snippet = "\n\n".join(snippet_parts)
-    citation = Citation(
-        source_name="Code interpreter run",
-        url=None,
-        document=[result_snippet],
-        metadata={
+    citation = {
+        "provider": "openai:code_interpreter",
+        "id": f"ci-{len(state.citations) + 1}",
+        "title": "Code interpreter run",
+        "snippet": result_snippet,
+        "metadata": {
             "item_type": "code_interpreter_call",
             "kind": "run",
             "has_logs": bool(log_chunks),
@@ -209,13 +210,13 @@ async def handle_code_interpreter_item(
             "pending_result_text": pending_result,
             "output_index": run_index,
         },
-    )
+    }
     state.citations.append(citation)
     await events.citation(
         {
-            "document": citation.document,
-            "metadata": [citation.metadata],
-            "source": {"name": citation.source_name},
+            "document": [result_snippet],
+            "metadata": [citation["metadata"]],
+            "source": {"name": citation["title"]},
         }
     )
 
@@ -259,11 +260,12 @@ async def emit_pending_code_interpreter_result(
             snippet_parts.append(f"Code:\n{code_snippet}")
 
         snippet = "\n\n".join(snippet_parts)
-        citation = Citation(
-            source_name="Code interpreter result",
-            url=None,
-            document=[snippet],
-            metadata={
+        citation = {
+            "provider": "openai:code_interpreter",
+            "id": f"ci-{len(state.citations) + 1}",
+            "title": "Code interpreter result",
+            "snippet": snippet,
+            "metadata": {
                 "item_type": "code_interpreter_call",
                 "kind": "result",
                 "has_logs": False,
@@ -273,13 +275,13 @@ async def emit_pending_code_interpreter_result(
                 "pending_result_text": False,
                 "output_index": run_index,
             },
-        )
+        }
         state.citations.append(citation)
         await events.citation(
             {
-                "document": citation.document,
-                "metadata": [citation.metadata],
-                "source": {"name": citation.source_name},
+                "document": [snippet],
+                "metadata": [citation["metadata"]],
+                "source": {"name": citation["title"]},
             }
         )
 
