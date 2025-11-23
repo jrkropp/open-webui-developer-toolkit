@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Tuple
 
-from openai_responses_manifold.core import model_catalog
+from openai_responses_manifold.core import base_model, features
 from openai_responses_manifold.core.config import RuntimeConfig
 from openai_responses_manifold.domain.history import HistoryManager
 from openai_responses_manifold.domain.types import TurnContext
@@ -22,8 +22,8 @@ def build_turn_context(
 ) -> TurnContext:
     metadata = __metadata__ or {}
     owui_model_id = metadata.get("model", {}).get("id") if isinstance(metadata.get("model"), dict) else None
-    model_id = model_catalog.base_model(owui_model_id or runtime_cfg.MODEL_ID)
-    features = model_catalog.features(model_id)
+    model_id = base_model(owui_model_id or runtime_cfg.MODEL_ID)
+    model_features = features(model_id)
     ctx_metadata = {
         "session_id": metadata.get("session_id"),
         "chat_id": metadata.get("chat_id"),
@@ -32,7 +32,12 @@ def build_turn_context(
         "user_email": (__user__ or {}).get("email"),
         "owui_model_id": owui_model_id,
     }
-    return TurnContext(runtime_config=runtime_cfg, model_id=model_id, features=features, metadata=ctx_metadata)
+    return TurnContext(
+        runtime_config=runtime_cfg,
+        model_id=model_id,
+        features=model_features,
+        metadata=ctx_metadata,
+    )
 
 
 def map_completions_to_responses(

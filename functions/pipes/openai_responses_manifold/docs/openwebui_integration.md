@@ -463,7 +463,6 @@ High‑level flow:
         ctx=ctx,
         events=events,
         history_key=history_key,
-        tool_registry=registry,
         tool_executor=executor,
     )
     ```

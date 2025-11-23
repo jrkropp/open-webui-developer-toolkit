@@ -8,15 +8,15 @@ See ``docs/routing_and_model_catalog.md`` for behavior details.
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any
 
-from ..core import model_catalog
+from ..core import base_model, normalize, supports
+from ..core.logging import get_logger
 from ..openai_api.client import OpenAIClient
 from ..openai_api.types import ResponsesRequest
 from .types import RuntimeEvents, TurnContext
 
-logger = logging.getLogger(__name__)
+logger = get_logger("openai_responses_manifold.routing")
 
 
 def _extract_output_text(response: dict[str, Any]) -> str:
@@ -69,8 +69,8 @@ async def route_auto_model(
     if not isinstance(owui_model_id, str):
         return request
 
-    request.model = model_catalog.base_model(request.model)
-    normalized = model_catalog.normalize(owui_model_id)
+    request.model = base_model(request.model)
+    normalized = normalize(owui_model_id)
 
     if normalized.endswith("gpt-5-auto"):
         request.model = "gpt-5.1-chat-latest"
@@ -143,7 +143,7 @@ async def route_auto_model(
 
     request.model = model
 
-    if model_catalog.supports("reasoning", model):
+    if supports("reasoning", model):
         reasoning = dict(request.reasoning or {})
         reasoning["effort"] = effort
         request.reasoning = reasoning

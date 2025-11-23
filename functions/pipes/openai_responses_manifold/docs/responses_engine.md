@@ -259,7 +259,6 @@ class ResponsesEngine:
         ctx: TurnContext,
         events: RuntimeEvents,
         history_key: dict[str, Any],
-        tool_registry: ToolRegistry,
         tool_executor: ToolExecutor,
     ) -> TurnResult:
         ...
@@ -289,8 +288,6 @@ class ResponsesEngine:
 * `events: RuntimeEvents` — abstraction over Open WebUI’s event emitter.
 
 * `history_key: dict` — opaque key passed to `HistoryManager` for persistence (e.g. `{"chat_id": ..., "pipe_id": "openai_responses"}`).
-
-* `tool_registry` — currently not needed in the core loop, but available for richer tool UX if ever needed.
 
 * `tool_executor` — used to actually execute tool calls.
 
