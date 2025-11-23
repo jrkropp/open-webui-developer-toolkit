@@ -47,8 +47,10 @@ def test_tool_policy_merge_order_and_deduplication():
             "parameters": {"type": "object", "properties": {"filter": {"type": "string"}}},
         }
     ]
-    mcp_tools = [{"type": "mcp", "name": "remote"}]
-    web_search_tools = [{"type": "web_search", "name": "builtin"}]
+    mcp_tools = [
+        {"type": "mcp", "server_label": "remote", "server_url": "https://example.com"}
+    ]
+    web_search_tools = [{"type": "web_search", "search_context_size": "low"}]
 
     tools = ToolPolicy.build_responses_tools(
         model_id="gpt-5",
@@ -61,11 +63,12 @@ def test_tool_policy_merge_order_and_deduplication():
         web_search_tools=web_search_tools,
     )
 
-    assert [(tool.get("type"), tool.get("name")) for tool in tools] == [
-        ("function", "weather_lookup"),
-        ("mcp", "remote"),
-        ("web_search", "builtin"),
-    ]
+    assert len(tools) == 3
+    assert (tools[0].get("type"), tools[0].get("name")) == ("function", "weather_lookup")
+    assert tools[1].get("type") == "mcp"
+    assert tools[1].get("server_label") == "remote"
+    assert tools[2].get("type") == "web_search"
+    assert tools[2].get("search_context_size") == "low"
     assert tools[0]["parameters"]["required"] == ["filter"]
 
 
@@ -83,7 +86,7 @@ def test_tool_policy_respects_function_capability_gate():
         ]
     )
 
-    mcp_tools = [{"type": "mcp", "name": "remote"}]
+    mcp_tools = [{"type": "mcp", "server_label": "remote", "server_url": "https://example.com"}]
 
     tools = ToolPolicy.build_responses_tools(
         model_id="chatgpt-4o-latest",
@@ -96,7 +99,9 @@ def test_tool_policy_respects_function_capability_gate():
         web_search_tools=None,
     )
 
-    assert [(tool.get("type"), tool.get("name")) for tool in tools] == [("mcp", "remote")]
+    assert len(tools) == 1
+    assert tools[0].get("type") == "mcp"
+    assert tools[0].get("server_label") == "remote"
 
 
 def test_tool_policy_applies_strict_schema_defaults():

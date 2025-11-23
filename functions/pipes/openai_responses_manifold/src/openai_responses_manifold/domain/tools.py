@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Iterable, Literal, Protocol
+from typing import Any, Iterable, Literal, Protocol, Type
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from openai_responses_manifold.core.config import RuntimeConfig
 from openai_responses_manifold.core.model_catalog import supports
@@ -94,29 +96,86 @@ def _strictify_schema(schema: dict) -> dict:
     return schema
 
 
+class FunctionTool(BaseModel):
+    """Spec-compliant function tool definition for the Responses API."""
+
+    type: Literal["function"] = "function"
+    name: str
+    description: str | None = None
+    parameters: dict[str, Any] = Field(
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
+    strict: bool | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("parameters", mode="before")
+    @classmethod
+    def _ensure_params(cls, value: object) -> dict[str, Any]:
+        return _ensure_object_schema(value)
+
+
+class WebSearchTool(BaseModel):
+    """Web search tool definition."""
+
+    type: Literal["web_search"] = "web_search"
+    search_context_size: Literal["low", "medium", "high"] | None = None
+    user_location: dict[str, Any] | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class McpTool(BaseModel):
+    """Remote MCP tool connector definition."""
+
+    type: Literal["mcp"] = "mcp"
+    server_label: str
+    server_url: str
+    require_approval: bool | None = None
+    allowed_tools: list[str] | None = None
+    headers: dict[str, str] | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+ToolModel = FunctionTool | WebSearchTool | McpTool
+_TOOL_MODEL_MAP: dict[str, Type[ToolModel]] = {
+    "function": FunctionTool,
+    "web_search": WebSearchTool,
+    "mcp": McpTool,
+}
+
+
+def _coerce_tool(raw: dict) -> dict | None:
+    """Validate and normalize a raw tool dict against the known models."""
+
+    tool_type = raw.get("type")
+    if not isinstance(tool_type, str):
+        return None
+    cleaned = deepcopy(raw)
+    cleaned.pop("source", None)
+    model = _TOOL_MODEL_MAP.get(tool_type)
+    if model is None:
+        return cleaned
+    try:
+        return model.model_validate(cleaned).model_dump(exclude_none=True)
+    except ValidationError:
+        return None
+
+
 def _tool_identity(tool: dict) -> tuple[str | None, str | None]:
     tool_type = tool.get("type")
     name = tool.get("name") if tool_type == "function" else None
     return (str(tool_type) if tool_type is not None else None, name)
 
 
-def _sanitize_tool(tool: dict) -> dict:
-    sanitized = deepcopy(tool)
-    params = sanitized.get("parameters")
-    if not isinstance(params, dict):
-        sanitized["parameters"] = {"type": "object", "properties": {}}
-    return sanitized
-
-
 def _definition_to_tool(defn: ToolDefinition) -> dict:
-    return {
-        "type": "function",
-        "name": defn.name,
-        "description": defn.description,
-        "parameters": _ensure_object_schema(defn.parameters),
-        "strict": defn.strict,
-        "source": defn.source,
-    }
+    return FunctionTool(
+        name=defn.name,
+        description=defn.description,
+        parameters=_ensure_object_schema(defn.parameters),
+        strict=defn.strict,
+    ).model_dump(exclude_none=True)
 
 
 class ToolPolicy:
@@ -146,7 +205,9 @@ class ToolPolicy:
             for candidate in candidates:
                 if not isinstance(candidate, dict):
                     continue
-                ordered_tools.append(deepcopy(candidate))
+                tool = _coerce_tool(candidate)
+                if tool:
+                    ordered_tools.append(tool)
 
         extend_tools(body_tools or [])
         extend_tools(_definition_to_tool(d) for d in registry.iter_definitions())
@@ -156,14 +217,13 @@ class ToolPolicy:
 
         deduped: dict[tuple[str | None, str | None], dict] = {}
         for raw_tool in ordered_tools:
-            tool = _sanitize_tool(raw_tool)
-
-            tool_type = tool.get("type")
+            tool_type = raw_tool.get("type")
             if tool_type == "function" and not allow_function_tools:
                 continue
             if tool_type == "web_search" and not allow_web_search_tools:
                 continue
 
+            tool = deepcopy(raw_tool)
             if tool_type == "function" and cfg.ENABLE_STRICT_TOOL_CALLING:
                 tool["parameters"] = _strictify_schema(tool.get("parameters"))
                 tool["strict"] = True

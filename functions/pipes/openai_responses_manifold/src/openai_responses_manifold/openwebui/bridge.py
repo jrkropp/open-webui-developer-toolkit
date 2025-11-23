@@ -96,7 +96,7 @@ def build_mcp_tools(cfg: RuntimeConfig) -> list[dict]:
             url = entry.get("server_url")
             if not isinstance(label, str) or not isinstance(url, str):
                 continue
-            tool = {"type": "mcp", "server_label": label, "server_url": url, "source": "mcp"}
+            tool = {"type": "mcp", "server_label": label, "server_url": url}
             if "require_approval" in entry:
                 tool["require_approval"] = entry.get("require_approval")
             if "allowed_tools" in entry:

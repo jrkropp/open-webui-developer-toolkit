@@ -28,10 +28,14 @@ class OpenWebUIRuntimeEvents(RuntimeEvents):
         await self._emit({"type": "status", "data": {"description": description, "done": done, **extra}})
 
     async def delta(self, content: str) -> None:
-        await self._emit({"type": "chat:message", "data": {"content": content}})
+        await self._emit(
+            {"type": "chat:message:delta", "data": {"role": "assistant", "content": content}}
+        )
 
     async def replace(self, content: str) -> None:
-        await self._emit({"type": "chat:message", "data": {"content": content}})
+        await self._emit(
+            {"type": "chat:message", "data": {"role": "assistant", "content": content}}
+        )
 
     async def citation(self, data: dict[str, Any]) -> None:
         await self._emit({"type": "citation", "data": data})

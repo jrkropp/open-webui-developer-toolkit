@@ -25,7 +25,7 @@ async def test_event_shapes():
     kinds = [e["type"] for e in emitted]
     assert kinds == [
         "status",
-        "chat:message",
+        "chat:message:delta",
         "chat:message",
         "citation",
         "source",
@@ -35,4 +35,9 @@ async def test_event_shapes():
 
     status_event = emitted[0]
     assert status_event["data"]["description"] == "Thinking"
-
+    delta_event = emitted[1]
+    assert delta_event["data"]["role"] == "assistant"
+    assert delta_event["data"]["content"] == "hello"
+    replace_event = emitted[2]
+    assert replace_event["data"]["role"] == "assistant"
+    assert replace_event["data"]["content"] == "world"

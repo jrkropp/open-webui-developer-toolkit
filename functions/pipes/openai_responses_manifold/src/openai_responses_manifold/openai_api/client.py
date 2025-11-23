@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator
 import aiohttp
 
 from .types import (
-    ResponsesEvent,
+    ResponseEvent,
     ResponsesRequest,
     dump_responses_request,
     parse_responses_event,
@@ -38,7 +38,7 @@ class OpenAIClient:
         *,
         base_url: str,
         api_key: str,
-    ) -> AsyncIterator[ResponsesEvent]:
+    ) -> AsyncIterator[ResponseEvent]:
         session = await self._get_session()
         url = f"{base_url.rstrip('/')}/responses"
         payload = dump_responses_request(validate_responses_request(request))

@@ -707,7 +707,7 @@ tests.
 """
 import json
 from copy import deepcopy
-from typing import Any, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional, Type
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
@@ -839,7 +839,7 @@ class ResponseEvent(BaseModel):
 
 
 class ResponseOutputTextDeltaEvent(ResponseEvent):
-    type: str = "response.output_text.delta"
+    type: Literal["response.output_text.delta"] = "response.output_text.delta"
     output_index: Optional[int] = None
     item_id: Optional[str] = None
     content_index: Optional[int] = None
@@ -849,7 +849,7 @@ class ResponseOutputTextDeltaEvent(ResponseEvent):
 
 
 class ResponseReasoningSummaryTextDoneEvent(ResponseEvent):
-    type: str = "response.reasoning_summary_text.done"
+    type: Literal["response.reasoning_summary_text.done"] = "response.reasoning_summary_text.done"
     output_index: Optional[int] = None
     item_id: Optional[str] = None
     summary_index: Optional[int] = None
@@ -857,7 +857,7 @@ class ResponseReasoningSummaryTextDoneEvent(ResponseEvent):
 
 
 class ResponseOutputTextAnnotationAddedEvent(ResponseEvent):
-    type: str = "response.output_text.annotation.added"
+    type: Literal["response.output_text.annotation.added"] = "response.output_text.annotation.added"
     output_index: Optional[int] = None
     item_id: Optional[str] = None
     content_index: Optional[int] = None
@@ -866,87 +866,94 @@ class ResponseOutputTextAnnotationAddedEvent(ResponseEvent):
 
 
 class ResponseOutputItemAddedEvent(ResponseEvent):
-    type: str = "response.output_item.added"
+    type: Literal["response.output_item.added"] = "response.output_item.added"
     output_index: Optional[int] = None
     item: dict[str, Any] | None = None
 
 
 class ResponseOutputItemDoneEvent(ResponseEvent):
-    type: str = "response.output_item.done"
+    type: Literal["response.output_item.done"] = "response.output_item.done"
     output_index: Optional[int] = None
     item: dict[str, Any] | None = None
 
 
 class ResponseCodeInterpreterCallInProgressEvent(ResponseEvent):
-    type: str = "response.code_interpreter_call.in_progress"
+    type: Literal["response.code_interpreter_call.in_progress"] = "response.code_interpreter_call.in_progress"
     output_index: Optional[int] = None
 
 
 class ResponseCodeInterpreterCallInterpretingEvent(ResponseEvent):
-    type: str = "response.code_interpreter_call.interpreting"
+    type: Literal["response.code_interpreter_call.interpreting"] = "response.code_interpreter_call.interpreting"
     output_index: Optional[int] = None
 
 
 class ResponseCodeInterpreterCallCodeDeltaEvent(ResponseEvent):
-    type: str = "response.code_interpreter_call.code.delta"
+    type: Literal["response.code_interpreter_call.code.delta"] = "response.code_interpreter_call.code.delta"
     output_index: Optional[int] = None
     delta: Optional[str] = None
 
 
 class ResponseCodeInterpreterCallCodeDoneEvent(ResponseEvent):
-    type: str = "response.code_interpreter_call.code.done"
+    type: Literal["response.code_interpreter_call.code.done"] = "response.code_interpreter_call.code.done"
     output_index: Optional[int] = None
     code: Optional[str] = None
 
 
 class ResponseCodeInterpreterCallCompletedEvent(ResponseEvent):
-    type: str = "response.code_interpreter_call.completed"
+    type: Literal["response.code_interpreter_call.completed"] = "response.code_interpreter_call.completed"
     output_index: Optional[int] = None
 
 
 class ResponseCompletedEvent(ResponseEvent):
-    type: str = "response.completed"
+    type: Literal["response.completed"] = "response.completed"
     response: dict[str, Any]
 
 
 class ResponseIncompleteEvent(ResponseEvent):
-    type: str = "response.incomplete"
+    type: Literal["response.incomplete"] = "response.incomplete"
     error_message: str | None = None
     response: dict[str, Any] | None = None
 
 
 class ResponseFailedEvent(ResponseEvent):
-    type: str = "response.failed"
+    type: Literal["response.failed"] = "response.failed"
     error_message: str | None = None
     response: dict[str, Any] | None = None
 
 
-ResponsesEvent = (
-    ResponseOutputTextDeltaEvent
-    | ResponseReasoningSummaryTextDoneEvent
-    | ResponseOutputTextAnnotationAddedEvent
-    | ResponseOutputItemAddedEvent
-    | ResponseOutputItemDoneEvent
-    | ResponseCodeInterpreterCallInProgressEvent
-    | ResponseCodeInterpreterCallInterpretingEvent
-    | ResponseCodeInterpreterCallCodeDeltaEvent
-    | ResponseCodeInterpreterCallCodeDoneEvent
-    | ResponseCodeInterpreterCallCompletedEvent
-    | ResponseCompletedEvent
-    | ResponseIncompleteEvent
-    | ResponseFailedEvent
-)
-
-_RESPONSES_EVENT_ADAPTER = TypeAdapter(ResponsesEvent)
+ResponsesEvent = ResponseEvent
 _RESPONSES_REQUEST_ADAPTER = TypeAdapter(ResponsesRequest)
 
 
-def parse_responses_event(payload: Mapping[str, Any] | ResponsesEvent) -> ResponsesEvent:
-    """Coerce a raw payload into a typed ``ResponsesEvent``."""
+_EVENT_TYPE_MAP: dict[str, Type[ResponseEvent]] = {
+    "response.output_text.delta": ResponseOutputTextDeltaEvent,
+    "response.output_text.annotation.added": ResponseOutputTextAnnotationAddedEvent,
+    "response.output_item.added": ResponseOutputItemAddedEvent,
+    "response.output_item.done": ResponseOutputItemDoneEvent,
+    "response.reasoning_summary_text.done": ResponseReasoningSummaryTextDoneEvent,
+    "response.code_interpreter_call.in_progress": ResponseCodeInterpreterCallInProgressEvent,
+    "response.code_interpreter_call.interpreting": ResponseCodeInterpreterCallInterpretingEvent,
+    "response.code_interpreter_call.code.delta": ResponseCodeInterpreterCallCodeDeltaEvent,
+    "response.code_interpreter_call.code.done": ResponseCodeInterpreterCallCodeDoneEvent,
+    "response.code_interpreter_call.completed": ResponseCodeInterpreterCallCompletedEvent,
+    "response.completed": ResponseCompletedEvent,
+    "response.incomplete": ResponseIncompleteEvent,
+    "response.failed": ResponseFailedEvent,
+}
+
+
+def parse_responses_event(payload: Mapping[str, Any] | ResponseEvent) -> ResponseEvent:
+    """Coerce a raw payload into a typed ``ResponseEvent``.
+
+    Unknown ``type`` values fall back to the base ``ResponseEvent`` so new
+    event types from the API do not raise validation errors.
+    """
 
     if isinstance(payload, ResponseEvent):
         return payload
-    return _RESPONSES_EVENT_ADAPTER.validate_python(payload)
+    event_type = str(payload.get("type")) if isinstance(payload.get("type"), str) else None
+    model: Type[ResponseEvent] = _EVENT_TYPE_MAP.get(event_type, ResponseEvent)
+    return model.model_validate(payload)
 
 
 def validate_responses_request(payload: ResponsesRequest | Mapping[str, Any]) -> ResponsesRequest:
@@ -996,7 +1003,7 @@ import aiohttp
 
 # [build.py] internal imports removed in monolith:
 # from .types import (
-#     ResponsesEvent,
+#     ResponseEvent,
 #     ResponsesRequest,
 #     dump_responses_request,
 #     parse_responses_event,
@@ -1026,7 +1033,7 @@ class OpenAIClient:
         *,
         base_url: str,
         api_key: str,
-    ) -> AsyncIterator[ResponsesEvent]:
+    ) -> AsyncIterator[ResponseEvent]:
         session = await self._get_session()
         url = f"{base_url.rstrip('/')}/responses"
         payload = dump_responses_request(validate_responses_request(request))
@@ -1457,7 +1464,9 @@ strict JSON Schema handling, and deterministic deduplication. See
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Iterable, Literal, Protocol
+from typing import Any, Iterable, Literal, Protocol, Type
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 # [build.py] internal imports removed in monolith:
 # from openai_responses_manifold.core.config import RuntimeConfig
@@ -1543,29 +1552,86 @@ def _strictify_schema(schema: dict) -> dict:
     return schema
 
 
+class FunctionTool(BaseModel):
+    """Spec-compliant function tool definition for the Responses API."""
+
+    type: Literal["function"] = "function"
+    name: str
+    description: str | None = None
+    parameters: dict[str, Any] = Field(
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
+    strict: bool | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("parameters", mode="before")
+    @classmethod
+    def _ensure_params(cls, value: object) -> dict[str, Any]:
+        return _ensure_object_schema(value)
+
+
+class WebSearchTool(BaseModel):
+    """Web search tool definition."""
+
+    type: Literal["web_search"] = "web_search"
+    search_context_size: Literal["low", "medium", "high"] | None = None
+    user_location: dict[str, Any] | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class McpTool(BaseModel):
+    """Remote MCP tool connector definition."""
+
+    type: Literal["mcp"] = "mcp"
+    server_label: str
+    server_url: str
+    require_approval: bool | None = None
+    allowed_tools: list[str] | None = None
+    headers: dict[str, str] | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+ToolModel = FunctionTool | WebSearchTool | McpTool
+_TOOL_MODEL_MAP: dict[str, Type[ToolModel]] = {
+    "function": FunctionTool,
+    "web_search": WebSearchTool,
+    "mcp": McpTool,
+}
+
+
+def _coerce_tool(raw: dict) -> dict | None:
+    """Validate and normalize a raw tool dict against the known models."""
+
+    tool_type = raw.get("type")
+    if not isinstance(tool_type, str):
+        return None
+    cleaned = deepcopy(raw)
+    cleaned.pop("source", None)
+    model = _TOOL_MODEL_MAP.get(tool_type)
+    if model is None:
+        return cleaned
+    try:
+        return model.model_validate(cleaned).model_dump(exclude_none=True)
+    except ValidationError:
+        return None
+
+
 def _tool_identity(tool: dict) -> tuple[str | None, str | None]:
     tool_type = tool.get("type")
     name = tool.get("name") if tool_type == "function" else None
     return (str(tool_type) if tool_type is not None else None, name)
 
 
-def _sanitize_tool(tool: dict) -> dict:
-    sanitized = deepcopy(tool)
-    params = sanitized.get("parameters")
-    if not isinstance(params, dict):
-        sanitized["parameters"] = {"type": "object", "properties": {}}
-    return sanitized
-
-
 def _definition_to_tool(defn: ToolDefinition) -> dict:
-    return {
-        "type": "function",
-        "name": defn.name,
-        "description": defn.description,
-        "parameters": _ensure_object_schema(defn.parameters),
-        "strict": defn.strict,
-        "source": defn.source,
-    }
+    return FunctionTool(
+        name=defn.name,
+        description=defn.description,
+        parameters=_ensure_object_schema(defn.parameters),
+        strict=defn.strict,
+    ).model_dump(exclude_none=True)
 
 
 class ToolPolicy:
@@ -1595,7 +1661,9 @@ class ToolPolicy:
             for candidate in candidates:
                 if not isinstance(candidate, dict):
                     continue
-                ordered_tools.append(deepcopy(candidate))
+                tool = _coerce_tool(candidate)
+                if tool:
+                    ordered_tools.append(tool)
 
         extend_tools(body_tools or [])
         extend_tools(_definition_to_tool(d) for d in registry.iter_definitions())
@@ -1605,14 +1673,13 @@ class ToolPolicy:
 
         deduped: dict[tuple[str | None, str | None], dict] = {}
         for raw_tool in ordered_tools:
-            tool = _sanitize_tool(raw_tool)
-
-            tool_type = tool.get("type")
+            tool_type = raw_tool.get("type")
             if tool_type == "function" and not allow_function_tools:
                 continue
             if tool_type == "web_search" and not allow_web_search_tools:
                 continue
 
+            tool = deepcopy(raw_tool)
             if tool_type == "function" and cfg.ENABLE_STRICT_TOOL_CALLING:
                 tool["parameters"] = _strictify_schema(tool.get("parameters"))
                 tool["strict"] = True
@@ -2728,10 +2795,14 @@ class OpenWebUIRuntimeEvents(RuntimeEvents):
         await self._emit({"type": "status", "data": {"description": description, "done": done, **extra}})
 
     async def delta(self, content: str) -> None:
-        await self._emit({"type": "chat:message", "data": {"content": content}})
+        await self._emit(
+            {"type": "chat:message:delta", "data": {"role": "assistant", "content": content}}
+        )
 
     async def replace(self, content: str) -> None:
-        await self._emit({"type": "chat:message", "data": {"content": content}})
+        await self._emit(
+            {"type": "chat:message", "data": {"role": "assistant", "content": content}}
+        )
 
     async def citation(self, data: dict[str, Any]) -> None:
         await self._emit({"type": "citation", "data": data})
@@ -2970,7 +3041,7 @@ def build_mcp_tools(cfg: RuntimeConfig) -> list[dict]:
             url = entry.get("server_url")
             if not isinstance(label, str) or not isinstance(url, str):
                 continue
-            tool = {"type": "mcp", "server_label": label, "server_url": url, "source": "mcp"}
+            tool = {"type": "mcp", "server_label": label, "server_url": url}
             if "require_approval" in entry:
                 tool["require_approval"] = entry.get("require_approval")
             if "allowed_tools" in entry:
