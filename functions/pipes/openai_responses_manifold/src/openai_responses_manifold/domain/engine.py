@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 import logging
@@ -188,10 +189,24 @@ class ResponsesEngine:
         api_key: str,
     ) -> dict[str, Any] | None:
         response_payload: dict[str, Any] | None = None
-        async for event in self._client.stream_responses(request, base_url=base_url, api_key=api_key):
-            response_payload = await self._handle_event(event, state, events, ctx)
-            if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent)):
-                break
+
+        try:
+            async for event in self._client.stream_responses(
+                request,
+                base_url=base_url,
+                api_key=api_key,
+            ):
+                response_payload = await self._handle_event(event, state, events, ctx)
+                if isinstance(event, (ResponseFailedEvent, ResponseIncompleteEvent)):
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not state.error_message:
+                state.error_message = f"Streaming error from Responses API: {exc}"
+            self._logger.exception("Error while streaming Responses API")
+            return {}
+
         return response_payload
 
     async def _handle_event(
@@ -284,10 +299,18 @@ class ResponsesEngine:
 
         if isinstance(event, ResponseIncompleteEvent):
             state.error_message = event.error_message or "Response incomplete"
+            self._logger.error(
+                "Responses API returned incomplete response: %s",
+                state.error_message,
+            )
             return event.response or {}
 
         if isinstance(event, ResponseFailedEvent):
             state.error_message = event.error_message or "Response failed"
+            self._logger.error(
+                "Responses API request failed: %s",
+                state.error_message,
+            )
             return event.response or {}
 
         return None
@@ -357,30 +380,49 @@ class ResponsesEngine:
         events: RuntimeEvents,
     ) -> None:
         session_id = ctx.metadata.get("session_id") or OWUI_SESSION_ID.get()
-        if not session_id:
-            return
+        logs = consume_session_logs(session_id) if session_id else []
 
-        logs = consume_session_logs(session_id)
-        if not logs:
+        has_logs = bool(logs)
+
+        if not has_logs and not state.error_message:
             return
 
         source_name = "Error Logs" if state.error_message else "Logs"
-        log_text = "\n".join(logs)
+
+        if has_logs:
+            log_text = "\n".join(logs)
+        else:
+            log_text = (
+                "No logs were captured for this turn, but an error occurred: "
+                f"{state.error_message}"
+            )
+
         truncated = len(log_text) > 4000
+        if truncated:
+            log_text = log_text[:4000]
+
         self._logger.debug(
             "Emitting log citation lines=%d truncated=%s", len(logs), truncated
         )
+
+        citation = Citation(
+            source_name=source_name,
+            url=None,
+            document=[log_text],
+            metadata={
+                "source": source_name,
+                "total_lines": len(logs),
+                "truncated": truncated,
+                "has_error": bool(state.error_message),
+            },
+        )
+        state.citations.append(citation)
+
         await events.citation(
             {
-                "document": [log_text],
-                "metadata": [
-                    {
-                        "source": source_name,
-                        "total_lines": len(logs),
-                        "truncated": truncated,
-                    }
-                ],
-                "source": {"name": source_name},
+                "document": citation.document,
+                "metadata": [citation.metadata],
+                "source": {"name": citation.source_name},
             }
         )
 
