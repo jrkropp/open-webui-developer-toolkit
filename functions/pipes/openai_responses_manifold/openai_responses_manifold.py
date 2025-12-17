@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.8
+version: 0.9.8-pro
 license: MIT
 """
 
@@ -60,6 +60,9 @@ class ModelFamily:
 
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
+        "gpt-5.2-pro":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5-pro":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        
         "gpt-5-auto":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
 
         "gpt-5.1":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
@@ -83,6 +86,7 @@ class ModelFamily:
         "o3-deep-research":     {"features": {"function_calling","reasoning","reasoning_summary","deep_research"}},
         "o4-mini-deep-research":{"features": {"function_calling","reasoning","reasoning_summary","deep_research"}},
 
+        "gpt-5.2-chat-latest":  {"features": {"function_calling","web_search_tool"}},
         "gpt-5.1-chat-latest":  {"features": {"function_calling","web_search_tool"}},
         "gpt-5-chat-latest":    {"features": {"function_calling","web_search_tool"}},
         "chatgpt-4o-latest":    {"features": {}}, # Chat-optimized non-reasoning model does not support tool calling, or any other advanced features.
@@ -90,9 +94,13 @@ class ModelFamily:
 
     # Aliases/pseudos
     _ALIASES: Dict[str, Dict[str, Any]] = {
-        "gpt-5.1-thinking":               {"base_model": "gpt-5"},
-        "gpt-5.1-thinking-minimal":       {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5.1-thinking-high":          {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.2-thinking":               {"base_model": "gpt-5.2"},
+        "gpt-5.2-thinking-minimal":       {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5.2-thinking-high":          {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "high"}}},
+        
+        "gpt-5.1-thinking":               {"base_model": "gpt-5.1"},
+        "gpt-5.1-thinking-minimal":       {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5.1-thinking-high":          {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "high"}}},
 
         "gpt-5-thinking":               {"base_model": "gpt-5"},
         "gpt-5-thinking-minimal":       {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "minimal"}}},
