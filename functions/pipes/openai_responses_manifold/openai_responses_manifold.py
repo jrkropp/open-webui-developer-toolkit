@@ -702,7 +702,7 @@ class Pipe:
         #   • No frontend rebuild; injected at runtime via `execute`
         #   • Runs once per tab (checks for an existing <style> tag)
         # ------------------------------------------------------------------
-        await __event_call__({
+        await __event_emitter__({
             "type": "execute",
             "data": {
                 "code": """
