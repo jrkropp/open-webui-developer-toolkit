@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.8
+version: 0.10.0
 license: MIT
 """
 
@@ -60,9 +60,11 @@ class ModelFamily:
 
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
+        "gpt-5.3-codex":        {"features": {"function_calling","reasoning","verbosity"}},
         "gpt-5-auto":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
-        "gpt-5.2-pro":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.2-pro":          {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5.2":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.2-codex":        {"features": {"function_calling","reasoning","verbosity"}},
         "gpt-5.1":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
 
         "gpt-5":                {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
@@ -93,12 +95,25 @@ class ModelFamily:
 
     # Aliases/pseudos
     _ALIASES: Dict[str, Dict[str, Any]] = {
+        "gpt-5.3-codex-thinking":         {"base_model": "gpt-5.3-codex"},
+        "gpt-5.3-codex-thinking-low":     {"base_model": "gpt-5.3-codex", "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.3-codex-thinking-high":    {"base_model": "gpt-5.3-codex", "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.3-codex-thinking-xhigh":   {"base_model": "gpt-5.3-codex", "params": {"reasoning": {"effort": "xhigh"}}},
+        
         "gpt-5.2-thinking":               {"base_model": "gpt-5.2"},
-        "gpt-5.2-thinking-minimal":       {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5.2-thinking-none":          {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.2-thinking-minimal":       {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "none"}}},
         "gpt-5.2-thinking-high":          {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.2-thinking-xhigh":         {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "xhigh"}}},
+
+        "gpt-5.2-codex-thinking":         {"base_model": "gpt-5.2-codex"},
+        "gpt-5.2-codex-thinking-low":     {"base_model": "gpt-5.2-codex", "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.2-codex-thinking-high":    {"base_model": "gpt-5.2-codex", "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.2-codex-thinking-xhigh":   {"base_model": "gpt-5.2-codex", "params": {"reasoning": {"effort": "xhigh"}}},
         
         "gpt-5.1-thinking":               {"base_model": "gpt-5.1"},
-        "gpt-5.1-thinking-minimal":       {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5.1-thinking-none":          {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.1-thinking-minimal":       {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "none"}}},
         "gpt-5.1-thinking-high":          {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "high"}}},
 
         "gpt-5-thinking":               {"base_model": "gpt-5"},
@@ -534,7 +549,7 @@ class Pipe:
 
         # Models
         MODEL_ID: str = Field(
-            default="gpt-5.2-pro, gpt-5.2-chat-latest, gpt-5.2-thinking, gpt-5.2-thinking-high, gpt-5.2-thinking-minimal",
+            default="gpt-5.3-codex, gpt-5.2-pro, gpt-5.2-chat-latest, gpt-5.2-thinking, gpt-5.2-thinking-high, gpt-5.2-thinking-minimal",
             description=(
                 "Comma separated OpenAI model IDs. Each ID becomes a model entry in WebUI. "
                 "Supports all official OpenAI model IDs and pseudo IDs (see README.md for full list)."
@@ -796,14 +811,40 @@ class Pipe:
                 event_emitter=__event_emitter__
             )
         elif openwebui_model_id.endswith(".gpt-5-auto"):
-            responses_body.model = "gpt-5-chat-latest"
+            responses_body.model = "gpt-5.2-chat-latest"
             await self._emit_notification(
                 __event_emitter__,
                 content=(
-                    "Model router coming soon — using gpt-5-chat-latest (GPT-5 Fast)."
+                    "Model router coming soon — using gpt-5.2-chat-latest (GPT-5.2 Fast)."
                 ),
                 level="warning"
             )
+
+        # STEP 5.1: GPT-5 sampling compatibility guard
+        # GPT-5.2 / GPT-5.1 support temperature and top_p only with reasoning effort=none.
+        # Older GPT-5 models and GPT-5.x-codex variants do not support these fields.
+        base_model = ModelFamily.base_model(responses_body.model)
+        if responses_body.temperature is not None or responses_body.top_p is not None:
+            effort = ((responses_body.reasoning or {}).get("effort") or "").lower()
+
+            if base_model in {"gpt-5.2", "gpt-5.2-pro", "gpt-5.1"}:
+                effective_effort = effort or "none"
+                sampling_supported = effective_effort == "none"
+            elif base_model in {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.2-codex", "gpt-5.3-codex"}:
+                sampling_supported = False
+            else:
+                sampling_supported = True
+
+            if not sampling_supported:
+                if responses_body.temperature is not None:
+                    responses_body.temperature = None
+                if responses_body.top_p is not None:
+                    responses_body.top_p = None
+                self.logger.warning(
+                    "Removed unsupported sampling params (temperature/top_p) for model=%s, reasoning.effort=%s",
+                    base_model,
+                    effort or "<default>",
+                )
 
         # STEP 6: Add tools to responses body, if supported
         if ModelFamily.supports("function_calling", responses_body.model):
@@ -1616,16 +1657,17 @@ class Pipe:
                         "properties": {
                             "model": {
                                 "type": "string",
-                                "enum": ["gpt-5-chat-latest", "gpt-5", "gpt-5-mini"],
+                                "enum": ["gpt-5.2-chat-latest", "gpt-5.2", "gpt-5-mini"],
                                 "description": "The selected GPT-5 model from the available options."
                             },
                             "reasoning_effort": {
                                 "type": "string",
                                 "enum": [
-                                    "minimal",
+                                    "none",
                                     "low",
                                     "medium",
-                                    "high"
+                                    "high",
+                                    "xhigh"
                                 ],
                                 "description": "The estimated amount of reasoning effort required for the request."
                             },
@@ -2152,10 +2194,14 @@ def build_tools(
         )
 
     # 3) Optional OpenAI web search tool (guarded + not for minimal effort)
+    reasoning_effort = ((responses_body.reasoning or {}).get("effort") or "").lower()
+    if not reasoning_effort and ModelFamily.base_model(responses_body.model) in {"gpt-5.2", "gpt-5.2-pro", "gpt-5.1"}:
+        reasoning_effort = "none"
+
     allow_web = (
         ModelFamily.supports("web_search_tool", responses_body.model)
         and (valves.ENABLE_WEB_SEARCH_TOOL or features.get("web_search", False))
-        and ((responses_body.reasoning or {}).get("effort", "").lower() != "minimal")
+        and reasoning_effort not in {"minimal", "none"}
     )
     if allow_web:
         web_search_tool: Dict[str, Any] = {

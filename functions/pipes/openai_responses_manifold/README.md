@@ -140,6 +140,11 @@ Below are the official model IDs that have been tested and confirmed.
 
 | Family            | Model ID              | Type / Modality                  | Status | Notes |
 |-------------------|-----------------------|----------------------------------|:------:|-------|
+| **GPT-5.3**       | `gpt-5.3-codex`       | Coding-optimized reasoning       | ✅ | Most capable GPT Codex variant for agentic coding tasks. |
+| **GPT-5.2**       | `gpt-5.2`             | Reasoning                        | ✅ | Latest general-purpose GPT-5 model. |
+|                   | `gpt-5.2-pro`         | Reasoning (higher compute)       | ✅ | Higher-effort variant for hardest tasks. |
+|                   | `gpt-5.2-codex`       | Coding-optimized reasoning       | ✅ | Codex-oriented GPT-5.2 variant for agentic coding workflows. |
+|                   | `gpt-5.2-chat-latest` | Chat-tuned                        | ✅ | ChatGPT-aligned GPT-5.2 chat build. |
 | **GPT-5**         | `gpt-5`               | Reasoning                        | ✅ | Standard GPT-5 reasoning model. |
 |                   | `gpt-5-mini`          | Reasoning                        | ✅ | Smaller, faster, lower cost than `gpt-5`. |
 |                   | `gpt-5-nano`          | Reasoning                        | ✅ | Ultra-lightweight reasoning; lowest cost. |
@@ -165,6 +170,19 @@ Useful for **routing, shorthand, or quick quality/cost tuning**. *(Subject to ch
 | Alias                                                              | Resolves To   | Preset(s)                    | Suggested Use                                                    |
 | ------------------------------------------------------------------ | ------------- | ---------------------------- | ---------------------------------------------------------------- |
 | `gpt-5-auto`                                                       | Dynamic GPT-5 | —                            | Auto-routes between GPT-5 chat/mini/nano.                        |
+| `gpt-5.3-codex-thinking`                                           | `gpt-5.3-codex` | Medium reasoning           | Default coding-focused GPT-5.3-Codex profile.                   |
+| `gpt-5.3-codex-thinking-low`                                       | `gpt-5.3-codex` | `reasoning_effort="low"`  | Faster coding-oriented reasoning.                                |
+| `gpt-5.3-codex-thinking-high`                                      | `gpt-5.3-codex` | `reasoning_effort="high"` | Strong coding reasoning.                                         |
+| `gpt-5.3-codex-thinking-xhigh`                                     | `gpt-5.3-codex` | `reasoning_effort="xhigh"`| Maximum coding reasoning depth.                                  |
+| `gpt-5.2-thinking`                                                 | `gpt-5.2`     | Medium reasoning             | GPT-5.2 default reasoning profile.                               |
+| `gpt-5.2-thinking-none`                                            | `gpt-5.2`     | `reasoning_effort="none"`    | Lowest-latency GPT-5.2 mode.                                     |
+| `gpt-5.2-thinking-minimal`                                         | `gpt-5.2`     | `reasoning_effort="none"`    | Back-compat alias mapped to GPT-5.2 `none`.                      |
+| `gpt-5.2-thinking-high`                                            | `gpt-5.2`     | `reasoning_effort="high"`    | High-quality GPT-5.2 reasoning.                                  |
+| `gpt-5.2-thinking-xhigh`                                           | `gpt-5.2`     | `reasoning_effort="xhigh"`   | Maximum GPT-5.2 reasoning depth.                                 |
+| `gpt-5.2-codex-thinking`                                           | `gpt-5.2-codex` | Medium reasoning           | Coding-focused GPT-5.2-Codex profile.                            |
+| `gpt-5.2-codex-thinking-low`                                       | `gpt-5.2-codex` | `reasoning_effort="low"`  | Faster coding-oriented reasoning.                                |
+| `gpt-5.2-codex-thinking-high`                                      | `gpt-5.2-codex` | `reasoning_effort="high"` | Strong coding reasoning.                                         |
+| `gpt-5.2-codex-thinking-xhigh`                                     | `gpt-5.2-codex` | `reasoning_effort="xhigh"`| Maximum coding reasoning depth.                                  |
 | `gpt-5-thinking`                                                   | `gpt-5`       | Medium reasoning             | General high-quality tasks. (\[OpenAI]\[8])                      |
 | `gpt-5-thinking-minimal`                                           | `gpt-5`       | `reasoning_effort="minimal"` | Faster/cheaper reasoning. (\[OpenAI]\[8])                        |
 | `gpt-5-thinking-high`                                              | `gpt-5`       | `reasoning_effort="high"`    | Hard problems; maximum quality. (\[OpenAI]\[8])                  |
@@ -192,12 +210,19 @@ Useful for **routing, shorthand, or quick quality/cost tuning**. *(Subject to ch
 [10]: https://platform.openai.com/docs/models/gpt-5-nano?utm_source=chatgpt.com "Model - OpenAI API"  
 [11]: https://platform.openai.com/docs/models/o3-mini?utm_source=chatgpt.com "Model - OpenAI API"  
 [12]: https://openai.com/index/introducing-o3-and-o4-mini/?utm_source=chatgpt.com "Introducing OpenAI o3 and o4-mini"  
+[13]: https://developers.openai.com/api/docs/guides/latest-model "Using GPT-5.2"  
+[14]: https://developers.openai.com/api/docs/models/gpt-5.3-codex "GPT-5.3-Codex"  
 
 
 ## GPT-5 Model Support
 
 The Responses Manifold supports the full **GPT-5 family** of models currently exposed in the API:
 
+- `gpt-5.3-codex` *(coding-optimized reasoning model)*
+- `gpt-5.2` *(reasoning model)*
+- `gpt-5.2-pro` *(higher-compute reasoning model)*
+- `gpt-5.2-codex` *(coding-optimized reasoning model)*
+- `gpt-5.2-chat-latest` *(ChatGPT-aligned GPT-5.2 chat model)*
 - `gpt-5` *(reasoning model)*
 - `gpt-5-mini` *(reasoning model)*
 - `gpt-5-nano` *(reasoning model)*
@@ -205,7 +230,7 @@ The Responses Manifold supports the full **GPT-5 family** of models currently ex
 
 In the public **ChatGPT app**, choosing *GPT-5* doesn’t mean you’re using one fixed model. Behind the scenes, OpenAI runs a **router layer** that inspects your request and decides whether to send it to a reasoning, minimal-reasoning, or non-reasoning GPT-5 variant.
 
-This router is **not available in the API**. When using the API, you must select the model explicitly (`gpt-5`, `gpt-5-mini`, `gpt-5-nano`, or `gpt-5-chat-latest`).
+This router is **not available in the API**. When using the API, you must select the model explicitly (for example `gpt-5.2`, `gpt-5.2-pro`, `gpt-5.2-codex`, `gpt-5.2-chat-latest`).
 
 To bridge this gap, the manifold includes an experimental **`gpt-5-auto`** model.  
 - It isn’t a real OpenAI model ID.  
@@ -217,7 +242,8 @@ To bridge this gap, the manifold includes an experimental **`gpt-5-auto`** model
 ### What you need to know
 1. **Reasoning vs. non-reasoning**  
    - `gpt-5`, `gpt-5-mini`, and `gpt-5-nano` are **reasoning models** by default.  
-   - Setting `reasoning_effort="minimal"` makes them cheaper/faster but they still perform reasoning.  
+   - GPT-5.2 supports `none`, `low`, `medium`, `high`, and `xhigh` reasoning effort.  
+   - Setting `reasoning_effort="minimal"` remains available on older GPT-5 aliases; for GPT-5.2 use `none` for lowest-latency mode.  
    - For a true **non-reasoning chat model**, use `gpt-5-chat-latest`.
 
 2. **Tool calling**  

@@ -5,6 +5,14 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-02-25
+- Added GPT-5.2 family support updates in model metadata and aliases, including `gpt-5.2-codex` and `xhigh`/`none` reasoning aliases.
+- Added GPT-5.3-Codex model metadata and aliases (`gpt-5.3-codex-thinking`, `-low`, `-high`, `-xhigh`).
+- Mapped legacy alias `gpt-5.2-thinking-minimal` to GPT-5.2 `reasoning.effort="none"` for backwards compatibility with new API semantics.
+- Updated `gpt-5-auto` fallback target to `gpt-5.2-chat-latest`.
+- Added compatibility guard to strip `temperature`/`top_p` when unsupported for current GPT-5 family model + reasoning effort.
+- Prevented native web search tool auto-injection when effective reasoning effort is `none` or `minimal`.
+
 ## [0.9.9] - 2025-10-01
 - Added status updates for OpenAI web search events, emitting query chips, source counts, and expandable result panels.
 
