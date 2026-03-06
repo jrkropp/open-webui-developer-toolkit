@@ -60,14 +60,16 @@ class ModelFamily:
 
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
+        "gpt-5.4-pro":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.4":                 {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        
         "gpt-5.2-pro":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
-        "gpt-5-pro":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
-        
-        "gpt-5-auto":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
-        
         "gpt-5.2":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        
         "gpt-5.1":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
-
+        
+        "gpt-5-pro":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5-auto":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5":                {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5-mini":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5-nano":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
@@ -95,25 +97,43 @@ class ModelFamily:
 
     # Aliases/pseudos
     _ALIASES: Dict[str, Dict[str, Any]] = {
-        "gpt-5.2-thinking":               {"base_model": "gpt-5.2"},
-        "gpt-5.2-thinking-minimal":       {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5.2-thinking-high":          {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "high"}}},
+        # Commented out aliases are by default
+        # "gpt-5.4-none":                        {"base_model": "gpt-5.4"       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.4-low":                     {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.4-medium":                  {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.4-high":                    {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.4-xhigh":                   {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "xhigh"}}},
         
-        "gpt-5.1-thinking":               {"base_model": "gpt-5.1"},
-        "gpt-5.1-thinking-minimal":       {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5.1-thinking-high":          {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "high"}}},
+        # "gpt-5.4-pro-medium":              {"base_model": "gpt-5.4-pro",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.4-pro-high":                {"base_model": "gpt-5.4-pro",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.4-pro-xhigh":               {"base_model": "gpt-5.4-pro",   "params": {"reasoning": {"effort": "xhigh"}}},
+        
+        # "gpt-5.2-none":                        {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.2-low":                     {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.2-medium":                  {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.2-high":                    {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.2-xhigh":                   {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "xhigh"}}},
 
-        "gpt-5-thinking":               {"base_model": "gpt-5"},
-        "gpt-5-thinking-minimal":       {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5-thinking-high":          {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "high"}}},
+        # "gpt-5.2-pro-medium":              {"base_model": "gpt-5.2-pro",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.2-pro-high":                {"base_model": "gpt-5.2-pro",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.2-pro-xhigh":               {"base_model": "gpt-5.2-pro",   "params": {"reasoning": {"effort": "xhigh"}}},
+        
+        # "gpt-5.1-none":                        {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.1-low":                     {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.1-medium":                  {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.1-high":                    {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "high"}}},
 
-        "gpt-5-thinking-mini":          {"base_model": "gpt-5-mini"},
-        "gpt-5-thinking-mini-minimal":  {"base_model": "gpt-5-mini",  "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5-thinking-mini-high":     {"base_model": "gpt-5-mini",  "params": {"reasoning": {"effort": "high"}}},
+        # "gpt-5-medium":                          {"base_model": "gpt-5"},
+        "gpt-5-minimal":                   {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5-high":                      {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "high"}}},
 
-        "gpt-5-thinking-nano":          {"base_model": "gpt-5-nano"},
-        "gpt-5-thinking-nano-minimal":  {"base_model": "gpt-5-nano",  "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5-thinking-nano-high":     {"base_model": "gpt-5-nano",  "params": {"reasoning": {"effort": "high"}}},
+        # "gpt-5-mini-medium":                     {"base_model": "gpt-5-mini"},
+        "gpt-5-mini-minimal":              {"base_model": "gpt-5-mini",  "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5-mini-high":                 {"base_model": "gpt-5-mini",  "params": {"reasoning": {"effort": "high"}}},
+
+        # "gpt-5-nano-medium":                     {"base_model": "gpt-5-nano"},
+        "gpt-5-nano-minimal":              {"base_model": "gpt-5-nano",  "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5-nano-high":                 {"base_model": "gpt-5-nano",  "params": {"reasoning": {"effort": "high"}}},
 
         # Back-compat
         "o3-mini-high":                 {"base_model": "o3-mini",     "params": {"reasoning": {"effort": "high"}}},
@@ -199,7 +219,7 @@ class ResponsesBody(BaseModel):
         Normalize the model ID to its base and apply alias defaults from ModelFamily.
 
         Example:
-            model="gpt-5-thinking-high" → model="gpt-5", reasoning={"effort": "high"}
+            model="gpt-5-high" → model="gpt-5", reasoning={"effort": "high"}
         """
         orig_model = self.model or ""
         base_model = ModelFamily.base_model(orig_model)
@@ -536,7 +556,7 @@ class Pipe:
 
         # Models
         MODEL_ID: str = Field(
-            default="gpt-5.1-chat-latest, gpt-5.1-thinking, gpt-5.1-thinking-high, gpt-5.1-thinking-minimal",
+            default=", ".join(list(ModelFamily._SPECS.keys()) + list(ModelFamily._ALIASES.keys())),
             description=(
                 "Comma separated OpenAI model IDs. Each ID becomes a model entry in WebUI. "
                 "Supports all official OpenAI model IDs and pseudo IDs (see README.md for full list)."
