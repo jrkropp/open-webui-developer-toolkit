@@ -60,6 +60,13 @@ class ModelFamily:
 
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
+        # GPT-5.4 family (March 2026)
+        "gpt-5.4":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity","tool_search"}},
+        "gpt-5.4-pro":          {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity","tool_search"}},
+        "gpt-5.4-mini":         {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity","tool_search"}},
+        "gpt-5.4-nano":         {"features": {"function_calling","reasoning","reasoning_summary"}},
+
+        "gpt-5.3-chat-latest":  {"features": {"function_calling","web_search_tool"}},  # Mar 3, 2026
         "gpt-5.3-codex":        {"features": {"function_calling","reasoning","verbosity"}},
         "gpt-5-auto":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5.2-pro":          {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
@@ -90,11 +97,24 @@ class ModelFamily:
         "gpt-5.1-chat-latest":  {"features": {"function_calling","web_search_tool"}},
         
         "gpt-5-chat-latest":    {"features": {"function_calling","web_search_tool"}},
-        "chatgpt-4o-latest":    {"features": {}}, # Chat-optimized non-reasoning model does not support tool calling, or any other advanced features.
+        # chatgpt-4o-latest: shut down 2026-02-17 (deprecated)
     }
 
     # Aliases/pseudos
     _ALIASES: Dict[str, Dict[str, Any]] = {
+        # GPT-5.4 aliases
+        "gpt-5.4-thinking":               {"base_model": "gpt-5.4"},
+        "gpt-5.4-thinking-none":          {"base_model": "gpt-5.4",      "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.4-thinking-minimal":       {"base_model": "gpt-5.4",      "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.4-thinking-high":          {"base_model": "gpt-5.4",      "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.4-thinking-xhigh":         {"base_model": "gpt-5.4",      "params": {"reasoning": {"effort": "xhigh"}}},
+
+        "gpt-5.4-thinking-mini":          {"base_model": "gpt-5.4-mini"},
+        "gpt-5.4-thinking-mini-none":     {"base_model": "gpt-5.4-mini", "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.4-thinking-mini-minimal":  {"base_model": "gpt-5.4-mini", "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.4-thinking-mini-high":     {"base_model": "gpt-5.4-mini", "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.4-thinking-mini-xhigh":    {"base_model": "gpt-5.4-mini", "params": {"reasoning": {"effort": "xhigh"}}},
+
         "gpt-5.3-codex-thinking":         {"base_model": "gpt-5.3-codex"},
         "gpt-5.3-codex-thinking-low":     {"base_model": "gpt-5.3-codex", "params": {"reasoning": {"effort": "low"}}},
         "gpt-5.3-codex-thinking-high":    {"base_model": "gpt-5.3-codex", "params": {"reasoning": {"effort": "high"}}},
@@ -549,7 +569,7 @@ class Pipe:
 
         # Models
         MODEL_ID: str = Field(
-            default="gpt-5.3-codex, gpt-5.2-pro, gpt-5.2-chat-latest, gpt-5.2-thinking, gpt-5.2-thinking-high, gpt-5.2-thinking-minimal",
+            default="gpt-5.4, gpt-5.4-thinking-high, gpt-5.4-thinking-xhigh, gpt-5.4-mini, gpt-5.4-nano, gpt-5.3-codex",
             description=(
                 "Comma separated OpenAI model IDs. Each ID becomes a model entry in WebUI. "
                 "Supports all official OpenAI model IDs and pseudo IDs (see README.md for full list)."
