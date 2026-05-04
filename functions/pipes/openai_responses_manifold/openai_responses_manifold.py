@@ -60,6 +60,9 @@ class ModelFamily:
 
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
+        "gpt-5.5-pro":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.5":                 {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        
         "gpt-5.4-pro":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5.4":                 {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         
@@ -98,6 +101,16 @@ class ModelFamily:
     # Aliases/pseudos
     _ALIASES: Dict[str, Dict[str, Any]] = {
         # Commented out aliases are by default
+        # "gpt-5.5-none":                        {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.5-low":                     {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.5-medium":                  {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.5-high":                    {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.5-xhigh":                   {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "xhigh"}}},
+        
+        # "gpt-5.5-pro-medium":              {"base_model": "gpt-5.5-pro",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.5-pro-high":                {"base_model": "gpt-5.5-pro",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.5-pro-xhigh":               {"base_model": "gpt-5.5-pro",   "params": {"reasoning": {"effort": "xhigh"}}},
+        
         # "gpt-5.4-none":                        {"base_model": "gpt-5.4"       "params": {"reasoning": {"effort": "none"}}},
         "gpt-5.4-low":                     {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "low"}}},
         "gpt-5.4-medium":                  {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "medium"}}},
