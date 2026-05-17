@@ -369,7 +369,7 @@ class ResponsesBody(BaseModel):
         return valid_tools
     
     @staticmethod
-    def transform_messages_to_input(
+    async def transform_messages_to_input(
         messages: List[Dict[str, Any]],
         chat_id: Optional[str] = None,
         openwebui_model_id: Optional[str] = None,
@@ -404,7 +404,7 @@ class ResponsesBody(BaseModel):
         # Fetch persisted items, if invisible markers are present
         items_lookup: dict[str, dict] = {}
         if chat_id and openwebui_model_id and required_item_ids:
-            items_lookup = fetch_openai_response_items(
+            items_lookup = await fetch_openai_response_items(
                 chat_id,
                 list(required_item_ids),
                 openwebui_model_id=openwebui_model_id,
@@ -478,7 +478,7 @@ class ResponsesBody(BaseModel):
         return openai_input
 
     @classmethod
-    def from_completions(
+    async def from_completions(
         ResponsesBody, completions_body: "CompletionsBody", chat_id: Optional[str] = None, openwebui_model_id: Optional[str] = None, **extra_params
     ) -> "ResponsesBody":
         """
@@ -538,7 +538,7 @@ class ResponsesBody(BaseModel):
         # Transform input messages to OpenAI Responses API format
         if "messages" in completions_dict:
             sanitized_params.pop("messages", None)
-            sanitized_params["input"] = ResponsesBody.transform_messages_to_input(
+            sanitized_params["input"] = await ResponsesBody.transform_messages_to_input(
                 completions_dict.get("messages", []),
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id
@@ -777,7 +777,7 @@ class Pipe:
 
         # STEP 1: Transform request body (Completions API -> Responses API).
         completions_body = CompletionsBody.model_validate(body)
-        responses_body = ResponsesBody.from_completions(
+        responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
             # If chat_id and openwebui_model_id are provided, from_completions() uses them to fetch previously persisted items (function_calls, reasoning, etc.) from DB and reconstruct the input array in the correct order.
@@ -808,6 +808,9 @@ class Pipe:
         # STEP 4: Auto-enable native function calling if tools are used but `native` function calling is not enabled in Open WebUI model settings.
         if tools and ModelFamily.supports("function_calling", openwebui_model_id):
             model = Models.get_model_by_id(openwebui_model_id)
+            if inspect.iscoroutine(model):
+                model = await model
+                
             if model:
                 params = dict(model.params or {})
                 if params.get("function_calling") != "native":
@@ -1092,7 +1095,7 @@ class Pipe:
                             should_persist = valves.PERSIST_TOOL_RESULTS
 
                         if should_persist:
-                            hidden_uid_marker = persist_openai_response_items(
+                            hidden_uid_marker = await persist_openai_response_items(
                                 metadata.get("chat_id"),
                                 metadata.get("message_id"),
                                 [item],
@@ -1202,7 +1205,7 @@ class Pipe:
                 if calls:
                     function_outputs = await self._execute_function_calls(calls, tools)
                     if valves.PERSIST_TOOL_RESULTS:
-                        hidden_uid_marker = persist_openai_response_items(
+                        hidden_uid_marker = await persist_openai_response_items(
                             metadata.get("chat_id"),
                             metadata.get("message_id"),
                             function_outputs,
@@ -1804,7 +1807,7 @@ class SessionLogger:
 # 6. Framework Integration Helpers (Open WebUI DB operations)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def persist_openai_response_items(
+async def persist_openai_response_items(
     chat_id: str,
     message_id: str,
     items: List[Dict[str, Any]],
@@ -1839,6 +1842,8 @@ def persist_openai_response_items(
         return ""
 
     chat_model = Chats.get_chat_by_id(chat_id)
+    if inspect.iscoroutine(chat_model):
+        chat_model = await chat_model
     if not chat_model:
         return ""
 
@@ -2105,7 +2110,7 @@ def split_text_by_markers(text: str) -> list[dict]:
     return segments
 
 
-def fetch_openai_response_items(
+async def fetch_openai_response_items(
     chat_id: str,
     item_ids: List[str],
     *,
@@ -2126,6 +2131,8 @@ def fetch_openai_response_items(
         dict: Mapping of `item_id` -> persisted payload dict.
     """
     chat_model = Chats.get_chat_by_id(chat_id)
+    if inspect.iscoroutine(chat_model):
+        chat_model = await chat_model
     if not chat_model:
         return {}
 
