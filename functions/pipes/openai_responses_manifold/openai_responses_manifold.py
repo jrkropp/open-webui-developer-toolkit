@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.8-pro
+version: 0.9.8-5.6
 license: MIT
 """
 
@@ -60,6 +60,12 @@ class ModelFamily:
 
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
+        # GPT-5.6 renames the capability tiers: sol (flagship) / terra (balanced) / luna (high volume).
+        # There is no separate "-pro" slug anymore — pro is reasoning.mode="pro" on any GPT-5.6 model.
+        "gpt-5.6-sol":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.6-terra":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.6-luna":            {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+
         "gpt-5.5-pro":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5.5":                 {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         
@@ -101,6 +107,37 @@ class ModelFamily:
     # Aliases/pseudos
     _ALIASES: Dict[str, Dict[str, Any]] = {
         # Commented out aliases are by default
+
+        # GPT-5.6 efforts: none | low | medium (default) | high | xhigh | max
+        "gpt-5.6":                         {"base_model": "gpt-5.6-sol"},  # OpenAI routes gpt-5.6 → gpt-5.6-sol
+
+        # "gpt-5.6-sol-medium":             {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.6-sol-none":                {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.6-sol-low":                 {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.6-sol-high":                {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.6-sol-xhigh":               {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "xhigh"}}},
+        "gpt-5.6-sol-max":                 {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "max"}}},
+
+        # Pro mode = extra model work before a single final answer. Mode and effort are independent.
+        "gpt-5.6-sol-pro":                 {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"mode": "pro"}}},
+        "gpt-5.6-sol-pro-high":            {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"mode": "pro", "effort": "high"}}},
+        "gpt-5.6-sol-pro-xhigh":           {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"mode": "pro", "effort": "xhigh"}}},
+        "gpt-5.6-sol-pro-max":             {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"mode": "pro", "effort": "max"}}},
+
+        # "gpt-5.6-terra-medium":           {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.6-terra-none":              {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.6-terra-low":               {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.6-terra-high":              {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.6-terra-xhigh":             {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "xhigh"}}},
+        "gpt-5.6-terra-max":               {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "max"}}},
+
+        # "gpt-5.6-luna-medium":            {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.6-luna-none":               {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.6-luna-low":                {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.6-luna-high":               {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.6-luna-xhigh":              {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "xhigh"}}},
+        "gpt-5.6-luna-max":                {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "max"}}},
+
         # "gpt-5.5-none":                        {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "none"}}},
         "gpt-5.5-low":                     {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "low"}}},
         "gpt-5.5-medium":                  {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "medium"}}},

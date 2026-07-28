@@ -5,6 +5,13 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8-5.6] - 2026-07-28
+- Added the **GPT-5.6** family: `gpt-5.6-sol` (flagship), `gpt-5.6-terra` (balanced), and `gpt-5.6-luna` (high volume). Same capability set as GPT-5.5 (function calling, reasoning + summaries, web search, image gen, `text.verbosity`).
+- Added `gpt-5.6` alias, matching OpenAI's own routing of `gpt-5.6` → `gpt-5.6-sol`.
+- Added reasoning-effort aliases for all three tiers, including the new `max` effort: `-none`, `-low`, `-high`, `-xhigh`, `-max`. Unsuffixed IDs use OpenAI's `medium` default.
+- Added pro-mode aliases on the flagship tier (`gpt-5.6-sol-pro`, `-pro-high`, `-pro-xhigh`, `-pro-max`). GPT-5.6 has no separate `-pro` model slug; pro is `reasoning.mode: "pro"`, which is independent of `reasoning.effort`.
+- Refreshed `README.md` model tables, which still described GPT-5.1 as current and listed `gpt-5-thinking*` aliases that no longer exist in the code.
+
 ## [0.9.9] - 2025-10-01
 - Added status updates for OpenAI web search events, emitting query chips, source counts, and expandable result panels.
 
