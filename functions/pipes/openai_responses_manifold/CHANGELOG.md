@@ -5,6 +5,9 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.13] - 2026-09-01
+- Fixed stale `OpenAI: <id>` names lingering in the model picker after the 0.9.11 rename: workspace model records created before 0.9.11 store that legacy auto-name and override the pipe-provided display name. `pipes()` now performs a one-time (per process) migration that renames records still carrying a legacy auto-name (`OpenAI: <id>`, the raw id, or the prefixed id) to `ModelFamily.display_name()`. Admin-customized names are never touched.
+
 ## [0.9.12] - 2026-09-01
 - Added `AUTO_ENABLE_NATIVE_FUNCTION_CALLING` valve (default: `True`) to toggle the STEP 4 side effect where the pipe persists `params.function_calling = "native"` on the model record when tools are attached.
 - The auto-enable write now only fires when the model's `function_calling` setting is **missing** (unset). An explicit admin choice (e.g. `"default"`) is respected and never overridden. Previously any non-`"native"` value was overwritten.

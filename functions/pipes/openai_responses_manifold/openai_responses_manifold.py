@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.12
+version: 0.9.13
 license: MIT
 """
 
@@ -878,9 +878,15 @@ class Pipe:
         # Model ids whose icon has already been checked/synced this process (see MODEL_ICON_URL).
         self._icon_synced: set[str] = set()
         self._icon_synced_for: str | None = None  # MODEL_ICON_URL value the cache was built for
+        # One-time (per process) rename of legacy 'OpenAI: <id>' workspace records.
+        self._legacy_names_renamed = False
 
     async def pipes(self):
         model_ids = [model_id.strip() for model_id in self.valves.MODEL_ID.split(",") if model_id.strip()]
+
+        # Rename stale auto-generated names in workspace records (runs once per process;
+        # uses the unfiltered list so records for currently hidden models are fixed too).
+        await self._rename_legacy_model_records(model_ids)
 
         # Hide configured models the endpoint doesn't actually serve (cached; see valve docs).
         available = await self._get_available_models()
@@ -961,6 +967,43 @@ class Pipe:
                         await result
             except Exception:
                 self.logger.exception("Failed to set model icon for %s", full_id)
+
+    async def _rename_legacy_model_records(self, model_ids: list[str]) -> None:
+        """One-time cleanup of stale auto-generated names in workspace records.
+
+        Pre-0.9.11 the pipe named models 'OpenAI: <id>'. Workspace records created
+        back then (admin edits, native function-calling flips, icon syncs) still
+        carry that name and override the parsed display names in the picker
+        (Open WebUI overlays record.name over the pipe-provided name). Rename only
+        records whose name is still a legacy auto-name; admin-customized names are
+        never touched. Runs once per process; failures are logged and skipped.
+        """
+        if self._legacy_names_renamed:
+            return
+        self._legacy_names_renamed = True
+
+        for model_id in model_ids:
+            full_id = ModelFamily._PREFIX + model_id
+            try:
+                model = Models.get_model_by_id(full_id)
+                if inspect.iscoroutine(model):
+                    model = await model
+                if not model:
+                    continue
+
+                legacy_names = {f"OpenAI: {model_id}", model_id, full_id}
+                if (model.name or "") not in legacy_names:
+                    continue  # admin-customized (or already migrated) name — keep it
+
+                new_name = ModelFamily.display_name(model_id)
+                form_data = model.model_dump()
+                form_data["name"] = new_name
+                result = Models.update_model_by_id(full_id, ModelForm(**form_data))
+                if inspect.iscoroutine(result):
+                    await result
+                self.logger.info("Renamed legacy model record %s: %r -> %r", full_id, model.name, new_name)
+            except Exception:
+                self.logger.exception("Failed to rename legacy model record %s", full_id)
 
     async def _get_available_models(self) -> frozenset[str] | None:
         """Return normalized model ids served by ``{BASE_URL}/models``, or ``None``.

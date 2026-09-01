@@ -41,7 +41,10 @@ All-classmethod static registry. Normalization (`_norm`) strips the
 - Helpers: `base_model()`, `params()` (alias-implied defaults), `features()`,
   `supports(feature, id)`, `pricing()`, `display_name()` (id → human-friendly picker
   name, e.g. `gpt-5.6-luna-pro` → "GPT 5.6 Luna Pro"; overrides in
-  `_NAME_TOKEN_OVERRIDES`, o-series ids stay lowercase).
+  `_NAME_TOKEN_OVERRIDES`, o-series ids stay lowercase). Workspace records still
+  named with the pre-0.9.11 `OpenAI: <id>` auto-name override the pipe-provided
+  name, so `pipes()` runs `_rename_legacy_model_records` once per process to
+  migrate them (admin-customized names are left alone).
 - **`_PSEUDO_MODELS`** — pipe-side router ids (`gpt-5-auto`) never served by
   `/models`; always kept when `pipes()` filters against the fetched model list.
 
