@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.11
+version: 0.9.12
 license: MIT
 """
 
@@ -718,6 +718,16 @@ class Pipe:
                 "Prevents hitting /models on every model-picker refresh. Minimum 60 seconds."
             ),
         )
+        MODEL_ICON_URL: Optional[str] = Field(
+            default=None,
+            description=(
+                "Optional icon for this manifold's models, applied to the model record's "
+                "meta.profile_image_url on first use (a DB write). Only set when the icon is "
+                "missing — an icon already set by an admin is never overridden. Accepts "
+                "http(s) URLs or data:image/{png,jpeg,gif,webp};base64 URIs (SVG data-URIs are "
+                "rejected by newer Open WebUI versions). Leave blank to disable."
+            ),
+        )
 
         # Reasoning & summaries
         REASONING_SUMMARY: Literal["auto", "concise", "detailed", "disabled"] = Field(
@@ -730,6 +740,15 @@ class Pipe:
         )
         
         # Tool execution behavior
+        AUTO_ENABLE_NATIVE_FUNCTION_CALLING: bool = Field(
+            default=True,
+            description=(
+                "When tools are attached and the model's Open WebUI 'Function Calling' setting is unset, "
+                "persist it as 'native' in the model record (a DB write). Only applies when the setting is "
+                "missing — an explicit admin choice (e.g. 'default') is never overridden. Disable to make "
+                "this pipe never modify model records."
+            ),
+        )
         PERSIST_TOOL_RESULTS: bool = Field(
             default=True,
             description="Persist tool call results across conversation turns. When disabled, tool results are not stored in the chat history.",
@@ -854,6 +873,8 @@ class Pipe:
         self._available_models: frozenset[str] | None = None
         self._available_models_fetched_at: float = float("-inf")
         self._models_fetch_lock = asyncio.Lock()
+        # Model ids whose icon has already been checked/synced this process (see MODEL_ICON_URL).
+        self._icon_synced: set[str] = set()
 
     async def pipes(self):
         model_ids = [model_id.strip() for model_id in self.valves.MODEL_ID.split(",") if model_id.strip()]
@@ -1029,15 +1050,16 @@ class Pipe:
             extra_tools=getattr(completions_body, "extra_tools", None),
         )
 
-        # STEP 4: Auto-enable native function calling if tools are used but `native` function calling is not enabled in Open WebUI model settings.
-        if tools and ModelFamily.supports("function_calling", openwebui_model_id):
+        # STEP 4: Auto-enable native function calling if tools are used but the model's `function_calling`
+        # setting is missing in Open WebUI model settings. Explicit admin choices are respected.
+        if tools and valves.AUTO_ENABLE_NATIVE_FUNCTION_CALLING and ModelFamily.supports("function_calling", openwebui_model_id):
             model = Models.get_model_by_id(openwebui_model_id)
             if inspect.iscoroutine(model):
                 model = await model
                 
             if model:
                 params = dict(model.params or {})
-                if params.get("function_calling") != "native":
+                if params.get("function_calling") is None:
                     await self._emit_notification(
                         __event_emitter__,
                         content=f"Enabling native function calling for model: {openwebui_model_id}. Please re-run your query.",
@@ -1047,6 +1069,38 @@ class Pipe:
                     form_data = model.model_dump()
                     form_data["params"] = params
                     Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
+
+        # STEP 4b: Set the model icon (meta.profile_image_url) if MODEL_ICON_URL is configured
+        # and the record has no icon yet. Set-only-if-missing: an admin-set icon is never overridden.
+        if valves.MODEL_ICON_URL and openwebui_model_id not in self._icon_synced:
+            self._icon_synced.add(openwebui_model_id)  # once per process; also caches failures
+            try:
+                model = Models.get_model_by_id(openwebui_model_id)
+                if inspect.iscoroutine(model):
+                    model = await model
+
+                if model:
+                    meta = dict(model.meta or {})
+                    if not meta.get("profile_image_url"):
+                        meta["profile_image_url"] = valves.MODEL_ICON_URL
+                        form_data = model.model_dump()
+                        form_data["meta"] = meta
+                        result = Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
+                        if inspect.iscoroutine(result):
+                            await result
+                else:
+                    # No workspace record yet — create a minimal one carrying only the icon.
+                    form_data = ModelForm(
+                        id=openwebui_model_id,
+                        name=ModelFamily.display_name(openwebui_model_id),
+                        meta={"profile_image_url": valves.MODEL_ICON_URL},
+                        params={},
+                    )
+                    result = Models.insert_new_model(form_data, __user__["id"])
+                    if inspect.iscoroutine(result):
+                        await result
+            except Exception:
+                self.logger.exception("Failed to set model icon for %s", openwebui_model_id)
 
         # STEP 5: Handle GPT-5-Auto routing
         if openwebui_model_id.endswith(".gpt-5-auto-dev"):

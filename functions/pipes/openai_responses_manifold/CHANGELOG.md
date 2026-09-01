@@ -5,6 +5,11 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.12] - 2026-09-01
+- Added `AUTO_ENABLE_NATIVE_FUNCTION_CALLING` valve (default: `True`) to toggle the STEP 4 side effect where the pipe persists `params.function_calling = "native"` on the model record when tools are attached.
+- The auto-enable write now only fires when the model's `function_calling` setting is **missing** (unset). An explicit admin choice (e.g. `"default"`) is respected and never overridden. Previously any non-`"native"` value was overwritten.
+- Added `MODEL_ICON_URL` valve (default: unset/disabled) to programmatically set a model-picker icon. On first use of a model in a chat, the pipe writes the URL to the model record's `meta.profile_image_url` — only when no icon is set (an admin-set icon is never overridden). If the model has no workspace record yet, a minimal one is created. Accepts http(s) URLs or `data:image/{png,jpeg,gif,webp};base64` URIs; results are cached per process so the DB is checked at most once per model.
+
 ## [0.9.11] - 2026-09-01
 - Added automatic model-list fetching: `pipes()` now queries `{BASE_URL}/models` and hides `MODEL_ID` entries whose base model isn't served by the endpoint. Pseudo-models (e.g. `gpt-5-auto`) are always kept, and the full configured list is used as a fallback when the fetch fails or nothing matches.
 - Added `FETCH_MODELS` valve (default: `True`) to toggle the behavior, and `MODEL_FETCH_TTL_SECONDS` valve (default: `600`, minimum 60) to cache the fetched list so `/models` isn't hit on every model-picker refresh. Failures are cached for the same TTL (stale-while-error).

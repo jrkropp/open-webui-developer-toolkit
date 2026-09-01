@@ -44,15 +44,18 @@ modules. Tests live in `tests/` and can import the module directly.
 7. `fetch_openai_response_items` filters persisted items by exact model id — by design
    (encrypted reasoning tokens are model-bound). Don't "fix" this without a migration plan.
 
-## Current state / known quirks (as of 0.9.8-5.6)
+## Current state / known quirks (as of 0.9.12)
 
 - **Non-streaming is disabled** in `pipe()` (emits an error; `_run_nonstreaming_loop` is
   dormant but functional — it wraps the streaming loop with a suppressing emitter).
 - `PARALLEL_TOOL_CALLS` valve is declared but never applied to the outbound body.
 - `_route_gpt5_auto` ignores its `router_model` argument and hardcodes `gpt-5-mini`.
 - Inline `[n]` citation markers in text are TODO; citations are emitted as `source` events only.
-- `pipe()` has intentional side effects: it can flip the model record's
-  `params.function_calling` to `"native"` in the DB, and injects CSS into the client tab
+- `pipe()` has intentional side effects: it can set the model record's
+  `params.function_calling` to `"native"` in the DB (valve-gated via
+  `AUTO_ENABLE_NATIVE_FUNCTION_CALLING`, only when the setting is unset), it can write a
+  model icon to `meta.profile_image_url` (valve-gated via `MODEL_ICON_URL`, only when no
+  icon is set; may insert a minimal model record), and it injects CSS into the client tab
   to unclamp status lines.
 
 ## Workflow expectations
