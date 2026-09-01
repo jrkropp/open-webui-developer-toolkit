@@ -13,6 +13,7 @@ sys.modules.setdefault(
     "open_webui.models.models",
     types.SimpleNamespace(ModelForm=object, Models=object),
 )
+sys.modules.setdefault("open_webui.models.users", types.SimpleNamespace(Users=object))
 sys.modules.setdefault("open_webui.utils", types.ModuleType("open_webui.utils"))
 sys.modules.setdefault(
     "open_webui.utils.misc",

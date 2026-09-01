@@ -84,7 +84,7 @@ This exact-order reconstruction is what unlocks OpenAI prompt caching across tur
 | `MODEL_ID` | all specs + aliases | Comma-separated ids exposed in the model picker |
 | `FETCH_MODELS` | `True` | Fetch `{BASE_URL}/models` and hide unavailable `MODEL_ID` entries (pseudo-models kept; falls back to full list on failure/empty match) |
 | `MODEL_FETCH_TTL_SECONDS` | `600` | Cache TTL for the fetched model list (min 60; failures cached too) |
-| `MODEL_ICON_URL` | `None` | Icon for this manifold's models; written to the record's `meta.profile_image_url` on first use, only if no icon is set (creates a minimal record when none exists) |
+| `MODEL_ICON_URL` | `None` | Icon for this manifold's models; `pipes()` writes it to each record's `meta.profile_image_url`, only if no icon is set (creates a minimal record when none exists) |
 | `REASONING_SUMMARY` | `disabled` | `auto\|concise\|detailed\|disabled` (needs verified org) |
 | `PERSIST_REASONING_TOKENS` | `disabled` | `disabled` / `response` (in-turn) / `conversation` (across turns) |
 | `AUTO_ENABLE_NATIVE_FUNCTION_CALLING` | `True` | Persist `function_calling: "native"` on the model record when tools are attached and the setting is unset (never overrides an explicit value) |
@@ -121,10 +121,7 @@ non-`inherit` user values onto globals.
    `function_calling` param is **unset**, persist `"native"` to the DB
    (`Models.update_model_by_id`) and notify the user to re-run. Explicit values
    (including `"default"`) are never overridden.
-   Then, if `MODEL_ICON_URL` is set and the record has no `meta.profile_image_url`,
-   persist the icon (inserting a minimal record via `Models.insert_new_model` when the
-   model has no workspace record). Checked at most once per model per process
-   (`self._icon_synced`).
+
 7. gpt-5-auto routing: id ending `.gpt-5-auto-dev` → `_route_gpt5_auto` (LLM router:
    hardcoded `gpt-5-mini` @ minimal effort, strict JSON schema choosing between
    `gpt-5-chat-latest`/`gpt-5`/`gpt-5-mini` + effort; attaches `model_router_result`);

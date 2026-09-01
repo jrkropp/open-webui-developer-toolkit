@@ -51,12 +51,12 @@ modules. Tests live in `tests/` and can import the module directly.
 - `PARALLEL_TOOL_CALLS` valve is declared but never applied to the outbound body.
 - `_route_gpt5_auto` ignores its `router_model` argument and hardcodes `gpt-5-mini`.
 - Inline `[n]` citation markers in text are TODO; citations are emitted as `source` events only.
-- `pipe()` has intentional side effects: it can set the model record's
-  `params.function_calling` to `"native"` in the DB (valve-gated via
-  `AUTO_ENABLE_NATIVE_FUNCTION_CALLING`, only when the setting is unset), it can write a
-  model icon to `meta.profile_image_url` (valve-gated via `MODEL_ICON_URL`, only when no
-  icon is set; may insert a minimal model record), and it injects CSS into the client tab
-  to unclamp status lines.
+- The pipe has intentional DB side effects: `pipe()` can set the model record's
+  `params.function_calling` to `"native"` (valve-gated via
+  `AUTO_ENABLE_NATIVE_FUNCTION_CALLING`, only when the setting is unset), and `pipes()`
+  can write a model icon to `meta.profile_image_url` (valve-gated via `MODEL_ICON_URL`,
+  only when no icon is set; may insert minimal model records). `pipe()` also injects CSS
+  into the client tab to unclamp status lines.
 
 ## Workflow expectations
 

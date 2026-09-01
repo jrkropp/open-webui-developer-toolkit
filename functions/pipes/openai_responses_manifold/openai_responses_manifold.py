@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field, model_validator
 # Open WebUI internals
 from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
+from open_webui.models.users import Users
 from open_webui.utils.misc import get_last_user_message
 
 # fmt: off
@@ -721,11 +722,12 @@ class Pipe:
         MODEL_ICON_URL: Optional[str] = Field(
             default=None,
             description=(
-                "Optional icon for this manifold's models, applied to the model record's "
-                "meta.profile_image_url on first use (a DB write). Only set when the icon is "
-                "missing — an icon already set by an admin is never overridden. Accepts "
-                "http(s) URLs or data:image/{png,jpeg,gif,webp};base64 URIs (SVG data-URIs are "
-                "rejected by newer Open WebUI versions). Leave blank to disable."
+                "Optional icon for this manifold's models, applied to each model record's "
+                "meta.profile_image_url when the model list refreshes (a DB write; records are "
+                "created when missing). Only set when no icon exists — an icon already set by an "
+                "admin is never overridden. Accepts http(s) URLs or "
+                "data:image/{png,jpeg,gif,webp};base64 URIs (SVG data-URIs are rejected by newer "
+                "Open WebUI versions). Leave blank to disable."
             ),
         )
 
@@ -875,6 +877,7 @@ class Pipe:
         self._models_fetch_lock = asyncio.Lock()
         # Model ids whose icon has already been checked/synced this process (see MODEL_ICON_URL).
         self._icon_synced: set[str] = set()
+        self._icon_synced_for: str | None = None  # MODEL_ICON_URL value the cache was built for
 
     async def pipes(self):
         model_ids = [model_id.strip() for model_id in self.valves.MODEL_ID.split(",") if model_id.strip()]
@@ -892,7 +895,72 @@ class Pipe:
             if filtered:
                 model_ids = filtered
 
+        await self._sync_model_icons(model_ids)
+
         return [{"id": model_id, "name": ModelFamily.display_name(model_id)} for model_id in model_ids]
+
+    async def _sync_model_icons(self, model_ids: list[str]) -> None:
+        """Write MODEL_ICON_URL to each model record's meta.profile_image_url.
+
+        Set-only-if-missing: an icon already set by an admin is never overridden.
+        Models without a workspace record get a minimal one (icon only), attributed
+        to the super-admin user. Each model is checked at most once per process
+        (cache resets when MODEL_ICON_URL changes); failures are logged and skipped.
+        """
+        icon = (self.valves.MODEL_ICON_URL or "").strip()
+        if not icon:
+            return
+        if icon != self._icon_synced_for:
+            self._icon_synced.clear()
+            self._icon_synced_for = icon
+
+        pending = [
+            ModelFamily._PREFIX + model_id
+            for model_id in model_ids
+            if ModelFamily._PREFIX + model_id not in self._icon_synced
+        ]
+        if not pending:
+            return
+
+        # Owner for records we may need to create (workspace models require a user id).
+        admin = None
+        try:
+            admin = Users.get_super_admin_user()
+            if inspect.iscoroutine(admin):
+                admin = await admin
+        except Exception:
+            self.logger.exception("Could not resolve an admin user for model icon records")
+
+        for full_id in pending:
+            self._icon_synced.add(full_id)  # once per process; also caches failures
+            try:
+                model = Models.get_model_by_id(full_id)
+                if inspect.iscoroutine(model):
+                    model = await model
+
+                if model:
+                    meta = dict(model.meta or {})
+                    if meta.get("profile_image_url"):
+                        continue
+                    meta["profile_image_url"] = icon
+                    form_data = model.model_dump()
+                    form_data["meta"] = meta
+                    result = Models.update_model_by_id(full_id, ModelForm(**form_data))
+                    if inspect.iscoroutine(result):
+                        await result
+                elif admin is not None:
+                    # No workspace record yet — create a minimal one carrying only the icon.
+                    form_data = ModelForm(
+                        id=full_id,
+                        name=ModelFamily.display_name(full_id),
+                        meta={"profile_image_url": icon},
+                        params={},
+                    )
+                    result = Models.insert_new_model(form_data, admin.id)
+                    if inspect.iscoroutine(result):
+                        await result
+            except Exception:
+                self.logger.exception("Failed to set model icon for %s", full_id)
 
     async def _get_available_models(self) -> frozenset[str] | None:
         """Return normalized model ids served by ``{BASE_URL}/models``, or ``None``.
@@ -1069,38 +1137,6 @@ class Pipe:
                     form_data = model.model_dump()
                     form_data["params"] = params
                     Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
-
-        # STEP 4b: Set the model icon (meta.profile_image_url) if MODEL_ICON_URL is configured
-        # and the record has no icon yet. Set-only-if-missing: an admin-set icon is never overridden.
-        if valves.MODEL_ICON_URL and openwebui_model_id not in self._icon_synced:
-            self._icon_synced.add(openwebui_model_id)  # once per process; also caches failures
-            try:
-                model = Models.get_model_by_id(openwebui_model_id)
-                if inspect.iscoroutine(model):
-                    model = await model
-
-                if model:
-                    meta = dict(model.meta or {})
-                    if not meta.get("profile_image_url"):
-                        meta["profile_image_url"] = valves.MODEL_ICON_URL
-                        form_data = model.model_dump()
-                        form_data["meta"] = meta
-                        result = Models.update_model_by_id(openwebui_model_id, ModelForm(**form_data))
-                        if inspect.iscoroutine(result):
-                            await result
-                else:
-                    # No workspace record yet — create a minimal one carrying only the icon.
-                    form_data = ModelForm(
-                        id=openwebui_model_id,
-                        name=ModelFamily.display_name(openwebui_model_id),
-                        meta={"profile_image_url": valves.MODEL_ICON_URL},
-                        params={},
-                    )
-                    result = Models.insert_new_model(form_data, __user__["id"])
-                    if inspect.iscoroutine(result):
-                        await result
-            except Exception:
-                self.logger.exception("Failed to set model icon for %s", openwebui_model_id)
 
         # STEP 5: Handle GPT-5-Auto routing
         if openwebui_model_id.endswith(".gpt-5-auto-dev"):
