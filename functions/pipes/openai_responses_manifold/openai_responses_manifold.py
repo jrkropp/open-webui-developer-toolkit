@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.13
+version: 0.9.14
 license: MIT
 """
 
@@ -1060,7 +1060,7 @@ class Pipe:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: Optional[dict[str, Any]] = None,
         __task_body__: Optional[dict[str, Any]] = None,
-    ) -> AsyncGenerator[str, None] | str | None:
+    ) -> AsyncGenerator[str | dict[str, Any], None] | str | None:
         """Process a user request and return either a stream or final text.
 
         When ``body['stream']`` is ``True`` the method yields deltas from
@@ -1650,12 +1650,40 @@ class Pipe:
             chat_id = metadata.get("chat_id")
             message_id = metadata.get("message_id")
             if chat_id and message_id and emitted_citations:
-                Chats.upsert_message_to_chat_by_id_and_message_id(
+                await Chats.upsert_message_to_chat_by_id_and_message_id(
                     chat_id, message_id, {"sources": emitted_citations}
                 )
 
             # Return the final output to ensure persistence.
-            return assistant_message
+            #
+            # NOTE: this used to `return assistant_message` (a bare str). OWUI's
+            # generate_function_chat_completion() (functions.py) wraps a bare-str
+            # pipe result in a single content chunk via
+            # openai_chat_chunk_message_template(model, res) -- a template that
+            # *supports* a usage= kwarg, but that call site never passes one. So
+            # `total_usage`/cost computed above was only ever delivered via the
+            # _emit_completion() socket event above, which OWUI's event emitter
+            # does not persist to the DB message (only status/message/replace/
+            # embeds/files/source/citation events are persisted there) -- it's a
+            # live-broadcast-only side channel invisible to outlet filters.
+            #
+            # Returning an async generator instead routes through OWUI's
+            # AsyncGenerator branch in functions.py, which passes each yielded
+            # item through process_line(): a plain str becomes the same content
+            # chunk as before, and a dict becomes a raw SSE JSON chunk. A
+            # `{"usage": ...}` chunk (no/empty `choices`) is handled safely by
+            # middleware.py's stream parser, which merges `usage` into the
+            # accumulator *before* checking `choices` -- so it flows into
+            # ctx['assistant_message']['usage'], the exact structure outlet
+            # filters receive. functions.py still appends its own closing
+            # finish/[DONE] frames afterward, so behavior is otherwise unchanged.
+            async def _final_chunks():
+                if assistant_message:
+                    yield assistant_message
+                if total_usage:
+                    yield {"usage": total_usage}
+
+            return _final_chunks()
 
     async def _run_nonstreaming_loop(
         self,
@@ -1664,7 +1692,7 @@ class Pipe:
         event_emitter: Callable[[Dict[str, Any]], Awaitable[None]],
         metadata: Dict[str, Any] = {},
         tools: Optional[Dict[str, Dict[str, Any]]] = None,
-    ) -> str:
+    ) -> AsyncGenerator[str | Dict[str, Any], None]:
         """Unified implementation: reuse the streaming path.
 
         We force `stream=True` and delegate to `_run_streaming_loop`, but wrap the

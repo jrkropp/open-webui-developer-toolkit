@@ -5,6 +5,10 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.14] - 2026-09-01
+- Fixed usage/cost stats (`total_usage`, including the `cost` breakdown) never reaching Open WebUI's outlet filters or DB-persisted message. They were only ever emitted via a custom `chat:completion` socket event, which Open WebUI's event emitter broadcasts live but does not persist, and the bare-`str` return from `_run_streaming_loop` gave OWUI's core no channel to attach `usage` to. The loop now returns an async generator yielding the final content followed by a `{"usage": ...}` chunk, which flows through Open WebUI's normal chunk-parsing path into the persisted assistant message (and therefore into outlet filters) exactly like provider-reported usage does.
+- Fixed a related bug in the same cleanup path: the `sources` persistence call (`Chats.upsert_message_to_chat_by_id_and_message_id`) was missing `await`, so citations were silently never written to the database.
+
 ## [0.9.13] - 2026-09-01
 - Fixed stale `OpenAI: <id>` names lingering in the model picker after the 0.9.11 rename: workspace model records created before 0.9.11 store that legacy auto-name and override the pipe-provided display name. `pipes()` now performs a one-time (per process) migration that renames records still carrying a legacy auto-name (`OpenAI: <id>`, the raw id, or the prefixed id) to `ModelFamily.display_name()`. Admin-customized names are never touched.
 
