@@ -49,6 +49,18 @@ When using the toolkit, you can choose the branch that suits your needs. Most us
 
 **Note:** The `external/open-webui/` directory is a **git submodule** pointing to the upstream [Open WebUI](https://github.com/open-webui/open-webui) repository. It’s included as a read-only reference to assist with testing compatibility, so you don’t have to separately clone the main Open WebUI project. When writing new extensions, you can refer to Open WebUI internals (APIs, data models, etc.) via this local copy. To populate it, clone with `git clone --recurse-submodules`, or run `git submodule update --init` in an existing checkout.
 
+## Development Setup
+
+The project uses a standard `pyproject.toml`. With [uv](https://docs.astral.sh/uv/) (recommended):
+
+```bash
+git submodule update --init   # tests import from external/open-webui/backend
+uv sync --extra dev           # creates .venv and installs runtime + dev dependencies
+uv run pytest                 # run the test suite (or .venv/bin/pytest)
+```
+
+Any tool that understands `pyproject.toml` works too, e.g. `pip install -e ".[dev]"` in a Python 3.11+ virtualenv.
+
 ## Contributing
 
 Contributions are welcome! If you have an idea for a new pipe, filter, tool, or an improvement to the existing code, please feel free to get involved:

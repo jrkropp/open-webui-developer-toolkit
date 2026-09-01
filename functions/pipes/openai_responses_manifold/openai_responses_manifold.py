@@ -1178,6 +1178,15 @@ class Pipe:
 
                                     # If API returned sources (only when include[...] was set), emit the panel now
                                     if urls:
+                                        # Mirror upstream middleware: report how many sources were retrieved
+                                        await event_emitter({
+                                            "type": "status",
+                                            "data": {
+                                                "action": "sources_retrieved",
+                                                "count": len(urls),
+                                                "done": False,
+                                            },
+                                        })
                                         await event_emitter({
                                             "type": "status",
                                             "data": {
