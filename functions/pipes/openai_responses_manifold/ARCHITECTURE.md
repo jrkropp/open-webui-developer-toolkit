@@ -39,7 +39,11 @@ All-classmethod static registry. Normalization (`_norm`) strips the
   `cached_input=None` means cached tokens bill at the full input rate. Overridable at
   runtime via the `CUSTOM_MODEL_PRICING_JSON` valve.
 - Helpers: `base_model()`, `params()` (alias-implied defaults), `features()`,
-  `supports(feature, id)`, `pricing()`.
+  `supports(feature, id)`, `pricing()`, `display_name()` (id → human-friendly picker
+  name, e.g. `gpt-5.6-luna-pro` → "GPT 5.6 Luna Pro"; overrides in
+  `_NAME_TOKEN_OVERRIDES`, o-series ids stay lowercase).
+- **`_PSEUDO_MODELS`** — pipe-side router ids (`gpt-5-auto`) never served by
+  `/models`; always kept when `pipes()` filters against the fetched model list.
 
 ## 2. Request transformation
 

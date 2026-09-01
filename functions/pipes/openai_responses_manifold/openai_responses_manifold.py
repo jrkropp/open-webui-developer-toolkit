@@ -62,6 +62,10 @@ class ModelFamily:
     # (kept in the picker even when the fetched model list doesn't contain them).
     _PSEUDO_MODELS = frozenset({"gpt-5-auto"})
 
+    # Tokens that don't follow simple capitalization in display names.
+    _NAME_TOKEN_OVERRIDES = {"gpt": "GPT", "chatgpt": "ChatGPT", "xhigh": "XHigh"}
+    _O_SERIES_RE = re.compile(r"^o\d+$")  # o3, o4, … keep OpenAI's lowercase branding
+
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
         # GPT-5.6 renames the capability tiers: sol (flagship) / terra (balanced) / luna (high volume).
@@ -271,6 +275,26 @@ class ModelFamily:
     def supports(cls, feature: str, model_id: str) -> bool:
         """Check if a model (alias or base) supports a given feature."""
         return feature in cls.features(model_id)
+
+    @classmethod
+    def display_name(cls, model_id: str) -> str:
+        """Human-friendly name, e.g. 'gpt-5.6-luna-pro' → 'GPT 5.6 Luna Pro'.
+
+        Splits the normalized id on dashes, then per token: applies the override
+        table (GPT/ChatGPT/XHigh), keeps version-ish tokens (5.6, 4o, 4.1) and
+        o-series ids (o3, o4) as-is, and capitalizes the rest (sol → Sol).
+        """
+        words = []
+        for token in cls._norm(model_id).split("-"):
+            if not token:
+                continue
+            if token in cls._NAME_TOKEN_OVERRIDES:
+                words.append(cls._NAME_TOKEN_OVERRIDES[token])
+            elif token[0].isdigit() or cls._O_SERIES_RE.match(token):
+                words.append(token)
+            else:
+                words.append(token.capitalize())
+        return " ".join(words) or model_id
 
     @classmethod
     def pricing(cls, model_id: str) -> Optional[Dict[str, float]]:
@@ -844,7 +868,7 @@ class Pipe:
             if filtered:
                 model_ids = filtered
 
-        return [{"id": model_id, "name": f"OpenAI: {model_id}"} for model_id in model_ids]
+        return [{"id": model_id, "name": ModelFamily.display_name(model_id)} for model_id in model_ids]
 
     async def _get_available_models(self) -> frozenset[str] | None:
         """Return normalized model ids served by ``{BASE_URL}/models``, or ``None``.
