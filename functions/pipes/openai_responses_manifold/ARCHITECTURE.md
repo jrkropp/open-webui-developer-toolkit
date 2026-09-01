@@ -78,6 +78,8 @@ This exact-order reconstruction is what unlocks OpenAI prompt caching across tur
 | `BASE_URL` | env or `https://api.openai.com/v1` | API base (LiteLLM-compatible) |
 | `API_KEY` | env `OPENAI_API_KEY` | API key |
 | `MODEL_ID` | all specs + aliases | Comma-separated ids exposed in the model picker |
+| `FETCH_MODELS` | `True` | Fetch `{BASE_URL}/models` and hide unavailable `MODEL_ID` entries (pseudo-models kept; falls back to full list on failure/empty match) |
+| `MODEL_FETCH_TTL_SECONDS` | `600` | Cache TTL for the fetched model list (min 60; failures cached too) |
 | `REASONING_SUMMARY` | `disabled` | `auto\|concise\|detailed\|disabled` (needs verified org) |
 | `PERSIST_REASONING_TOKENS` | `disabled` | `disabled` / `response` (in-turn) / `conversation` (across turns) |
 | `PERSIST_TOOL_RESULTS` | `True` | Persist tool outputs across turns |

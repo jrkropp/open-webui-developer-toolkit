@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.10
+version: 0.9.11
 license: MIT
 """
 
@@ -27,7 +27,7 @@ import re
 import sys
 import secrets
 import random
-from time import perf_counter
+from time import monotonic, perf_counter
 from collections import defaultdict, deque
 from contextvars import ContextVar
 import contextlib
@@ -57,6 +57,10 @@ class ModelFamily:
 
     _DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
     _PREFIX  = "openai_responses."
+
+    # Pipe-side pseudo-models that are never served by the /models endpoint
+    # (kept in the picker even when the fetched model list doesn't contain them).
+    _PSEUDO_MODELS = frozenset({"gpt-5-auto"})
 
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
@@ -672,6 +676,21 @@ class Pipe:
                 "Supports all official OpenAI model IDs and pseudo IDs (see README.md for full list)."
             ),
         )
+        FETCH_MODELS: bool = Field(
+            default=True,
+            description=(
+                "Fetch the model list from {BASE_URL}/models and hide MODEL_ID entries whose base model "
+                "isn't served by the endpoint. Falls back to the full MODEL_ID list when the fetch fails "
+                "or when nothing matches. Pseudo-models (e.g. gpt-5-auto) are always kept."
+            ),
+        )
+        MODEL_FETCH_TTL_SECONDS: int = Field(
+            default=600,
+            description=(
+                "How long (in seconds) the fetched model list is cached before it is refreshed. "
+                "Prevents hitting /models on every model-picker refresh. Minimum 60 seconds."
+            ),
+        )
 
         # Reasoning & summaries
         REASONING_SUMMARY: Literal["auto", "concise", "detailed", "disabled"] = Field(
@@ -804,10 +823,72 @@ class Pipe:
         self.valves = self.Valves()  # Note: valve values are not accessible in __init__. Access from pipes() or pipe() methods.
         self.session: aiohttp.ClientSession | None = None
         self.logger = SessionLogger.get_logger(__name__)
+        # Cache for the fetched /models list (see _get_available_models).
+        self._available_models: frozenset[str] | None = None
+        self._available_models_fetched_at: float = float("-inf")
+        self._models_fetch_lock = asyncio.Lock()
 
     async def pipes(self):
         model_ids = [model_id.strip() for model_id in self.valves.MODEL_ID.split(",") if model_id.strip()]
+
+        # Hide configured models the endpoint doesn't actually serve (cached; see valve docs).
+        available = await self._get_available_models()
+        if available is not None:
+            filtered = [
+                model_id for model_id in model_ids
+                if ModelFamily.base_model(model_id) in available
+                or ModelFamily.base_model(model_id) in ModelFamily._PSEUDO_MODELS
+            ]
+            # Safety net: an endpoint with fully custom ids (e.g. a LiteLLM alias map)
+            # would otherwise empty the picker — fall back to the configured list.
+            if filtered:
+                model_ids = filtered
+
         return [{"id": model_id, "name": f"OpenAI: {model_id}"} for model_id in model_ids]
+
+    async def _get_available_models(self) -> frozenset[str] | None:
+        """Return normalized model ids served by ``{BASE_URL}/models``, or ``None``.
+
+        Results are cached for ``MODEL_FETCH_TTL_SECONDS`` so the endpoint is not
+        hit on every model-picker refresh. Failures are also cached for the TTL
+        (stale-while-error: the last good list keeps being served) and ``None`` is
+        returned when fetching is disabled or has never succeeded, in which case
+        callers should skip filtering entirely.
+        """
+        if not self.valves.FETCH_MODELS:
+            return None
+
+        ttl = max(60, int(self.valves.MODEL_FETCH_TTL_SECONDS or 0))
+        async with self._models_fetch_lock:
+            if monotonic() - self._available_models_fetched_at < ttl:
+                return self._available_models
+            self._available_models_fetched_at = monotonic()
+
+            url = self.valves.BASE_URL.rstrip("/") + "/models"
+            try:
+                self.session = await self._get_or_init_http_session()
+                headers = {"Authorization": f"Bearer {self.valves.API_KEY}"}
+                async with self.session.get(
+                    url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    resp.raise_for_status()
+                    payload = await resp.json()
+                ids = {
+                    ModelFamily._norm(entry.get("id", ""))
+                    for entry in payload.get("data", [])
+                    if isinstance(entry, dict)
+                }
+                ids.discard("")
+                self._available_models = frozenset(ids)
+                self.logger.debug("Fetched %d model ids from %s", len(ids), url)
+            except Exception as exc:
+                self.logger.warning(
+                    "Model list fetch from %s failed (%s); using %s.",
+                    url,
+                    exc,
+                    "cached list" if self._available_models is not None else "full MODEL_ID list",
+                )
+            return self._available_models
 
     async def pipe(
         self,
