@@ -28,6 +28,11 @@ def test_display_name_gpt_families():
     assert ModelFamily.display_name("gpt-5-chat-latest") == "GPT 5 Chat Latest"
 
 
+def test_display_name_drops_none_effort_suffix():
+    assert ModelFamily.display_name("gpt-5.6-luna-none") == "GPT 5.6 Luna"
+    assert ModelFamily.display_name("gpt-5.6-sol-none") == "GPT 5.6 Sol"
+
+
 def test_display_name_o_series_and_chatgpt():
     assert ModelFamily.display_name("o3-mini-high") == "o3 Mini High"
     assert ModelFamily.display_name("o4-mini-deep-research") == "o4 Mini Deep Research"

@@ -63,7 +63,8 @@ class ModelFamily:
     _PSEUDO_MODELS = frozenset({"gpt-5-auto"})
 
     # Tokens that don't follow simple capitalization in display names.
-    _NAME_TOKEN_OVERRIDES = {"gpt": "GPT", "chatgpt": "ChatGPT", "xhigh": "XHigh"}
+    # An empty value drops the token entirely (e.g. '-none' effort suffix).
+    _NAME_TOKEN_OVERRIDES = {"gpt": "GPT", "chatgpt": "ChatGPT", "xhigh": "XHigh", "none": ""}
     _O_SERIES_RE = re.compile(r"^o\d+$")  # o3, o4, … keep OpenAI's lowercase branding
 
     # Base models → capabilities.
@@ -289,7 +290,9 @@ class ModelFamily:
             if not token:
                 continue
             if token in cls._NAME_TOKEN_OVERRIDES:
-                words.append(cls._NAME_TOKEN_OVERRIDES[token])
+                override = cls._NAME_TOKEN_OVERRIDES[token]
+                if override:
+                    words.append(override)
             elif token[0].isdigit() or cls._O_SERIES_RE.match(token):
                 words.append(token)
             else:

@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ## [0.9.11] - 2026-09-01
 - Added automatic model-list fetching: `pipes()` now queries `{BASE_URL}/models` and hides `MODEL_ID` entries whose base model isn't served by the endpoint. Pseudo-models (e.g. `gpt-5-auto`) are always kept, and the full configured list is used as a fallback when the fetch fails or nothing matches.
 - Added `FETCH_MODELS` valve (default: `True`) to toggle the behavior, and `MODEL_FETCH_TTL_SECONDS` valve (default: `600`, minimum 60) to cache the fetched list so `/models` isn't hit on every model-picker refresh. Failures are cached for the same TTL (stale-while-error).
-- Model entries now use human-friendly display names parsed from the id via `ModelFamily.display_name()` (e.g. `gpt-5.6-luna-pro` → "GPT 5.6 Luna Pro", `o4-mini-deep-research` → "o4 Mini Deep Research"), replacing the previous `OpenAI: <id>` format.
+- Model entries now use human-friendly display names parsed from the id via `ModelFamily.display_name()` (e.g. `gpt-5.6-luna-pro` → "GPT 5.6 Luna Pro", `o4-mini-deep-research` → "o4 Mini Deep Research"), replacing the previous `OpenAI: <id>` format. The `-none` effort suffix is dropped from names (`gpt-5.6-sol-none` → "GPT 5.6 Sol").
 
 ## [0.9.10] - 2026-09-01
 - Added estimated USD cost to the usage stats emitted to Open WebUI (shown as a `cost` block alongside token counts): `input_cost`, `cached_input_cost`, `output_cost`, and `total_cost`.
