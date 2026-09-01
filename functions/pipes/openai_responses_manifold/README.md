@@ -20,6 +20,8 @@ This project started as an internal tool (200+ hours of optimization and testing
 * [GPT‑5.6 Model Support](#gpt-56-model-support)
 * [How It Works (Design Notes)](#how-it-works-design-notes)
 
+> 🛠️ **Contributing or using an AI agent on this codebase?** Start with [AGENTS.md](AGENTS.md) (context entry point) and [ARCHITECTURE.md](ARCHITECTURE.md) (full developer reference).
+
 ## Setup
 1. In **Open WebUI ▸ Admin Panel ▸ Functions**, click **Import from Link**.
    
