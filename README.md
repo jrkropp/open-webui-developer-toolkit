@@ -47,7 +47,7 @@ development (continuous changes) → alpha-preview (testing/QA) → main (stable
 
 When using the toolkit, you can choose the branch that suits your needs. Most users should stick to **main** for stability. If you want to test the latest features (with a slight risk), use **alpha-preview**.
 
-**Note:** The `external/` directory in this repo contains a read-only copy of the upstream Open WebUI source. It’s included for reference and to assist with testing compatibility, so you don’t have to separately clone the main Open WebUI project. When writing new extensions, you can refer to Open WebUI internals (APIs, data models, etc.) via this local copy.
+**Note:** The `external/open-webui/` directory is a **git submodule** pointing to the upstream [Open WebUI](https://github.com/open-webui/open-webui) repository. It’s included as a read-only reference to assist with testing compatibility, so you don’t have to separately clone the main Open WebUI project. When writing new extensions, you can refer to Open WebUI internals (APIs, data models, etc.) via this local copy. To populate it, clone with `git clone --recurse-submodules`, or run `git submodule update --init` in an existing checkout.
 
 ## Contributing
 
