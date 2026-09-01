@@ -59,6 +59,7 @@ This project started as an internal tool (200+ hours of optimization and testing
 | **Task model support**             | ✅ GA            | 2025-08-07   | Detects when a request is for an **External Task Model** and routes it separately. Makes manifold models usable for lightweight routing or background tasks (e.g., with `gpt-4.1-nano`).                                                                                                                     |
 | **Streaming responses (SSE)**      | ✅ GA            | 2025-06-04   | Supports **real-time streaming**, so users can watch responses appear live as the model generates them.                                                                                                                                                                                                      |
 | **Usage pass-through**             | ✅ GA            | 2025-06-04   | Forwards API usage stats (tokens, caching data, etc.) into Open WebUI, visible in the frontend (hover the ℹ️ icon). Gives users **transparent cost and performance insights**.                                                                                                                               |
+| **Cost estimation**                | ✅ GA            | 2026-09-01   | Appends an **estimated USD cost** block (`input_cost`, `cached_input_cost`, `output_cost`, `total_cost`) to the usage stats, computed from token counts and a built-in per-model price table. Toggle with `SHOW_USAGE_COST`; override rates via `CUSTOM_MODEL_PRICING_JSON`. Estimates exclude tool surcharges (e.g., web search). |
 | **Response item persistence**      | ✅ GA            | 2025-06-27   | Persists hidden items (reasoning, tool calls) by embedding unique IDs in Markdown. Stored separately in the DB and reattached in later turns, so the **conversation can be rebuilt exactly** without losing hidden events.                                                                                   |
 | **Open WebUI Notes compatibility** | 🔄 In progress            | 2025-07-14   | Works seamlessly with Open WebUI’s new **Notes feature** (currently preview). Ensures manifold-based models work even when chats are ephemeral (no `chat_id`).                                                                                                                                               |
 | **Native status updates**         | ✅ GA            | 2025-07-01   | Reports progress using Open WebUI's built-in status emitter with steps like "Thinking…", "Reading the question and building a plan.", "Gathering my thoughts…", "Exploring possible answers…", "Almost done…", and ends with "Thought for N seconds." |
@@ -87,6 +88,34 @@ The `MODEL_ID` valve accepts **pseudo IDs** that resolve to an official model pl
 * `o4-mini-high` → `o4-mini` with `reasoning.effort="high"`
 
 Aliases are resolved before the request leaves the manifold, so OpenAI only ever sees the real model ID. See [Pseudo-Model Aliases](#pseudo-model-aliases-convenience-ids) for the naming rules.
+
+### Cost estimation
+
+When `SHOW_USAGE_COST` is enabled (default), the manifold appends an estimated USD cost to the usage stats shown in Open WebUI (hover the ℹ️ icon on a message):
+
+```
+cost: {
+  input_cost: 0.008665
+  cached_input_cost: 0.0
+  output_cost: 0.00011
+  total_cost: 0.008775
+  currency: USD
+}
+```
+
+How it works:
+
+* Rates come from a built-in per-model price table (USD per 1M tokens). Cached input tokens are billed at the cached rate; the remainder at the full input rate.
+* Costs accumulate correctly across tool-call loops (recomputed from cumulative token counts each turn) and follow the **actual served model** reported by the API (e.g., after `gpt-5-auto` routing).
+* Use the `CUSTOM_MODEL_PRICING_JSON` valve to override or extend the table without editing code, e.g.:
+
+```json
+{"gpt-5": {"input": 1.25, "cached_input": 0.125, "output": 10.0}}
+```
+
+`cached_input` is optional (defaults to the input rate). Models missing from the table simply omit the cost block.
+
+⚠️ Costs are **estimates** based on published token rates — they exclude tool surcharges (e.g., web search) and may lag pricing changes. Always verify against your OpenAI invoice.
 
 ### Debug logging
 

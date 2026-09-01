@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.8-5.6
+version: 0.9.10
 license: MIT
 """
 
@@ -190,6 +190,53 @@ class ModelFamily:
         "o4-mini-high":                 {"base_model": "o4-mini",     "params": {"reasoning": {"effort": "high"}}},
     }
 
+    # Pricing in USD per 1M tokens: (input, cached_input, output).
+    # cached_input of None → cached input billed at the full input rate.
+    # Verify against https://platform.openai.com/pricing and override/extend
+    # via the CUSTOM_MODEL_PRICING_JSON valve without editing code.
+    _PRICING: Dict[str, Any] = {
+        "gpt-5.6-sol":             (1.25,  0.125, 10.00),
+        "gpt-5.6-terra":           (0.25,  0.025,  2.00),
+        "gpt-5.6-luna":            (0.05,  0.005,  0.40),
+
+        "gpt-5.5-pro":             (15.00, None,  120.00),
+        "gpt-5.5":                 (1.25,  0.125, 10.00),
+
+        "gpt-5.4-pro":             (15.00, None,  120.00),
+        "gpt-5.4":                 (1.25,  0.125, 10.00),
+
+        "gpt-5.2-pro":             (15.00, None,  120.00),
+        "gpt-5.2":                 (1.25,  0.125, 10.00),
+
+        "gpt-5.1":                 (1.25,  0.125, 10.00),
+
+        "gpt-5-pro":               (15.00, None,  120.00),
+        "gpt-5-auto":              (1.25,  0.125, 10.00),  # router pseudo-model; actual served model is priced when known
+        "gpt-5":                   (1.25,  0.125, 10.00),
+        "gpt-5-mini":              (0.25,  0.025,  2.00),
+        "gpt-5-nano":              (0.05,  0.005,  0.40),
+
+        "gpt-4.1":                 (2.00,  0.50,   8.00),
+        "gpt-4.1-mini":            (0.40,  0.10,   1.60),
+        "gpt-4.1-nano":            (0.10,  0.025,  0.40),
+
+        "gpt-4o":                  (2.50,  1.25,  10.00),
+        "gpt-4o-mini":             (0.15,  0.075,  0.60),
+
+        "o3":                      (2.00,  0.50,   8.00),
+        "o3-mini":                 (1.10,  0.55,   4.40),
+        "o3-pro":                  (20.00, None,  80.00),
+
+        "o4-mini":                 (1.10,  0.275,  4.40),
+        "o3-deep-research":        (10.00, 2.50,  40.00),
+        "o4-mini-deep-research":   (2.00,  0.50,   8.00),
+
+        "gpt-5.2-chat-latest":     (1.25,  0.125, 10.00),
+        "gpt-5.1-chat-latest":     (1.25,  0.125, 10.00),
+        "gpt-5-chat-latest":       (1.25,  0.125, 10.00),
+        "chatgpt-4o-latest":       (5.00,  None,  15.00),
+    }
+
     # ── tiny, intuitive helpers ──────────────────────────────────────────────
     @classmethod
     def _norm(cls, model_id: str) -> str:
@@ -220,6 +267,19 @@ class ModelFamily:
     def supports(cls, feature: str, model_id: str) -> bool:
         """Check if a model (alias or base) supports a given feature."""
         return feature in cls.features(model_id)
+
+    @classmethod
+    def pricing(cls, model_id: str) -> Optional[Dict[str, float]]:
+        """USD rates per 1M tokens for the base model behind this id/alias, or None if unknown."""
+        rates = cls._PRICING.get(cls.base_model(model_id))
+        if not rates:
+            return None
+        input_rate, cached_rate, output_rate = rates
+        return {
+            "input": input_rate,
+            "cached_input": cached_rate if cached_rate is not None else input_rate,
+            "output": output_rate,
+        }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Data Models
@@ -690,6 +750,25 @@ class Pipe:
         TRUNCATION: Literal["auto", "disabled"] = Field(
             default="auto",
             description="OpenAI truncation strategy for model responses. 'auto' drops middle context items if the conversation exceeds the context window; 'disabled' returns a 400 error instead.",
+        )
+
+        # Usage & cost reporting
+        SHOW_USAGE_COST: bool = Field(
+            default=True,
+            description=(
+                "Append estimated USD cost to the usage stats shown in Open WebUI "
+                "(computed from token counts and the built-in per-model price table). "
+                "Estimates only — always verify against your OpenAI invoice."
+            ),
+        )
+        CUSTOM_MODEL_PRICING_JSON: Optional[str] = Field(
+            default=None,
+            description=(
+                "Optional JSON object to override or extend the built-in price table. "
+                "Maps base model id → USD per 1M tokens, e.g. "
+                '{"gpt-5": {"input": 1.25, "cached_input": 0.125, "output": 10.0}}. '
+                "'cached_input' is optional (defaults to the input rate)."
+            ),
         )
 
         # Privacy & caching
@@ -1244,6 +1323,18 @@ class Pipe:
                         1 for i in final_response["output"] if i["type"] == "function_call"
                     )
                     total_usage = merge_usage_stats(total_usage, usage)
+
+                    # Estimate cost from cumulative token counts (recomputed each turn,
+                    # not merged, to avoid double counting). Prefer the actual served
+                    # model reported by the API (e.g. after gpt-5-auto routing).
+                    if valves.SHOW_USAGE_COST:
+                        served_model = final_response.get("model") or body.model
+                        pricing = resolve_model_pricing(served_model, valves.CUSTOM_MODEL_PRICING_JSON)
+                        if pricing:
+                            total_usage["cost"] = estimate_usage_cost(total_usage, pricing)
+                        else:
+                            self.logger.debug("No pricing found for model %r; skipping cost estimate.", served_model)
+
                     await self._emit_completion(event_emitter, content="", usage=total_usage, done=False)
 
                 # Execute tool calls (if any), persist results (if valve enabled), and append to body.input.
@@ -1977,6 +2068,52 @@ def merge_usage_stats(total, new):
         else:
             total[k] = v if v is not None else total.get(k, 0)
     return total
+
+
+def resolve_model_pricing(model_id: str, custom_pricing_json: str | None = None) -> Optional[Dict[str, float]]:
+    """Resolve USD-per-1M-token rates for a model.
+
+    Valve-provided overrides (CUSTOM_MODEL_PRICING_JSON) take precedence over
+    the built-in `ModelFamily._PRICING` table. Returns None when the model is
+    unknown, in which case no cost is reported.
+    """
+    if custom_pricing_json:
+        with contextlib.suppress(Exception):
+            overrides = json.loads(custom_pricing_json)
+            entry = overrides.get(ModelFamily.base_model(model_id)) or overrides.get(ModelFamily._norm(model_id))
+            if isinstance(entry, dict) and "input" in entry and "output" in entry:
+                return {
+                    "input": float(entry["input"]),
+                    "cached_input": float(entry.get("cached_input", entry["input"])),
+                    "output": float(entry["output"]),
+                }
+    return ModelFamily.pricing(model_id)
+
+
+def estimate_usage_cost(usage: dict[str, Any], pricing: Dict[str, float]) -> dict[str, Any]:
+    """Estimate USD cost from a (possibly accumulated) usage block.
+
+    Cached input tokens (a subset of `input_tokens`) are billed at the cached
+    rate; the remainder at the full input rate. Costs are estimates based on
+    published per-token rates and exclude tool surcharges (e.g. web search).
+    """
+    input_tokens = usage.get("input_tokens", 0) or 0
+    output_tokens = usage.get("output_tokens", 0) or 0
+    cached_tokens = (usage.get("input_tokens_details") or {}).get("cached_tokens", 0) or 0
+    cached_tokens = min(cached_tokens, input_tokens)
+
+    input_cost = (input_tokens - cached_tokens) / 1_000_000 * pricing["input"]
+    cached_cost = cached_tokens / 1_000_000 * pricing["cached_input"]
+    output_cost = output_tokens / 1_000_000 * pricing["output"]
+    total = input_cost + cached_cost + output_cost
+
+    return {
+        "input_cost": round(input_cost, 6),
+        "cached_input_cost": round(cached_cost, 6),
+        "output_cost": round(output_cost, 6),
+        "total_cost": round(total, 6),
+        "currency": "USD",
+    }
 
 
 def wrap_code_block(text: str, language: str = "python") -> str:

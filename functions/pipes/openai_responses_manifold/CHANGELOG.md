@@ -5,6 +5,14 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.10] - 2026-09-01
+- Added estimated USD cost to the usage stats emitted to Open WebUI (shown as a `cost` block alongside token counts): `input_cost`, `cached_input_cost`, `output_cost`, and `total_cost`.
+- Added a built-in per-model price table (`ModelFamily._PRICING`, USD per 1M tokens) with alias/date-suffix resolution. Cached input tokens are billed at the cached rate; the remainder at the full input rate.
+- Added `SHOW_USAGE_COST` valve (default: `True`) to toggle cost reporting.
+- Added `CUSTOM_MODEL_PRICING_JSON` valve to override or extend the built-in price table without code changes, e.g. `{"gpt-5": {"input": 1.25, "cached_input": 0.125, "output": 10.0}}`.
+- Costs are recomputed from cumulative token counts after each tool-call loop (never merged per-turn) to avoid double counting, and pricing follows the actual served model reported by the API (e.g. after `gpt-5-auto` routing).
+- Note: costs are estimates from published token rates and exclude tool surcharges (e.g. web search). Verify the newer GPT-5.x family rates against your OpenAI pricing page and correct via `CUSTOM_MODEL_PRICING_JSON` if needed.
+
 ## [0.9.8-5.6] - 2026-07-28
 - Added the **GPT-5.6** family: `gpt-5.6-sol` (flagship), `gpt-5.6-terra` (balanced), and `gpt-5.6-luna` (high volume). Same capability set as GPT-5.5 (function calling, reasoning + summaries, web search, image gen, `text.verbosity`).
 - Added `gpt-5.6` alias, matching OpenAI's own routing of `gpt-5.6` → `gpt-5.6-sol`.
