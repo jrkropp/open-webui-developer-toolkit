@@ -14,7 +14,7 @@ Each top-level folder has a `README.md` explaining what's inside. **Keep these b
 
 ## Upstream Reference (Read-Only)
 
-* The `external/open-webui/` folder mirrors the upstream project. **Do not** modify or commit changes here.
+* The `external/open-webui/` folder is a git submodule of the upstream project (https://github.com/open-webui/open-webui). **Do not** modify or commit changes here. If it's empty, run `git submodule update --init`.
 
 ## Pull Request Guidelines for OpenAI Codex
 

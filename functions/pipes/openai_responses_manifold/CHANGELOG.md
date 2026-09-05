@@ -5,6 +5,44 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.15] - 2026-09-05
+- Added **GPT-6 Astra** (`gpt-6-astra`), OpenAI's current flagship. Single slug — no tiers and no `gpt-6` routing alias. Same capability set as GPT-5.6 (function calling, reasoning + summaries, web search, image gen, `text.verbosity`, pro mode).
+- Added effort aliases `gpt-6-astra-low`, `-high`, `-xhigh`, `-max` and pro-mode aliases `gpt-6-astra-pro`, `-pro-high`, `-pro-xhigh`, `-pro-max`. There is deliberately no `-none` alias: GPT-6 Astra rejects `reasoning.effort="none"` (supported: `low`, `medium` (default), `high`, `xhigh`, `max`).
+- Added GPT-6 Astra pricing ($10.00 input / $1.00 cached / $50.00 output per 1M tokens). The >272K-token long-context surcharge and cache-write rate are not modelled; override via `CUSTOM_MODEL_PRICING_JSON` if needed.
+- README: new GPT-6 Astra section covering the removed `none` effort, rejected `temperature`/`top_p`/`top_logprobs` (the manifold forwards Custom Parameters untouched — clear them), and Astra-only features the manifold doesn't configure.
+
+## [0.9.14] - 2026-09-01
+- Fixed usage/cost stats (`total_usage`, including the `cost` breakdown) never reaching Open WebUI's outlet filters or DB-persisted message. They were only ever emitted via a custom `chat:completion` socket event, which Open WebUI's event emitter broadcasts live but does not persist, and the bare-`str` return from `_run_streaming_loop` gave OWUI's core no channel to attach `usage` to. The loop now returns an async generator yielding the final content followed by a `{"usage": ...}` chunk, which flows through Open WebUI's normal chunk-parsing path into the persisted assistant message (and therefore into outlet filters) exactly like provider-reported usage does.
+- Fixed a related bug in the same cleanup path: the `sources` persistence call (`Chats.upsert_message_to_chat_by_id_and_message_id`) was missing `await`, so citations were silently never written to the database.
+
+## [0.9.13] - 2026-09-01
+- Fixed stale `OpenAI: <id>` names lingering in the model picker after the 0.9.11 rename: workspace model records created before 0.9.11 store that legacy auto-name and override the pipe-provided display name. `pipes()` now performs a one-time (per process) migration that renames records still carrying a legacy auto-name (`OpenAI: <id>`, the raw id, or the prefixed id) to `ModelFamily.display_name()`. Admin-customized names are never touched.
+
+## [0.9.12] - 2026-09-01
+- Added `AUTO_ENABLE_NATIVE_FUNCTION_CALLING` valve (default: `True`) to toggle the STEP 4 side effect where the pipe persists `params.function_calling = "native"` on the model record when tools are attached.
+- The auto-enable write now only fires when the model's `function_calling` setting is **missing** (unset). An explicit admin choice (e.g. `"default"`) is respected and never overridden. Previously any non-`"native"` value was overwritten.
+- Added `MODEL_ICON_URL` valve (default: unset/disabled) to programmatically set a model-picker icon. `pipes()` writes the URL to each configured model record's `meta.profile_image_url` — only when no icon is set (an admin-set icon is never overridden). Models without a workspace record get a minimal one, attributed to the super-admin user. Accepts http(s) URLs or `data:image/{png,jpeg,gif,webp};base64` URIs; results are cached per process (re-synced when the valve changes) so the DB is checked at most once per model.
+
+## [0.9.11] - 2026-09-01
+- Added automatic model-list fetching: `pipes()` now queries `{BASE_URL}/models` and hides `MODEL_ID` entries whose base model isn't served by the endpoint. Pseudo-models (e.g. `gpt-5-auto`) are always kept, and the full configured list is used as a fallback when the fetch fails or nothing matches.
+- Added `FETCH_MODELS` valve (default: `True`) to toggle the behavior, and `MODEL_FETCH_TTL_SECONDS` valve (default: `600`, minimum 60) to cache the fetched list so `/models` isn't hit on every model-picker refresh. Failures are cached for the same TTL (stale-while-error).
+- Model entries now use human-friendly display names parsed from the id via `ModelFamily.display_name()` (e.g. `gpt-5.6-luna-pro` → "GPT 5.6 Luna Pro", `o4-mini-deep-research` → "o4 Mini Deep Research"), replacing the previous `OpenAI: <id>` format. The `-none` effort suffix is dropped from names (`gpt-5.6-sol-none` → "GPT 5.6 Sol").
+
+## [0.9.10] - 2026-09-01
+- Added estimated USD cost to the usage stats emitted to Open WebUI (shown as a `cost` block alongside token counts): `input_cost`, `cached_input_cost`, `output_cost`, and `total_cost`.
+- Added a built-in per-model price table (`ModelFamily._PRICING`, USD per 1M tokens) with alias/date-suffix resolution. Cached input tokens are billed at the cached rate; the remainder at the full input rate.
+- Added `SHOW_USAGE_COST` valve (default: `True`) to toggle cost reporting.
+- Added `CUSTOM_MODEL_PRICING_JSON` valve to override or extend the built-in price table without code changes, e.g. `{"gpt-5": {"input": 1.25, "cached_input": 0.125, "output": 10.0}}`.
+- Costs are recomputed from cumulative token counts after each tool-call loop (never merged per-turn) to avoid double counting, and pricing follows the actual served model reported by the API (e.g. after `gpt-5-auto` routing).
+- Note: costs are estimates from published token rates and exclude tool surcharges (e.g. web search). Verify the newer GPT-5.x family rates against your OpenAI pricing page and correct via `CUSTOM_MODEL_PRICING_JSON` if needed.
+
+## [0.9.8-5.6] - 2026-07-28
+- Added the **GPT-5.6** family: `gpt-5.6-sol` (flagship), `gpt-5.6-terra` (balanced), and `gpt-5.6-luna` (high volume). Same capability set as GPT-5.5 (function calling, reasoning + summaries, web search, image gen, `text.verbosity`).
+- Added `gpt-5.6` alias, matching OpenAI's own routing of `gpt-5.6` → `gpt-5.6-sol`.
+- Added reasoning-effort aliases for all three tiers, including the new `max` effort: `-none`, `-low`, `-high`, `-xhigh`, `-max`. Unsuffixed IDs use OpenAI's `medium` default.
+- Added pro-mode aliases on the flagship tier (`gpt-5.6-sol-pro`, `-pro-high`, `-pro-xhigh`, `-pro-max`). GPT-5.6 has no separate `-pro` model slug; pro is `reasoning.mode: "pro"`, which is independent of `reasoning.effort`.
+- Refreshed `README.md` model tables, which still described GPT-5.1 as current and listed `gpt-5-thinking*` aliases that no longer exist in the code.
+
 ## [0.9.9] - 2025-10-01
 - Added status updates for OpenAI web search events, emitting query chips, source counts, and expandable result panels.
 

@@ -25,8 +25,7 @@ WEB_SEARCH_MODELS = {
     "openai_responses.o3-pro",
     "openai_responses.gpt-5",
     "openai_responses.gpt-5-mini",
-    "openai_responses.gpt-5-thinking",
-    "openai_responses.gpt-5-thinking-high",
+    "openai_responses.gpt-5-high",
 }
 
 SUPPORT_TOOL_CHOICE_PARAMETER = {

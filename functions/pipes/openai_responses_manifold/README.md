@@ -2,7 +2,7 @@
 
 Enables advanced OpenAI features (function calling, web search, visible reasoning summaries, and more) directly in [Open WebUI](https://github.com/open-webui/open-webui).
 
-**Now supports OpenAI’s GPT-5.1 family in the API — [Learn more](#gpt-5.1-model-support).**
+**Now supports OpenAI’s GPT-6 Astra and the GPT-5.6 family (Sol / Terra / Luna) in the API — [Learn more](#gpt-6-astra-and-gpt-56-model-support).**
 
 This project started as an internal tool (200+ hours of optimization and testing) and is now open-sourced as a way to give back to the Open WebUI community.
 
@@ -17,9 +17,10 @@ This project started as an internal tool (200+ hours of optimization and testing
 * [Features](#features)
 * [Advanced Features](#advanced-features)
 * [Tested Models](#tested-models)
-* [GPT‑5.1 Model Support](#gpt-51-model-support)
+* [GPT‑6 Astra and GPT‑5.6 Model Support](#gpt-6-astra-and-gpt-56-model-support)
 * [How It Works (Design Notes)](#how-it-works-design-notes)
-* [Troubleshooting / FAQ](#troubleshooting--faq)
+
+> 🛠️ **Contributing or using an AI agent on this codebase?** Start with [AGENTS.md](AGENTS.md) (context entry point) and [ARCHITECTURE.md](ARCHITECTURE.md) (full developer reference).
 
 ## Setup
 1. In **Open WebUI ▸ Admin Panel ▸ Functions**, click **Import from Link**.
@@ -60,6 +61,7 @@ This project started as an internal tool (200+ hours of optimization and testing
 | **Task model support**             | ✅ GA            | 2025-08-07   | Detects when a request is for an **External Task Model** and routes it separately. Makes manifold models usable for lightweight routing or background tasks (e.g., with `gpt-4.1-nano`).                                                                                                                     |
 | **Streaming responses (SSE)**      | ✅ GA            | 2025-06-04   | Supports **real-time streaming**, so users can watch responses appear live as the model generates them.                                                                                                                                                                                                      |
 | **Usage pass-through**             | ✅ GA            | 2025-06-04   | Forwards API usage stats (tokens, caching data, etc.) into Open WebUI, visible in the frontend (hover the ℹ️ icon). Gives users **transparent cost and performance insights**.                                                                                                                               |
+| **Cost estimation**                | ✅ GA            | 2026-09-01   | Appends an **estimated USD cost** block (`input_cost`, `cached_input_cost`, `output_cost`, `total_cost`) to the usage stats, computed from token counts and a built-in per-model price table. Toggle with `SHOW_USAGE_COST`; override rates via `CUSTOM_MODEL_PRICING_JSON`. Estimates exclude tool surcharges (e.g., web search). |
 | **Response item persistence**      | ✅ GA            | 2025-06-27   | Persists hidden items (reasoning, tool calls) by embedding unique IDs in Markdown. Stored separately in the DB and reattached in later turns, so the **conversation can be rebuilt exactly** without losing hidden events.                                                                                   |
 | **Open WebUI Notes compatibility** | 🔄 In progress            | 2025-07-14   | Works seamlessly with Open WebUI’s new **Notes feature** (currently preview). Ensures manifold-based models work even when chats are ephemeral (no `chat_id`).                                                                                                                                               |
 | **Native status updates**         | ✅ GA            | 2025-07-01   | Reports progress using Open WebUI's built-in status emitter with steps like "Thinking…", "Reading the question and building a plan.", "Gathering my thoughts…", "Exploring possible answers…", "Almost done…", and ends with "Thought for N seconds." |
@@ -80,14 +82,43 @@ This project started as an internal tool (200+ hours of optimization and testing
 ## Advanced Features
 ### Pseudo-model aliases
 
-Use shorthand model names that automatically map to official OpenAI models with predefined reasoning levels.
-Examples:
+The `MODEL_ID` valve accepts **pseudo IDs** that resolve to an official model plus a preset, so you can pick a reasoning level from the model picker instead of editing Custom Parameters. Examples:
 
-* `gpt-5-thinking` → `gpt-5` (medium reasoning)
-* `gpt-5-thinking-high` → `gpt-5` (high reasoning)
-* `o4-mini-high` → `o4-mini` (high reasoning effort)
+* `gpt-6-astra-pro-max` → `gpt-6-astra` with `reasoning.mode="pro"` + `reasoning.effort="max"`
+* `gpt-5.6` → `gpt-5.6-sol` (mirrors OpenAI's own routing alias)
+* `gpt-5.6-sol-max` → `gpt-5.6-sol` with `reasoning.effort="max"`
+* `gpt-5.6-sol-pro-high` → `gpt-5.6-sol` with `reasoning.mode="pro"` + `reasoning.effort="high"`
+* `o4-mini-high` → `o4-mini` with `reasoning.effort="high"`
 
-See table below for full list of aliases.
+Aliases are resolved before the request leaves the manifold, so OpenAI only ever sees the real model ID. See [Pseudo-Model Aliases](#pseudo-model-aliases-convenience-ids) for the naming rules.
+
+### Cost estimation
+
+When `SHOW_USAGE_COST` is enabled (default), the manifold appends an estimated USD cost to the usage stats shown in Open WebUI (hover the ℹ️ icon on a message):
+
+```
+cost: {
+  input_cost: 0.008665
+  cached_input_cost: 0.0
+  output_cost: 0.00011
+  total_cost: 0.008775
+  currency: USD
+}
+```
+
+How it works:
+
+* Rates come from a built-in per-model price table (USD per 1M tokens). Cached input tokens are billed at the cached rate; the remainder at the full input rate.
+* Costs accumulate correctly across tool-call loops (recomputed from cumulative token counts each turn) and follow the **actual served model** reported by the API (e.g., after `gpt-5-auto` routing).
+* Use the `CUSTOM_MODEL_PRICING_JSON` valve to override or extend the table without editing code, e.g.:
+
+```json
+{"gpt-5": {"input": 1.25, "cached_input": 0.125, "output": 10.0}}
+```
+
+`cached_input` is optional (defaults to the input rate). Models missing from the table simply omit the cost block.
+
+⚠️ Costs are **estimates** based on published token rates — they exclude tool surcharges (e.g., web search) and may lag pricing changes. Always verify against your OpenAI invoice.
 
 ### Debug logging
 
@@ -133,117 +164,134 @@ body.setdefault("extra_tools", []).append({
 This makes features like **on-demand web search toggles** possible without breaking native function calling.
 
 ## Tested Models
-The manifold should work with any model that supports the **OpenAI Responses API**.  
-Below are the official model IDs that have been tested and confirmed.
+The manifold works with any model that supports the **OpenAI Responses API**.  
+Below are the IDs registered by default in the `MODEL_ID` valve. Trim that list to what your org actually uses — every entry becomes a model in the Open WebUI picker.
 
 ### Official Model IDs
 
-| Family            | Model ID              | Type / Modality                  | Status | Notes |
-|-------------------|-----------------------|----------------------------------|:------:|-------|
-| **GPT-5.1**       | `gpt-5.1`             | Reasoning                        | ✅ | Latest GPT-5.1 reasoning model with full tool + search support. |
-|                   | `gpt-5.1-chat-latest` | Chat-tuned (non-reasoning)       | ✅ | Chat-optimized GPT-5.1 build; great defaults, tool-calling capable. |
-| **GPT-5**         | `gpt-5`               | Reasoning                        | ✅ | Standard GPT-5 reasoning model. |
-|                   | `gpt-5-mini`          | Reasoning                        | ✅ | Smaller, faster, lower cost than `gpt-5`. |
-|                   | `gpt-5-nano`          | Reasoning                        | ✅ | Ultra-lightweight reasoning; lowest cost. |
-|                   | `gpt-5-chat-latest`   | Chat-tuned (non-reasoning)       | ✅ | Polished conversation; can be paired with tool calling. ([OpenAI Platform][1]) |
-| **GPT-4.1**       | `gpt-4.1`             | Non-reasoning                    | ✅ | High-speed GPT-4 series model. |
-| **GPT-4o**        | `gpt-4o`              | Text + image → text              | ✅ | Multimodal reasoning model. |
-|                   | `chatgpt-4o-latest`   | Alias to ChatGPT’s GPT-4o build  | ✅ | Matches ChatGPT’s current 4o snapshot. ([OpenAI Platform][2]) |
-| **O-series**      | `o3`                  | Reasoning                        | ✅ | Standard O-series reasoning model. |
-|                   | `o3-pro`              | Reasoning (higher compute)       | ✅ | API-only; heavier, deeper reasoning. ([OpenAI Platform][3]) |
-|                   | `o3-mini`             | Reasoning                        | ✅ | Lightweight O-series reasoning. ([OpenAI Platform][11]) |
-|                   | `o4-mini`             | Reasoning                        | ✅ | Cost-efficient O-series reasoning. ([OpenAI][12]) |
-| **Deep Research** | `o3-deep-research`    | Agentic deep-research            | ❌ | Not yet supported. ([OpenAI Platform][4]) |
-|                   | `o4-mini-deep-research` | Agentic deep-research          | ❌ | Not yet supported. ([OpenAI Platform][5]) |
-| **Utility/Coding**| `codex-mini-latest`   | Lightweight coding / agent model | ✅ | For code + lightweight reasoning. ([OpenAI Platform][6]) |
+| Family | Model IDs | Type / Modality | Status | Notes |
+|---|---|---|:--:|---|
+| **GPT-6** | `gpt-6-astra` | Reasoning (text + image in) | ✅ | Current flagship. Single slug, no tiers; efforts `low`→`max` (**no `none`**) plus pro mode. |
+| **GPT-5.6** | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | Reasoning (text + image in) | ✅ | Previous flagship family. Named tiers replace the old unsuffixed/mini/nano split; efforts `none`→`max` plus pro mode. |
+| **GPT-5.5** | `gpt-5.5`, `gpt-5.5-pro` | Reasoning | ✅ | Here `-pro` *is* a separate model slug, unlike GPT-5.6 / GPT-6. |
+| **GPT-5.4** | `gpt-5.4`, `gpt-5.4-pro` | Reasoning | ✅ | |
+| **GPT-5.2** | `gpt-5.2`, `gpt-5.2-pro` | Reasoning | ✅ | |
+| | `gpt-5.2-chat-latest` | Chat-tuned (non-reasoning) | ✅ | Tool calling + web search, no reasoning. |
+| **GPT-5.1** | `gpt-5.1` | Reasoning | ✅ | |
+| | `gpt-5.1-chat-latest` | Chat-tuned (non-reasoning) | ✅ | Tool calling + web search, no reasoning. |
+| **GPT-5** | `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5-pro` | Reasoning | ✅ | The only family that accepts `minimal` effort. |
+| | `gpt-5-chat-latest` | Chat-tuned (non-reasoning) | ✅ | Tool calling + web search, no reasoning. |
+| | `gpt-5-auto` | Router (pseudo-model) | 🔄 Experimental | Not a real OpenAI ID — see [`gpt-5-auto`](#gpt-5-auto-experimental-router). |
+| **GPT-4.1** | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano` | Non-reasoning | ✅ | Good task/utility models. `gpt-4.1-nano` has no web search. |
+| **GPT-4o** | `gpt-4o`, `gpt-4o-mini` | Text + image → text | ✅ | |
+| | `chatgpt-4o-latest` | Chat-tuned (non-reasoning) | ✅ | ⚠️ No tool calling, web search, or other advanced features. |
+| **O-series** | `o3`, `o3-mini`, `o4-mini` | Reasoning | ✅ | Only `o4-mini` gets the web search tool. |
+| | `o3-pro` | Reasoning (higher compute) | ✅ | No reasoning summaries. |
+| **Deep research** | `o3-deep-research`, `o4-mini-deep-research` | Agentic deep research | ❌ | IDs are registered, but the deep-research flow isn't implemented yet. |
+
+You can add IDs that aren't listed here. Be aware that an unrecognized ID gets **no capability flags**, which means tools, reasoning summaries, and verbosity mapping all stay off for it — add it to `ModelFamily._SPECS` to enable those.
 
 ---
 
 ### Pseudo-Model Aliases (Convenience IDs)
 
-These **aliases** are supported via the `MODELS` valve. They resolve to official models but may also apply presets (e.g., `reasoning_effort`).  
-Useful for **routing, shorthand, or quick quality/cost tuning**. *(Subject to change as OpenAI updates models.)*
+Aliases are registered in the `MODEL_ID` valve alongside real IDs and follow one rule: **`<base model>` + `-<preset>`**. The manifold strips the preset, sets the matching `reasoning` parameters, and sends the base model ID upstream.
 
-| Alias                                                              | Resolves To   | Preset(s)                    | Suggested Use                                                    |
-| ------------------------------------------------------------------ | ------------- | ---------------------------- | ---------------------------------------------------------------- |
-| `gpt-5-auto`                                                       | Dynamic GPT-5 | —                            | Auto-routes between GPT-5 chat/mini/nano.                        |
-| `gpt-5.1-thinking`                                                 | `gpt-5`       | Medium reasoning             | 5.1-branded alias; default reasoning.                            |
-| `gpt-5.1-thinking-minimal`                                         | `gpt-5`       | `reasoning_effort="minimal"` | 5.1-branded; cheaper/faster reasoning.                           |
-| `gpt-5.1-thinking-high`                                            | `gpt-5`       | `reasoning_effort="high"`    | 5.1-branded; highest quality/effort.                             |
-| `gpt-5-thinking`                                                   | `gpt-5`       | Medium reasoning             | General high-quality tasks. (\[OpenAI]\[8])                      |
-| `gpt-5-thinking-minimal`                                           | `gpt-5`       | `reasoning_effort="minimal"` | Faster/cheaper reasoning. (\[OpenAI]\[8])                        |
-| `gpt-5-thinking-high`                                              | `gpt-5`       | `reasoning_effort="high"`    | Hard problems; maximum quality. (\[OpenAI]\[8])                  |
-| `gpt-5-thinking-mini`                                              | `gpt-5-mini`  | Medium reasoning             | Budget-optimized reasoning. (\[OpenAI Platform]\[9])             |
-| `gpt-5-thinking-mini-minimal`                                      | `gpt-5-mini`  | `reasoning_effort="minimal"` | Lowest-cost reasoning on mini. (\[OpenAI Platform]\[9])          |
-| `gpt-5-thinking-mini-high`                                         | `gpt-5-mini`  | `reasoning_effort="high"`    | Higher-effort reasoning on mini. (\[OpenAI Platform]\[9])        |
-| `gpt-5-thinking-nano`                                              | `gpt-5-nano`  | Medium reasoning             | Ultra-cheap reasoning; routing/triage. (\[OpenAI Platform]\[10]) |
-| `gpt-5-thinking-nano-minimal`                                      | `gpt-5-nano`  | `reasoning_effort="minimal"` | Absolute cheapest reasoning. (\[OpenAI Platform]\[10])           |
-| `gpt-5-thinking-nano-high`                                         | `gpt-5-nano`  | `reasoning_effort="high"`    | High-effort reasoning at lowest tier. (\[OpenAI Platform]\[10])  |
-| `o3-mini-high`                                                     | `o3-mini`     | `reasoning_effort="high"`    | Small + fast, deeper reasoning. (\[OpenAI Platform]\[11])        |
-| `o4-mini-high`                                                     | `o4-mini`     | `reasoning_effort="high"`    | Balanced cost + deeper reasoning. (\[OpenAI]\[12])               |
-| *(reserved)* `gpt-5-main`, `gpt-5-main-mini`, `gpt-5-thinking-pro` | —             | —                            | Reserved placeholders; no current API models. (\[OpenAI]\[8])    |
+An *unsuffixed* base ID sends no `reasoning.effort` at all, so OpenAI applies that model's own default (`medium` for GPT-6 and GPT-5.6).
+
+| Family | Base IDs | Effort suffixes | Pro-mode suffixes |
+|---|---|---|---|
+| **GPT-6** | `gpt-6-astra` | `-low` `-high` `-xhigh` `-max` | `-pro` `-pro-high` `-pro-xhigh` `-pro-max` |
+| **GPT-5.6** | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `-none` `-low` `-high` `-xhigh` `-max` | `-pro` `-pro-high` `-pro-xhigh` `-pro-max` *(sol only)* |
+| **GPT-5.5 / 5.4 / 5.2** | `gpt-5.5`, `gpt-5.4`, `gpt-5.2` | `-low` `-medium` `-high` `-xhigh` | on the separate `-pro` model: `-pro-high` `-pro-xhigh` |
+| **GPT-5.1** | `gpt-5.1` | `-low` `-medium` `-high` | — |
+| **GPT-5** | `gpt-5`, `gpt-5-mini`, `gpt-5-nano` | `-minimal` `-high` | — |
+| **O-series** | `o3-mini`, `o4-mini` | `-high` | — |
+
+Plus two standalone pseudo IDs:
+
+| Alias | Resolves to | Notes |
+|---|---|---|
+| `gpt-5.6` | `gpt-5.6-sol` | Mirrors OpenAI's own routing alias. |
+| `gpt-5-auto` | `gpt-5-chat-latest`, `gpt-5`, or `gpt-5-mini` | A classifier picks the model **and** the effort per request. 🔄 Experimental. |
+
+The effort ladders differ per family because OpenAI's supported values differ: `minimal` exists only on GPT-5, `xhigh` only from GPT-5.2 onward, `max` only on GPT-5.6 and GPT-6, and GPT-6 Astra drops `none`. Sending an unsupported effort returns an API error.
 
 ---
 
-[1]: https://platform.openai.com/docs/models/gpt-5-chat-latest?utm_source=chatgpt.com "Model - OpenAI API"  
-[2]: https://platform.openai.com/docs/models/chatgpt-4o-latest?utm_source=chatgpt.com "Model - OpenAI API"  
-[3]: https://platform.openai.com/docs/models/o3-pro?utm_source=chatgpt.com "Model - OpenAI API"  
-[4]: https://platform.openai.com/docs/models/o3-deep-research?utm_source=chatgpt.com "o3-deep-research"  
-[5]: https://platform.openai.com/docs/guides/deep-research?utm_source=chatgpt.com "Deep research - OpenAI API"  
-[6]: https://platform.openai.com/docs/models/codex-mini-latest?utm_source=chatgpt.com "Codex mini"  
-[7]: https://platform.openai.com/docs/models/gpt-5?utm_source=chatgpt.com "Model - OpenAI API"  
-[8]: https://openai.com/index/introducing-gpt-5-for-developers/?utm_source=chatgpt.com "Introducing GPT-5 for developers"  
-[9]: https://platform.openai.com/docs/models/gpt-5-mini?utm_source=chatgpt.com "GPT-5 mini"  
-[10]: https://platform.openai.com/docs/models/gpt-5-nano?utm_source=chatgpt.com "Model - OpenAI API"  
-[11]: https://platform.openai.com/docs/models/o3-mini?utm_source=chatgpt.com "Model - OpenAI API"  
-[12]: https://openai.com/index/introducing-o3-and-o4-mini/?utm_source=chatgpt.com "Introducing OpenAI o3 and o4-mini"  
 
+## GPT-6 Astra and GPT-5.6 Model Support
 
-## GPT-5.1 Model Support
+### GPT-6 Astra
 
-The Responses Manifold supports the full **GPT-5.1** (and legacy **GPT-5**) families currently exposed in the API:
+`gpt-6-astra` is OpenAI's current flagship — a single slug with no tiers and no `gpt-6` routing alias. It keeps the GPT-5.6 API surface (function calling, web search, image generation, `text.verbosity`, persisted reasoning, prompt caching, pro mode) with the same 1,050,000-token context window and 128,000 max output tokens, and an Apr 30, 2026 knowledge cutoff.
 
-- `gpt-5.1` *(reasoning model; full tool + search support)*
-- `gpt-5.1-chat-latest` *(chat-tuned; supports tool calling + web search toggles)*
-- `gpt-5` *(reasoning model)*
-- `gpt-5-mini` *(reasoning model)*
-- `gpt-5-nano` *(reasoning model)*
-- `gpt-5-chat-latest` *(chat-tuned; tool-calling capable via valves)*
+| Model | Input / Cached / Output per 1M | Notes |
+|---|---|---|
+| `gpt-6-astra` | $10.00 / $1.00 / $50.00 | Cache writes $12.50; prompts over 272K input tokens bill 2× input and 1.5× output for the whole request (the cost estimate doesn't model this). |
 
-In the public **ChatGPT app**, choosing *GPT-5* or *GPT-5.1* doesn’t mean you’re using one fixed model. Behind the scenes, OpenAI runs a **router layer** that inspects your request and decides whether to send it to a reasoning, minimal-reasoning, or non-reasoning variant.
+What's different from GPT-5.6 when you switch:
 
-This router is **not available in the API**. When using the API, you must select the model explicitly (`gpt-5.1`, `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.1-chat-latest`, or `gpt-5-chat-latest`).
+- **No `none` effort.** `reasoning.effort` accepts `low`, `medium` (default), `high`, `xhigh`, `max`. If you used `none`/`minimal` before, OpenAI's advice is to start at `low`. That's why there is no `gpt-6-astra-none` alias.
+- **`temperature`, `top_p`, and `top_logprobs` are rejected.** The manifold forwards these untouched, so clear them from the model's Custom Parameters in Open WebUI.
+- **Tool calling requires the Responses API** — which is what this manifold speaks, so nothing to do.
+- **More willing to ask before acting.** Astra pauses for clarification more often than GPT-5.6 Sol when intent is ambiguous. If that's undesirable for your use case, add explicit "bias toward action" guidance to the system prompt — see OpenAI's [prompting guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra).
+- Newer capabilities the manifold does not configure (forwarded untouched if supplied via Custom Parameters or a filter): async tool calling (`async: true` on a tool), mid-turn steering over WebSocket, `configuration_update` input items for changing effort mid-conversation, and `prompt_cache_options.ttl` (replaces `prompt_cache_retention`).
 
-To bridge this gap, the manifold includes an experimental **`gpt-5-auto`** model.  
-- It isn’t a real OpenAI model ID.  
-- Instead, the request is first passed to a lightweight classifier (currently `gpt-5-nano` with minimal reasoning + a routing prompt).  
-- The classifier chooses the most suitable GPT-5 endpoint (reasoning, minimal-reasoning, or chat) for your request.  
+### GPT-5.6
 
-⚠️ This router is an **early proof of concept** and will be optimized further in future releases.
+GPT-5.6 changed the naming scheme. Instead of one model plus `-mini`/`-nano`/`-pro`, it ships **three named tiers** — all sharing a 1,050,000-token context window, 128,000 max output tokens, and a Feb 16, 2026 knowledge cutoff:
+
+| Model | Tier | Input / Output per 1M | Roughly replaces |
+|---|---|---|---|
+| `gpt-5.6-sol` | Frontier / flagship | $5.00 / $30.00 | the unsuffixed tier (`gpt-5.5`) |
+| `gpt-5.6-terra` | Balanced intelligence vs. cost | $2.50 / $15.00 | the `mini` tier |
+| `gpt-5.6-luna` | Cost-sensitive, high volume | $1.00 / $6.00 | the `nano` tier |
+
+`gpt-5.6` is OpenAI's own alias for `gpt-5.6-sol`, and the manifold resolves it the same way.
+
+### Reasoning effort: `none` → `max`
+
+GPT-5.6 accepts `none`, `low`, `medium`, `high`, `xhigh`, and the new **`max`**, defaulting to `medium` when no effort is sent.
+
+Because GPT-5.6 is more token-efficient than earlier generations, OpenAI's migration advice is to **keep your current effort as the baseline, then also test one level lower** — quality often holds at the cheaper setting. Reserve `max` for quality-first workloads, and measure it against `xhigh` before adopting it.
+
+### Pro mode is a parameter now, not a model
+
+There is no `gpt-5.6-pro` model slug. Pro is an execution mode — `reasoning.mode: "pro"` — that applies more model work before returning a single final answer. It works on any GPT-5.6 model and is **independent of `reasoning.effort`**.
+
+The manifold exposes it through the `gpt-5.6-sol-pro*` and `gpt-6-astra-pro*` aliases. Pro-mode tokens bill at the model's standard rates, but there are more of them and latency is higher, so use it where a marginal quality gain actually changes the outcome.
+
+### Not yet wired into the manifold
+
+GPT-5.6 also introduced capabilities the manifold doesn't configure for you:
+
+- `reasoning.context: "all_turns"` (persisted reasoning across turns)
+- Programmatic Tool Calling (`programmatic_tool_calling`)
+- Multi-agent (beta)
+- Explicit prompt caching (`prompt_cache_options`)
+
+Any parameter the manifold doesn't specifically handle is forwarded to OpenAI untouched, so you can supply these through **Custom Parameters** or a companion filter. Note that GPT-5.6 bills cache *writes* at 1.25× the uncached input rate — watch `cached_tokens` against `cache_write_tokens` before leaning on explicit caching.
+
+### `gpt-5-auto` (experimental router)
+
+In the ChatGPT app, picking a model doesn't pin one endpoint — OpenAI runs a router that decides whether to use a reasoning, minimal-reasoning, or non-reasoning variant. That router isn't exposed in the API, so the manifold ships an experimental **`gpt-5-auto`** pseudo-model:
+
+- It isn't a real OpenAI model ID.
+- The request first goes to a lightweight classifier (`gpt-5-mini` at `minimal` effort with a routing prompt).
+- The classifier returns both a model (`gpt-5-chat-latest`, `gpt-5`, or `gpt-5-mini`) and a `reasoning_effort`, which the manifold applies before issuing the real request.
+
+⚠️ Still an early proof of concept, and it currently routes within the **GPT-5** family only.
 
 ### What you need to know
-1. **Reasoning vs. non-reasoning**  
-   - `gpt-5.1`, `gpt-5`, `gpt-5-mini`, and `gpt-5-nano` are **reasoning models** by default.  
-   - Setting `reasoning_effort="minimal"` makes them cheaper/faster but they still perform reasoning.  
-   - For a true **non-reasoning chat model**, use `gpt-5.1-chat-latest` or `gpt-5-chat-latest`.
 
-2. **Tool calling**  
-   - Reasoning models support **native tool calling** (function calls, web search, etc.).  
-   - Chat-tuned models can call tools when the valve is enabled, but are optimized for polished conversation.  
-   - A future `gpt-5-main` model may bring **non-reasoning + tool support**.
+1. **Reasoning vs. non-reasoning** — all three GPT-5.6 tiers are reasoning models. `reasoning.effort="none"` is the latency baseline; for a true non-reasoning chat model you still need a `*-chat-latest` ID, and GPT-5.6 doesn't have one.
+2. **Tool calling** — every GPT-5.6 tier supports native function calling, web search, and image generation. At the other extreme, `chatgpt-4o-latest` supports none of them.
+3. **Latency** — for ultra-low-latency task work (title generation, tagging), `gpt-4.1-nano` or `gpt-5.6-luna-none` beat a high-effort model.
+4. **Output style** — GPT-5.6 is noticeably more concise by default than GPT-5.5, so blanket “be concise” instructions may now be redundant or even counterproductive. Prefer `text.verbosity` for the default level of detail and keep the prompt for task-specific requirements; Open WebUI's “More Concise” / “Add Details” regenerate buttons already map to it.
+5. **Leaner prompts win** — OpenAI reports both lower token use and better eval scores after de-duplicating instructions and tightening tool descriptions. Example prompts live in the `system_prompts` folder.
 
-3. **Latency and performance**  
-   - Even with `"minimal"` effort, reasoning models take time to “think.”  
-   - For **ultra-low latency tasks**, use `gpt-4.1-nano` until a GPT-5 task model is released.
-
-4. **Output style**  
-   - `gpt-5-chat-latest` is tuned for smooth, conversational answers and usually works without a system prompt.  
-   - Reasoning models work best with a short style prompt (e.g., “Concise Markdown with headings and lists”).  
-   - Example prompts are provided in the `system_prompts` folder.
-
-
-[1]: https://openai.com/index/introducing-gpt-5-for-developers/ "Introducing GPT-5 for developers | OpenAI"  
-[2]: https://cdn.openai.com/pdf/8124a3ce-ab78-4f06-96eb-49ea29ffb52f/gpt5-system-card-aug7.pdf "GPT-5 System Card (Aug 7, 2025)"
+**Further reading:** [Using GPT-6 Astra](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) · [Using GPT-5.6](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6) · [Reasoning models](https://developers.openai.com/api/docs/guides/reasoning) · [Model catalog](https://developers.openai.com/api/docs/models)
 
 
 ## How It Works (Design Notes)

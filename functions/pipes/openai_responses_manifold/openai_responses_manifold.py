@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.8
+version: 0.9.15
 license: MIT
 """
 
@@ -27,7 +27,7 @@ import re
 import sys
 import secrets
 import random
-from time import perf_counter
+from time import monotonic, perf_counter
 from collections import defaultdict, deque
 from contextvars import ContextVar
 import contextlib
@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field, model_validator
 # Open WebUI internals
 from open_webui.models.chats import Chats
 from open_webui.models.models import ModelForm, Models
+from open_webui.models.users import Users
 from open_webui.utils.misc import get_last_user_message
 
 # fmt: off
@@ -58,12 +59,40 @@ class ModelFamily:
     _DATE_RE = re.compile(r"-\d{4}-\d{2}-\d{2}$")
     _PREFIX  = "openai_responses."
 
+    # Pipe-side pseudo-models that are never served by the /models endpoint
+    # (kept in the picker even when the fetched model list doesn't contain them).
+    _PSEUDO_MODELS = frozenset({"gpt-5-auto"})
+
+    # Tokens that don't follow simple capitalization in display names.
+    # An empty value drops the token entirely (e.g. '-none' effort suffix).
+    _NAME_TOKEN_OVERRIDES = {"gpt": "GPT", "chatgpt": "ChatGPT", "xhigh": "XHigh", "none": ""}
+    _O_SERIES_RE = re.compile(r"^o\d+$")  # o3, o4, … keep OpenAI's lowercase branding
+
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
-        "gpt-5-auto":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        # GPT-6 Astra: single flagship slug (no tiers, no gpt-6 alias). Same capability set as GPT-5.6,
+        # including pro mode. Does NOT accept reasoning.effort="none" (low | medium | high | xhigh | max).
+        "gpt-6-astra":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
 
+        # GPT-5.6 renames the capability tiers: sol (flagship) / terra (balanced) / luna (high volume).
+        # There is no separate "-pro" slug anymore — pro is reasoning.mode="pro" on any GPT-5.6 model.
+        "gpt-5.6-sol":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.6-terra":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.6-luna":            {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+
+        "gpt-5.5-pro":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.5":                 {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        
+        "gpt-5.4-pro":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.4":                 {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        
+        "gpt-5.2-pro":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5.2":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        
         "gpt-5.1":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
-
+        
+        "gpt-5-pro":              {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+        "gpt-5-auto":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5":                {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5-mini":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
         "gpt-5-nano":           {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
@@ -83,6 +112,7 @@ class ModelFamily:
         "o3-deep-research":     {"features": {"function_calling","reasoning","reasoning_summary","deep_research"}},
         "o4-mini-deep-research":{"features": {"function_calling","reasoning","reasoning_summary","deep_research"}},
 
+        "gpt-5.2-chat-latest":  {"features": {"function_calling","web_search_tool"}},
         "gpt-5.1-chat-latest":  {"features": {"function_calling","web_search_tool"}},
         "gpt-5-chat-latest":    {"features": {"function_calling","web_search_tool"}},
         "chatgpt-4o-latest":    {"features": {}}, # Chat-optimized non-reasoning model does not support tool calling, or any other advanced features.
@@ -90,25 +120,149 @@ class ModelFamily:
 
     # Aliases/pseudos
     _ALIASES: Dict[str, Dict[str, Any]] = {
-        "gpt-5.1-thinking":               {"base_model": "gpt-5"},
-        "gpt-5.1-thinking-minimal":       {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5.1-thinking-high":          {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "high"}}},
+        # Commented out aliases are by default
 
-        "gpt-5-thinking":               {"base_model": "gpt-5"},
-        "gpt-5-thinking-minimal":       {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5-thinking-high":          {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "high"}}},
+        # GPT-6 Astra efforts: low | medium (default) | high | xhigh | max  (no "none" — the API rejects it)
+        # "gpt-6-astra-medium":            {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-6-astra-low":                 {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "low"}}},
+        "gpt-6-astra-high":                {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-6-astra-xhigh":               {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "xhigh"}}},
+        "gpt-6-astra-max":                 {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "max"}}},
 
-        "gpt-5-thinking-mini":          {"base_model": "gpt-5-mini"},
-        "gpt-5-thinking-mini-minimal":  {"base_model": "gpt-5-mini",  "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5-thinking-mini-high":     {"base_model": "gpt-5-mini",  "params": {"reasoning": {"effort": "high"}}},
+        "gpt-6-astra-pro":                 {"base_model": "gpt-6-astra",   "params": {"reasoning": {"mode": "pro"}}},
+        "gpt-6-astra-pro-high":            {"base_model": "gpt-6-astra",   "params": {"reasoning": {"mode": "pro", "effort": "high"}}},
+        "gpt-6-astra-pro-xhigh":           {"base_model": "gpt-6-astra",   "params": {"reasoning": {"mode": "pro", "effort": "xhigh"}}},
+        "gpt-6-astra-pro-max":             {"base_model": "gpt-6-astra",   "params": {"reasoning": {"mode": "pro", "effort": "max"}}},
 
-        "gpt-5-thinking-nano":          {"base_model": "gpt-5-nano"},
-        "gpt-5-thinking-nano-minimal":  {"base_model": "gpt-5-nano",  "params": {"reasoning": {"effort": "minimal"}}},
-        "gpt-5-thinking-nano-high":     {"base_model": "gpt-5-nano",  "params": {"reasoning": {"effort": "high"}}},
+        # GPT-5.6 efforts: none | low | medium (default) | high | xhigh | max
+        "gpt-5.6":                         {"base_model": "gpt-5.6-sol"},  # OpenAI routes gpt-5.6 → gpt-5.6-sol
+
+        # "gpt-5.6-sol-medium":             {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.6-sol-none":                {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.6-sol-low":                 {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.6-sol-high":                {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.6-sol-xhigh":               {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "xhigh"}}},
+        "gpt-5.6-sol-max":                 {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"effort": "max"}}},
+
+        # Pro mode = extra model work before a single final answer. Mode and effort are independent.
+        "gpt-5.6-sol-pro":                 {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"mode": "pro"}}},
+        "gpt-5.6-sol-pro-high":            {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"mode": "pro", "effort": "high"}}},
+        "gpt-5.6-sol-pro-xhigh":           {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"mode": "pro", "effort": "xhigh"}}},
+        "gpt-5.6-sol-pro-max":             {"base_model": "gpt-5.6-sol",   "params": {"reasoning": {"mode": "pro", "effort": "max"}}},
+
+        # "gpt-5.6-terra-medium":           {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.6-terra-none":              {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.6-terra-low":               {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.6-terra-high":              {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.6-terra-xhigh":             {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "xhigh"}}},
+        "gpt-5.6-terra-max":               {"base_model": "gpt-5.6-terra", "params": {"reasoning": {"effort": "max"}}},
+
+        # "gpt-5.6-luna-medium":            {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.6-luna-none":               {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.6-luna-low":                {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.6-luna-high":               {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.6-luna-xhigh":              {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "xhigh"}}},
+        "gpt-5.6-luna-max":                {"base_model": "gpt-5.6-luna",  "params": {"reasoning": {"effort": "max"}}},
+
+        # "gpt-5.5-none":                        {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.5-low":                     {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.5-medium":                  {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.5-high":                    {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.5-xhigh":                   {"base_model": "gpt-5.5",       "params": {"reasoning": {"effort": "xhigh"}}},
+        
+        # "gpt-5.5-pro-medium":              {"base_model": "gpt-5.5-pro",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.5-pro-high":                {"base_model": "gpt-5.5-pro",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.5-pro-xhigh":               {"base_model": "gpt-5.5-pro",   "params": {"reasoning": {"effort": "xhigh"}}},
+        
+        # "gpt-5.4-none":                        {"base_model": "gpt-5.4"       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.4-low":                     {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.4-medium":                  {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.4-high":                    {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.4-xhigh":                   {"base_model": "gpt-5.4",       "params": {"reasoning": {"effort": "xhigh"}}},
+        
+        # "gpt-5.4-pro-medium":              {"base_model": "gpt-5.4-pro",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.4-pro-high":                {"base_model": "gpt-5.4-pro",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.4-pro-xhigh":               {"base_model": "gpt-5.4-pro",   "params": {"reasoning": {"effort": "xhigh"}}},
+        
+        # "gpt-5.2-none":                        {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.2-low":                     {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.2-medium":                  {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.2-high":                    {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.2-xhigh":                   {"base_model": "gpt-5.2",       "params": {"reasoning": {"effort": "xhigh"}}},
+
+        # "gpt-5.2-pro-medium":              {"base_model": "gpt-5.2-pro",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.2-pro-high":                {"base_model": "gpt-5.2-pro",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-5.2-pro-xhigh":               {"base_model": "gpt-5.2-pro",   "params": {"reasoning": {"effort": "xhigh"}}},
+        
+        # "gpt-5.1-none":                        {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "none"}}},
+        "gpt-5.1-low":                     {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "low"}}},
+        "gpt-5.1-medium":                  {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-5.1-high":                    {"base_model": "gpt-5.1",       "params": {"reasoning": {"effort": "high"}}},
+
+        # "gpt-5-medium":                          {"base_model": "gpt-5"},
+        "gpt-5-minimal":                   {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5-high":                      {"base_model": "gpt-5",       "params": {"reasoning": {"effort": "high"}}},
+
+        # "gpt-5-mini-medium":                     {"base_model": "gpt-5-mini"},
+        "gpt-5-mini-minimal":              {"base_model": "gpt-5-mini",  "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5-mini-high":                 {"base_model": "gpt-5-mini",  "params": {"reasoning": {"effort": "high"}}},
+
+        # "gpt-5-nano-medium":                     {"base_model": "gpt-5-nano"},
+        "gpt-5-nano-minimal":              {"base_model": "gpt-5-nano",  "params": {"reasoning": {"effort": "minimal"}}},
+        "gpt-5-nano-high":                 {"base_model": "gpt-5-nano",  "params": {"reasoning": {"effort": "high"}}},
 
         # Back-compat
         "o3-mini-high":                 {"base_model": "o3-mini",     "params": {"reasoning": {"effort": "high"}}},
         "o4-mini-high":                 {"base_model": "o4-mini",     "params": {"reasoning": {"effort": "high"}}},
+    }
+
+    # Pricing in USD per 1M tokens: (input, cached_input, output).
+    # cached_input of None → cached input billed at the full input rate.
+    # Verify against https://platform.openai.com/pricing and override/extend
+    # via the CUSTOM_MODEL_PRICING_JSON valve without editing code.
+    _PRICING: Dict[str, Any] = {
+        "gpt-6-astra":             (10.00, 1.00,  50.00),  # >272K-token prompts bill 2x input / 1.5x output (not modelled)
+
+        "gpt-5.6-sol":             (1.25,  0.125, 10.00),
+        "gpt-5.6-terra":           (0.25,  0.025,  2.00),
+        "gpt-5.6-luna":            (0.05,  0.005,  0.40),
+
+        "gpt-5.5-pro":             (15.00, None,  120.00),
+        "gpt-5.5":                 (1.25,  0.125, 10.00),
+
+        "gpt-5.4-pro":             (15.00, None,  120.00),
+        "gpt-5.4":                 (1.25,  0.125, 10.00),
+
+        "gpt-5.2-pro":             (15.00, None,  120.00),
+        "gpt-5.2":                 (1.25,  0.125, 10.00),
+
+        "gpt-5.1":                 (1.25,  0.125, 10.00),
+
+        "gpt-5-pro":               (15.00, None,  120.00),
+        "gpt-5-auto":              (1.25,  0.125, 10.00),  # router pseudo-model; actual served model is priced when known
+        "gpt-5":                   (1.25,  0.125, 10.00),
+        "gpt-5-mini":              (0.25,  0.025,  2.00),
+        "gpt-5-nano":              (0.05,  0.005,  0.40),
+
+        "gpt-4.1":                 (2.00,  0.50,   8.00),
+        "gpt-4.1-mini":            (0.40,  0.10,   1.60),
+        "gpt-4.1-nano":            (0.10,  0.025,  0.40),
+
+        "gpt-4o":                  (2.50,  1.25,  10.00),
+        "gpt-4o-mini":             (0.15,  0.075,  0.60),
+
+        "o3":                      (2.00,  0.50,   8.00),
+        "o3-mini":                 (1.10,  0.55,   4.40),
+        "o3-pro":                  (20.00, None,  80.00),
+
+        "o4-mini":                 (1.10,  0.275,  4.40),
+        "o3-deep-research":        (10.00, 2.50,  40.00),
+        "o4-mini-deep-research":   (2.00,  0.50,   8.00),
+
+        "gpt-5.2-chat-latest":     (1.25,  0.125, 10.00),
+        "gpt-5.1-chat-latest":     (1.25,  0.125, 10.00),
+        "gpt-5-chat-latest":       (1.25,  0.125, 10.00),
+        "chatgpt-4o-latest":       (5.00,  None,  15.00),
     }
 
     # ── tiny, intuitive helpers ──────────────────────────────────────────────
@@ -141,6 +295,41 @@ class ModelFamily:
     def supports(cls, feature: str, model_id: str) -> bool:
         """Check if a model (alias or base) supports a given feature."""
         return feature in cls.features(model_id)
+
+    @classmethod
+    def display_name(cls, model_id: str) -> str:
+        """Human-friendly name, e.g. 'gpt-5.6-luna-pro' → 'GPT 5.6 Luna Pro'.
+
+        Splits the normalized id on dashes, then per token: applies the override
+        table (GPT/ChatGPT/XHigh), keeps version-ish tokens (5.6, 4o, 4.1) and
+        o-series ids (o3, o4) as-is, and capitalizes the rest (sol → Sol).
+        """
+        words = []
+        for token in cls._norm(model_id).split("-"):
+            if not token:
+                continue
+            if token in cls._NAME_TOKEN_OVERRIDES:
+                override = cls._NAME_TOKEN_OVERRIDES[token]
+                if override:
+                    words.append(override)
+            elif token[0].isdigit() or cls._O_SERIES_RE.match(token):
+                words.append(token)
+            else:
+                words.append(token.capitalize())
+        return " ".join(words) or model_id
+
+    @classmethod
+    def pricing(cls, model_id: str) -> Optional[Dict[str, float]]:
+        """USD rates per 1M tokens for the base model behind this id/alias, or None if unknown."""
+        rates = cls._PRICING.get(cls.base_model(model_id))
+        if not rates:
+            return None
+        input_rate, cached_rate, output_rate = rates
+        return {
+            "input": input_rate,
+            "cached_input": cached_rate if cached_rate is not None else input_rate,
+            "output": output_rate,
+        }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Data Models
@@ -190,7 +379,7 @@ class ResponsesBody(BaseModel):
         Normalize the model ID to its base and apply alias defaults from ModelFamily.
 
         Example:
-            model="gpt-5-thinking-high" → model="gpt-5", reasoning={"effort": "high"}
+            model="gpt-5-high" → model="gpt-5", reasoning={"effort": "high"}
         """
         orig_model = self.model or ""
         base_model = ModelFamily.base_model(orig_model)
@@ -327,7 +516,7 @@ class ResponsesBody(BaseModel):
         return valid_tools
     
     @staticmethod
-    def transform_messages_to_input(
+    async def transform_messages_to_input(
         messages: List[Dict[str, Any]],
         chat_id: Optional[str] = None,
         openwebui_model_id: Optional[str] = None,
@@ -362,7 +551,7 @@ class ResponsesBody(BaseModel):
         # Fetch persisted items, if invisible markers are present
         items_lookup: dict[str, dict] = {}
         if chat_id and openwebui_model_id and required_item_ids:
-            items_lookup = fetch_openai_response_items(
+            items_lookup = await fetch_openai_response_items(
                 chat_id,
                 list(required_item_ids),
                 openwebui_model_id=openwebui_model_id,
@@ -436,7 +625,7 @@ class ResponsesBody(BaseModel):
         return openai_input
 
     @classmethod
-    def from_completions(
+    async def from_completions(
         ResponsesBody, completions_body: "CompletionsBody", chat_id: Optional[str] = None, openwebui_model_id: Optional[str] = None, **extra_params
     ) -> "ResponsesBody":
         """
@@ -496,7 +685,7 @@ class ResponsesBody(BaseModel):
         # Transform input messages to OpenAI Responses API format
         if "messages" in completions_dict:
             sanitized_params.pop("messages", None)
-            sanitized_params["input"] = ResponsesBody.transform_messages_to_input(
+            sanitized_params["input"] = await ResponsesBody.transform_messages_to_input(
                 completions_dict.get("messages", []),
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id
@@ -527,10 +716,36 @@ class Pipe:
 
         # Models
         MODEL_ID: str = Field(
-            default="gpt-5.1-chat-latest, gpt-5.1-thinking, gpt-5.1-thinking-high, gpt-5.1-thinking-minimal",
+            default=", ".join(list(ModelFamily._SPECS.keys()) + list(ModelFamily._ALIASES.keys())),
             description=(
                 "Comma separated OpenAI model IDs. Each ID becomes a model entry in WebUI. "
                 "Supports all official OpenAI model IDs and pseudo IDs (see README.md for full list)."
+            ),
+        )
+        FETCH_MODELS: bool = Field(
+            default=True,
+            description=(
+                "Fetch the model list from {BASE_URL}/models and hide MODEL_ID entries whose base model "
+                "isn't served by the endpoint. Falls back to the full MODEL_ID list when the fetch fails "
+                "or when nothing matches. Pseudo-models (e.g. gpt-5-auto) are always kept."
+            ),
+        )
+        MODEL_FETCH_TTL_SECONDS: int = Field(
+            default=600,
+            description=(
+                "How long (in seconds) the fetched model list is cached before it is refreshed. "
+                "Prevents hitting /models on every model-picker refresh. Minimum 60 seconds."
+            ),
+        )
+        MODEL_ICON_URL: Optional[str] = Field(
+            default=None,
+            description=(
+                "Optional icon for this manifold's models, applied to each model record's "
+                "meta.profile_image_url when the model list refreshes (a DB write; records are "
+                "created when missing). Only set when no icon exists — an icon already set by an "
+                "admin is never overridden. Accepts http(s) URLs or "
+                "data:image/{png,jpeg,gif,webp};base64 URIs (SVG data-URIs are rejected by newer "
+                "Open WebUI versions). Leave blank to disable."
             ),
         )
 
@@ -545,6 +760,15 @@ class Pipe:
         )
         
         # Tool execution behavior
+        AUTO_ENABLE_NATIVE_FUNCTION_CALLING: bool = Field(
+            default=True,
+            description=(
+                "When tools are attached and the model's Open WebUI 'Function Calling' setting is unset, "
+                "persist it as 'native' in the model record (a DB write). Only applies when the setting is "
+                "missing — an explicit admin choice (e.g. 'default') is never overridden. Disable to make "
+                "this pipe never modify model records."
+            ),
+        )
         PERSIST_TOOL_RESULTS: bool = Field(
             default=True,
             description="Persist tool call results across conversation turns. When disabled, tool results are not stored in the chat history.",
@@ -613,6 +837,25 @@ class Pipe:
             description="OpenAI truncation strategy for model responses. 'auto' drops middle context items if the conversation exceeds the context window; 'disabled' returns a 400 error instead.",
         )
 
+        # Usage & cost reporting
+        SHOW_USAGE_COST: bool = Field(
+            default=True,
+            description=(
+                "Append estimated USD cost to the usage stats shown in Open WebUI "
+                "(computed from token counts and the built-in per-model price table). "
+                "Estimates only — always verify against your OpenAI invoice."
+            ),
+        )
+        CUSTOM_MODEL_PRICING_JSON: Optional[str] = Field(
+            default=None,
+            description=(
+                "Optional JSON object to override or extend the built-in price table. "
+                "Maps base model id → USD per 1M tokens, e.g. "
+                '{"gpt-5": {"input": 1.25, "cached_input": 0.125, "output": 10.0}}. '
+                "'cached_input' is optional (defaults to the input rate)."
+            ),
+        )
+
         # Privacy & caching
         PROMPT_CACHE_KEY: Literal["id", "email"] = Field(
             default="id",
@@ -646,10 +889,183 @@ class Pipe:
         self.valves = self.Valves()  # Note: valve values are not accessible in __init__. Access from pipes() or pipe() methods.
         self.session: aiohttp.ClientSession | None = None
         self.logger = SessionLogger.get_logger(__name__)
+        # Cache for the fetched /models list (see _get_available_models).
+        self._available_models: frozenset[str] | None = None
+        self._available_models_fetched_at: float = float("-inf")
+        self._models_fetch_lock = asyncio.Lock()
+        # Model ids whose icon has already been checked/synced this process (see MODEL_ICON_URL).
+        self._icon_synced: set[str] = set()
+        self._icon_synced_for: str | None = None  # MODEL_ICON_URL value the cache was built for
+        # One-time (per process) rename of legacy 'OpenAI: <id>' workspace records.
+        self._legacy_names_renamed = False
 
     async def pipes(self):
         model_ids = [model_id.strip() for model_id in self.valves.MODEL_ID.split(",") if model_id.strip()]
-        return [{"id": model_id, "name": f"OpenAI: {model_id}"} for model_id in model_ids]
+
+        # Rename stale auto-generated names in workspace records (runs once per process;
+        # uses the unfiltered list so records for currently hidden models are fixed too).
+        await self._rename_legacy_model_records(model_ids)
+
+        # Hide configured models the endpoint doesn't actually serve (cached; see valve docs).
+        available = await self._get_available_models()
+        if available is not None:
+            filtered = [
+                model_id for model_id in model_ids
+                if ModelFamily.base_model(model_id) in available
+                or ModelFamily.base_model(model_id) in ModelFamily._PSEUDO_MODELS
+            ]
+            # Safety net: an endpoint with fully custom ids (e.g. a LiteLLM alias map)
+            # would otherwise empty the picker — fall back to the configured list.
+            if filtered:
+                model_ids = filtered
+
+        await self._sync_model_icons(model_ids)
+
+        return [{"id": model_id, "name": ModelFamily.display_name(model_id)} for model_id in model_ids]
+
+    async def _sync_model_icons(self, model_ids: list[str]) -> None:
+        """Write MODEL_ICON_URL to each model record's meta.profile_image_url.
+
+        Set-only-if-missing: an icon already set by an admin is never overridden.
+        Models without a workspace record get a minimal one (icon only), attributed
+        to the super-admin user. Each model is checked at most once per process
+        (cache resets when MODEL_ICON_URL changes); failures are logged and skipped.
+        """
+        icon = (self.valves.MODEL_ICON_URL or "").strip()
+        if not icon:
+            return
+        if icon != self._icon_synced_for:
+            self._icon_synced.clear()
+            self._icon_synced_for = icon
+
+        pending = [
+            ModelFamily._PREFIX + model_id
+            for model_id in model_ids
+            if ModelFamily._PREFIX + model_id not in self._icon_synced
+        ]
+        if not pending:
+            return
+
+        # Owner for records we may need to create (workspace models require a user id).
+        admin = None
+        try:
+            admin = Users.get_super_admin_user()
+            if inspect.iscoroutine(admin):
+                admin = await admin
+        except Exception:
+            self.logger.exception("Could not resolve an admin user for model icon records")
+
+        for full_id in pending:
+            self._icon_synced.add(full_id)  # once per process; also caches failures
+            try:
+                model = Models.get_model_by_id(full_id)
+                if inspect.iscoroutine(model):
+                    model = await model
+
+                if model:
+                    meta = dict(model.meta or {})
+                    if meta.get("profile_image_url"):
+                        continue
+                    meta["profile_image_url"] = icon
+                    form_data = model.model_dump()
+                    form_data["meta"] = meta
+                    result = Models.update_model_by_id(full_id, ModelForm(**form_data))
+                    if inspect.iscoroutine(result):
+                        await result
+                elif admin is not None:
+                    # No workspace record yet — create a minimal one carrying only the icon.
+                    form_data = ModelForm(
+                        id=full_id,
+                        name=ModelFamily.display_name(full_id),
+                        meta={"profile_image_url": icon},
+                        params={},
+                    )
+                    result = Models.insert_new_model(form_data, admin.id)
+                    if inspect.iscoroutine(result):
+                        await result
+            except Exception:
+                self.logger.exception("Failed to set model icon for %s", full_id)
+
+    async def _rename_legacy_model_records(self, model_ids: list[str]) -> None:
+        """One-time cleanup of stale auto-generated names in workspace records.
+
+        Pre-0.9.11 the pipe named models 'OpenAI: <id>'. Workspace records created
+        back then (admin edits, native function-calling flips, icon syncs) still
+        carry that name and override the parsed display names in the picker
+        (Open WebUI overlays record.name over the pipe-provided name). Rename only
+        records whose name is still a legacy auto-name; admin-customized names are
+        never touched. Runs once per process; failures are logged and skipped.
+        """
+        if self._legacy_names_renamed:
+            return
+        self._legacy_names_renamed = True
+
+        for model_id in model_ids:
+            full_id = ModelFamily._PREFIX + model_id
+            try:
+                model = Models.get_model_by_id(full_id)
+                if inspect.iscoroutine(model):
+                    model = await model
+                if not model:
+                    continue
+
+                legacy_names = {f"OpenAI: {model_id}", model_id, full_id}
+                if (model.name or "") not in legacy_names:
+                    continue  # admin-customized (or already migrated) name — keep it
+
+                new_name = ModelFamily.display_name(model_id)
+                form_data = model.model_dump()
+                form_data["name"] = new_name
+                result = Models.update_model_by_id(full_id, ModelForm(**form_data))
+                if inspect.iscoroutine(result):
+                    await result
+                self.logger.info("Renamed legacy model record %s: %r -> %r", full_id, model.name, new_name)
+            except Exception:
+                self.logger.exception("Failed to rename legacy model record %s", full_id)
+
+    async def _get_available_models(self) -> frozenset[str] | None:
+        """Return normalized model ids served by ``{BASE_URL}/models``, or ``None``.
+
+        Results are cached for ``MODEL_FETCH_TTL_SECONDS`` so the endpoint is not
+        hit on every model-picker refresh. Failures are also cached for the TTL
+        (stale-while-error: the last good list keeps being served) and ``None`` is
+        returned when fetching is disabled or has never succeeded, in which case
+        callers should skip filtering entirely.
+        """
+        if not self.valves.FETCH_MODELS:
+            return None
+
+        ttl = max(60, int(self.valves.MODEL_FETCH_TTL_SECONDS or 0))
+        async with self._models_fetch_lock:
+            if monotonic() - self._available_models_fetched_at < ttl:
+                return self._available_models
+            self._available_models_fetched_at = monotonic()
+
+            url = self.valves.BASE_URL.rstrip("/") + "/models"
+            try:
+                self.session = await self._get_or_init_http_session()
+                headers = {"Authorization": f"Bearer {self.valves.API_KEY}"}
+                async with self.session.get(
+                    url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    resp.raise_for_status()
+                    payload = await resp.json()
+                ids = {
+                    ModelFamily._norm(entry.get("id", ""))
+                    for entry in payload.get("data", [])
+                    if isinstance(entry, dict)
+                }
+                ids.discard("")
+                self._available_models = frozenset(ids)
+                self.logger.debug("Fetched %d model ids from %s", len(ids), url)
+            except Exception as exc:
+                self.logger.warning(
+                    "Model list fetch from %s failed (%s); using %s.",
+                    url,
+                    exc,
+                    "cached list" if self._available_models is not None else "full MODEL_ID list",
+                )
+            return self._available_models
 
     async def pipe(
         self,
@@ -662,7 +1078,7 @@ class Pipe:
         __tools__: list[dict[str, Any]] | dict[str, Any] | None,
         __task__: Optional[dict[str, Any]] = None,
         __task_body__: Optional[dict[str, Any]] = None,
-    ) -> AsyncGenerator[str, None] | str | None:
+    ) -> AsyncGenerator[str | dict[str, Any], None] | str | None:
         """Process a user request and return either a stream or final text.
 
         When ``body['stream']`` is ``True`` the method yields deltas from
@@ -693,7 +1109,7 @@ class Pipe:
         #   • No frontend rebuild; injected at runtime via `execute`
         #   • Runs once per tab (checks for an existing <style> tag)
         # ------------------------------------------------------------------
-        await __event_call__({
+        await __event_emitter__({
             "type": "execute",
             "data": {
                 "code": """
@@ -735,7 +1151,7 @@ class Pipe:
 
         # STEP 1: Transform request body (Completions API -> Responses API).
         completions_body = CompletionsBody.model_validate(body)
-        responses_body = ResponsesBody.from_completions(
+        responses_body = await ResponsesBody.from_completions(
             completions_body=completions_body,
 
             # If chat_id and openwebui_model_id are provided, from_completions() uses them to fetch previously persisted items (function_calls, reasoning, etc.) from DB and reconstruct the input array in the correct order.
@@ -763,12 +1179,16 @@ class Pipe:
             extra_tools=getattr(completions_body, "extra_tools", None),
         )
 
-        # STEP 4: Auto-enable native function calling if tools are used but `native` function calling is not enabled in Open WebUI model settings.
-        if tools and ModelFamily.supports("function_calling", openwebui_model_id):
+        # STEP 4: Auto-enable native function calling if tools are used but the model's `function_calling`
+        # setting is missing in Open WebUI model settings. Explicit admin choices are respected.
+        if tools and valves.AUTO_ENABLE_NATIVE_FUNCTION_CALLING and ModelFamily.supports("function_calling", openwebui_model_id):
             model = Models.get_model_by_id(openwebui_model_id)
+            if inspect.iscoroutine(model):
+                model = await model
+                
             if model:
                 params = dict(model.params or {})
-                if params.get("function_calling") != "native":
+                if params.get("function_calling") is None:
                     await self._emit_notification(
                         __event_emitter__,
                         content=f"Enabling native function calling for model: {openwebui_model_id}. Please re-run your query.",
@@ -1050,7 +1470,7 @@ class Pipe:
                             should_persist = valves.PERSIST_TOOL_RESULTS
 
                         if should_persist:
-                            hidden_uid_marker = persist_openai_response_items(
+                            hidden_uid_marker = await persist_openai_response_items(
                                 metadata.get("chat_id"),
                                 metadata.get("message_id"),
                                 [item],
@@ -1096,6 +1516,15 @@ class Pipe:
 
                                     # If API returned sources (only when include[...] was set), emit the panel now
                                     if urls:
+                                        # Mirror upstream middleware: report how many sources were retrieved
+                                        await event_emitter({
+                                            "type": "status",
+                                            "data": {
+                                                "action": "sources_retrieved",
+                                                "count": len(urls),
+                                                "done": False,
+                                            },
+                                        })
                                         await event_emitter({
                                             "type": "status",
                                             "data": {
@@ -1153,6 +1582,18 @@ class Pipe:
                         1 for i in final_response["output"] if i["type"] == "function_call"
                     )
                     total_usage = merge_usage_stats(total_usage, usage)
+
+                    # Estimate cost from cumulative token counts (recomputed each turn,
+                    # not merged, to avoid double counting). Prefer the actual served
+                    # model reported by the API (e.g. after gpt-5-auto routing).
+                    if valves.SHOW_USAGE_COST:
+                        served_model = final_response.get("model") or body.model
+                        pricing = resolve_model_pricing(served_model, valves.CUSTOM_MODEL_PRICING_JSON)
+                        if pricing:
+                            total_usage["cost"] = estimate_usage_cost(total_usage, pricing)
+                        else:
+                            self.logger.debug("No pricing found for model %r; skipping cost estimate.", served_model)
+
                     await self._emit_completion(event_emitter, content="", usage=total_usage, done=False)
 
                 # Execute tool calls (if any), persist results (if valve enabled), and append to body.input.
@@ -1160,7 +1601,7 @@ class Pipe:
                 if calls:
                     function_outputs = await self._execute_function_calls(calls, tools)
                     if valves.PERSIST_TOOL_RESULTS:
-                        hidden_uid_marker = persist_openai_response_items(
+                        hidden_uid_marker = await persist_openai_response_items(
                             metadata.get("chat_id"),
                             metadata.get("message_id"),
                             function_outputs,
@@ -1227,12 +1668,40 @@ class Pipe:
             chat_id = metadata.get("chat_id")
             message_id = metadata.get("message_id")
             if chat_id and message_id and emitted_citations:
-                Chats.upsert_message_to_chat_by_id_and_message_id(
+                await Chats.upsert_message_to_chat_by_id_and_message_id(
                     chat_id, message_id, {"sources": emitted_citations}
                 )
 
             # Return the final output to ensure persistence.
-            return assistant_message
+            #
+            # NOTE: this used to `return assistant_message` (a bare str). OWUI's
+            # generate_function_chat_completion() (functions.py) wraps a bare-str
+            # pipe result in a single content chunk via
+            # openai_chat_chunk_message_template(model, res) -- a template that
+            # *supports* a usage= kwarg, but that call site never passes one. So
+            # `total_usage`/cost computed above was only ever delivered via the
+            # _emit_completion() socket event above, which OWUI's event emitter
+            # does not persist to the DB message (only status/message/replace/
+            # embeds/files/source/citation events are persisted there) -- it's a
+            # live-broadcast-only side channel invisible to outlet filters.
+            #
+            # Returning an async generator instead routes through OWUI's
+            # AsyncGenerator branch in functions.py, which passes each yielded
+            # item through process_line(): a plain str becomes the same content
+            # chunk as before, and a dict becomes a raw SSE JSON chunk. A
+            # `{"usage": ...}` chunk (no/empty `choices`) is handled safely by
+            # middleware.py's stream parser, which merges `usage` into the
+            # accumulator *before* checking `choices` -- so it flows into
+            # ctx['assistant_message']['usage'], the exact structure outlet
+            # filters receive. functions.py still appends its own closing
+            # finish/[DONE] frames afterward, so behavior is otherwise unchanged.
+            async def _final_chunks():
+                if assistant_message:
+                    yield assistant_message
+                if total_usage:
+                    yield {"usage": total_usage}
+
+            return _final_chunks()
 
     async def _run_nonstreaming_loop(
         self,
@@ -1241,7 +1710,7 @@ class Pipe:
         event_emitter: Callable[[Dict[str, Any]], Awaitable[None]],
         metadata: Dict[str, Any] = {},
         tools: Optional[Dict[str, Dict[str, Any]]] = None,
-    ) -> str:
+    ) -> AsyncGenerator[str | Dict[str, Any], None]:
         """Unified implementation: reuse the streaming path.
 
         We force `stream=True` and delegate to `_run_streaming_loop`, but wrap the
@@ -1762,7 +2231,7 @@ class SessionLogger:
 # 6. Framework Integration Helpers (Open WebUI DB operations)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def persist_openai_response_items(
+async def persist_openai_response_items(
     chat_id: str,
     message_id: str,
     items: List[Dict[str, Any]],
@@ -1797,6 +2266,8 @@ def persist_openai_response_items(
         return ""
 
     chat_model = Chats.get_chat_by_id(chat_id)
+    if inspect.iscoroutine(chat_model):
+        chat_model = await chat_model
     if not chat_model:
         return ""
 
@@ -1884,6 +2355,52 @@ def merge_usage_stats(total, new):
         else:
             total[k] = v if v is not None else total.get(k, 0)
     return total
+
+
+def resolve_model_pricing(model_id: str, custom_pricing_json: str | None = None) -> Optional[Dict[str, float]]:
+    """Resolve USD-per-1M-token rates for a model.
+
+    Valve-provided overrides (CUSTOM_MODEL_PRICING_JSON) take precedence over
+    the built-in `ModelFamily._PRICING` table. Returns None when the model is
+    unknown, in which case no cost is reported.
+    """
+    if custom_pricing_json:
+        with contextlib.suppress(Exception):
+            overrides = json.loads(custom_pricing_json)
+            entry = overrides.get(ModelFamily.base_model(model_id)) or overrides.get(ModelFamily._norm(model_id))
+            if isinstance(entry, dict) and "input" in entry and "output" in entry:
+                return {
+                    "input": float(entry["input"]),
+                    "cached_input": float(entry.get("cached_input", entry["input"])),
+                    "output": float(entry["output"]),
+                }
+    return ModelFamily.pricing(model_id)
+
+
+def estimate_usage_cost(usage: dict[str, Any], pricing: Dict[str, float]) -> dict[str, Any]:
+    """Estimate USD cost from a (possibly accumulated) usage block.
+
+    Cached input tokens (a subset of `input_tokens`) are billed at the cached
+    rate; the remainder at the full input rate. Costs are estimates based on
+    published per-token rates and exclude tool surcharges (e.g. web search).
+    """
+    input_tokens = usage.get("input_tokens", 0) or 0
+    output_tokens = usage.get("output_tokens", 0) or 0
+    cached_tokens = (usage.get("input_tokens_details") or {}).get("cached_tokens", 0) or 0
+    cached_tokens = min(cached_tokens, input_tokens)
+
+    input_cost = (input_tokens - cached_tokens) / 1_000_000 * pricing["input"]
+    cached_cost = cached_tokens / 1_000_000 * pricing["cached_input"]
+    output_cost = output_tokens / 1_000_000 * pricing["output"]
+    total = input_cost + cached_cost + output_cost
+
+    return {
+        "input_cost": round(input_cost, 6),
+        "cached_input_cost": round(cached_cost, 6),
+        "output_cost": round(output_cost, 6),
+        "total_cost": round(total, 6),
+        "currency": "USD",
+    }
 
 
 def wrap_code_block(text: str, language: str = "python") -> str:
@@ -2063,7 +2580,7 @@ def split_text_by_markers(text: str) -> list[dict]:
     return segments
 
 
-def fetch_openai_response_items(
+async def fetch_openai_response_items(
     chat_id: str,
     item_ids: List[str],
     *,
@@ -2084,6 +2601,8 @@ def fetch_openai_response_items(
         dict: Mapping of `item_id` -> persisted payload dict.
     """
     chat_model = Chats.get_chat_by_id(chat_id)
+    if inspect.iscoroutine(chat_model):
+        chat_model = await chat_model
     if not chat_model:
         return {}
 
