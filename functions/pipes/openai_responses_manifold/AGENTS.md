@@ -10,7 +10,7 @@
 `openai_responses`, hardcoded) that translates Open WebUI's Completions-style request
 bodies into **OpenAI Responses API** calls. It adds native function calling, reasoning
 summaries, encrypted-reasoning persistence, web search with citations, remote MCP tools,
-usage/cost reporting, and pseudo-model aliases (e.g. `gpt-5.6-sol-high`).
+usage/cost reporting, and pseudo-model aliases (e.g. `gpt-6-astra-high`, `gpt-5.6-sol-high`).
 
 Everything ships in one file because Open WebUI functions are imported as standalone
 modules. Tests live in `tests/` and can import the module directly.
@@ -21,7 +21,7 @@ modules. Tests live in `tests/` and can import the module directly.
 |---|---|
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | The full developer reference: code map, request flow, valve table, model registry, marker/persistence format, streaming event handling, tool building. **Read this before non-trivial changes.** |
 | [DESIGN.md](DESIGN.md) | The *why* behind design decisions (currently: `extra_tools` filter-injection contract). |
-| [README.md](README.md) | User-facing docs: setup, feature matrix, model tables, GPT-5.6 notes. |
+| [README.md](README.md) | User-facing docs: setup, feature matrix, model tables, GPT-6 Astra / GPT-5.6 notes. |
 | [CHANGELOG.md](CHANGELOG.md) | Version history. Add an entry for every user-visible change and bump `version:` in the module frontmatter. |
 | `tests/` | Pytest coverage for `_route_gpt5_auto`, `transform_owui_tools`, web-search status events. |
 
@@ -44,7 +44,17 @@ modules. Tests live in `tests/` and can import the module directly.
 7. `fetch_openai_response_items` filters persisted items by exact model id — by design
    (encrypted reasoning tokens are model-bound). Don't "fix" this without a migration plan.
 
-## Current state / known quirks (as of 0.9.12)
+## Current state / known quirks (as of 0.9.15)
+
+- **Model additions touch three aligned tables** in `ModelFamily`: `_SPECS` (features),
+  `_ALIASES` (effort/pro presets), `_PRICING`. Check the model's supported efforts before
+  adding suffix aliases — e.g. `gpt-6-astra` has no `-none` because the API rejects it.
+- Three unrelated things are called "caching" here; don't conflate them: (a) the
+  `/models` fetch TTL (`MODEL_FETCH_TTL_SECONDS`) — needed because Open WebUI calls
+  `pipes()` on every `get_all_models` (page load, picker refresh, several chat routes)
+  unless `ENABLE_BASE_MODELS_CACHE` is on upstream; (b) per-process memo sets for the
+  icon sync / legacy-name rename DB writes; (c) `PROMPT_CACHE_KEY`, which only picks
+  which user identifier goes in the outbound `user` field for OpenAI prompt caching.
 
 - **Non-streaming is disabled** in `pipe()` (emits an error; `_run_nonstreaming_loop` is
   dormant but functional — it wraps the streaming loop with a suppressing emitter).

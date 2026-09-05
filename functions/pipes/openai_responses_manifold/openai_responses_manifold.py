@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.28
-version: 0.9.14
+version: 0.9.15
 license: MIT
 """
 
@@ -70,6 +70,10 @@ class ModelFamily:
 
     # Base models → capabilities.
     _SPECS: Dict[str, Dict[str, Any]] = {
+        # GPT-6 Astra: single flagship slug (no tiers, no gpt-6 alias). Same capability set as GPT-5.6,
+        # including pro mode. Does NOT accept reasoning.effort="none" (low | medium | high | xhigh | max).
+        "gpt-6-astra":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
+
         # GPT-5.6 renames the capability tiers: sol (flagship) / terra (balanced) / luna (high volume).
         # There is no separate "-pro" slug anymore — pro is reasoning.mode="pro" on any GPT-5.6 model.
         "gpt-5.6-sol":             {"features": {"function_calling","reasoning","reasoning_summary","web_search_tool","image_gen_tool","verbosity"}},
@@ -117,6 +121,18 @@ class ModelFamily:
     # Aliases/pseudos
     _ALIASES: Dict[str, Dict[str, Any]] = {
         # Commented out aliases are by default
+
+        # GPT-6 Astra efforts: low | medium (default) | high | xhigh | max  (no "none" — the API rejects it)
+        # "gpt-6-astra-medium":            {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "medium"}}},
+        "gpt-6-astra-low":                 {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "low"}}},
+        "gpt-6-astra-high":                {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "high"}}},
+        "gpt-6-astra-xhigh":               {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "xhigh"}}},
+        "gpt-6-astra-max":                 {"base_model": "gpt-6-astra",   "params": {"reasoning": {"effort": "max"}}},
+
+        "gpt-6-astra-pro":                 {"base_model": "gpt-6-astra",   "params": {"reasoning": {"mode": "pro"}}},
+        "gpt-6-astra-pro-high":            {"base_model": "gpt-6-astra",   "params": {"reasoning": {"mode": "pro", "effort": "high"}}},
+        "gpt-6-astra-pro-xhigh":           {"base_model": "gpt-6-astra",   "params": {"reasoning": {"mode": "pro", "effort": "xhigh"}}},
+        "gpt-6-astra-pro-max":             {"base_model": "gpt-6-astra",   "params": {"reasoning": {"mode": "pro", "effort": "max"}}},
 
         # GPT-5.6 efforts: none | low | medium (default) | high | xhigh | max
         "gpt-5.6":                         {"base_model": "gpt-5.6-sol"},  # OpenAI routes gpt-5.6 → gpt-5.6-sol
@@ -205,6 +221,8 @@ class ModelFamily:
     # Verify against https://platform.openai.com/pricing and override/extend
     # via the CUSTOM_MODEL_PRICING_JSON valve without editing code.
     _PRICING: Dict[str, Any] = {
+        "gpt-6-astra":             (10.00, 1.00,  50.00),  # >272K-token prompts bill 2x input / 1.5x output (not modelled)
+
         "gpt-5.6-sol":             (1.25,  0.125, 10.00),
         "gpt-5.6-terra":           (0.25,  0.025,  2.00),
         "gpt-5.6-luna":            (0.05,  0.005,  0.40),

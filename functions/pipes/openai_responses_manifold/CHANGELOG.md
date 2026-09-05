@@ -5,6 +5,12 @@ All notable changes to the OpenAI Responses Manifold pipeline are documented in 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.15] - 2026-09-05
+- Added **GPT-6 Astra** (`gpt-6-astra`), OpenAI's current flagship. Single slug — no tiers and no `gpt-6` routing alias. Same capability set as GPT-5.6 (function calling, reasoning + summaries, web search, image gen, `text.verbosity`, pro mode).
+- Added effort aliases `gpt-6-astra-low`, `-high`, `-xhigh`, `-max` and pro-mode aliases `gpt-6-astra-pro`, `-pro-high`, `-pro-xhigh`, `-pro-max`. There is deliberately no `-none` alias: GPT-6 Astra rejects `reasoning.effort="none"` (supported: `low`, `medium` (default), `high`, `xhigh`, `max`).
+- Added GPT-6 Astra pricing ($10.00 input / $1.00 cached / $50.00 output per 1M tokens). The >272K-token long-context surcharge and cache-write rate are not modelled; override via `CUSTOM_MODEL_PRICING_JSON` if needed.
+- README: new GPT-6 Astra section covering the removed `none` effort, rejected `temperature`/`top_p`/`top_logprobs` (the manifold forwards Custom Parameters untouched — clear them), and Astra-only features the manifold doesn't configure.
+
 ## [0.9.14] - 2026-09-01
 - Fixed usage/cost stats (`total_usage`, including the `cost` breakdown) never reaching Open WebUI's outlet filters or DB-persisted message. They were only ever emitted via a custom `chat:completion` socket event, which Open WebUI's event emitter broadcasts live but does not persist, and the bare-`str` return from `_run_streaming_loop` gave OWUI's core no channel to attach `usage` to. The loop now returns an async generator yielding the final content followed by a `{"usage": ...}` chunk, which flows through Open WebUI's normal chunk-parsing path into the persisted assistant message (and therefore into outlet filters) exactly like provider-reported usage does.
 - Fixed a related bug in the same cleanup path: the `sources` persistence call (`Chats.upsert_message_to_chat_by_id_and_message_id`) was missing `await`, so citations were silently never written to the database.

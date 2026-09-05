@@ -2,7 +2,7 @@
 
 Enables advanced OpenAI features (function calling, web search, visible reasoning summaries, and more) directly in [Open WebUI](https://github.com/open-webui/open-webui).
 
-**Now supports OpenAI’s GPT-5.6 family (Sol / Terra / Luna) in the API — [Learn more](#gpt-56-model-support).**
+**Now supports OpenAI’s GPT-6 Astra and the GPT-5.6 family (Sol / Terra / Luna) in the API — [Learn more](#gpt-6-astra-and-gpt-56-model-support).**
 
 This project started as an internal tool (200+ hours of optimization and testing) and is now open-sourced as a way to give back to the Open WebUI community.
 
@@ -17,7 +17,7 @@ This project started as an internal tool (200+ hours of optimization and testing
 * [Features](#features)
 * [Advanced Features](#advanced-features)
 * [Tested Models](#tested-models)
-* [GPT‑5.6 Model Support](#gpt-56-model-support)
+* [GPT‑6 Astra and GPT‑5.6 Model Support](#gpt-6-astra-and-gpt-56-model-support)
 * [How It Works (Design Notes)](#how-it-works-design-notes)
 
 > 🛠️ **Contributing or using an AI agent on this codebase?** Start with [AGENTS.md](AGENTS.md) (context entry point) and [ARCHITECTURE.md](ARCHITECTURE.md) (full developer reference).
@@ -84,6 +84,7 @@ This project started as an internal tool (200+ hours of optimization and testing
 
 The `MODEL_ID` valve accepts **pseudo IDs** that resolve to an official model plus a preset, so you can pick a reasoning level from the model picker instead of editing Custom Parameters. Examples:
 
+* `gpt-6-astra-pro-max` → `gpt-6-astra` with `reasoning.mode="pro"` + `reasoning.effort="max"`
 * `gpt-5.6` → `gpt-5.6-sol` (mirrors OpenAI's own routing alias)
 * `gpt-5.6-sol-max` → `gpt-5.6-sol` with `reasoning.effort="max"`
 * `gpt-5.6-sol-pro-high` → `gpt-5.6-sol` with `reasoning.mode="pro"` + `reasoning.effort="high"`
@@ -170,8 +171,9 @@ Below are the IDs registered by default in the `MODEL_ID` valve. Trim that list 
 
 | Family | Model IDs | Type / Modality | Status | Notes |
 |---|---|---|:--:|---|
-| **GPT-5.6** | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | Reasoning (text + image in) | ✅ | Current flagship family. Named tiers replace the old unsuffixed/mini/nano split; efforts `none`→`max` plus pro mode. |
-| **GPT-5.5** | `gpt-5.5`, `gpt-5.5-pro` | Reasoning | ✅ | Previous flagship. Here `-pro` *is* a separate model slug, unlike GPT-5.6. |
+| **GPT-6** | `gpt-6-astra` | Reasoning (text + image in) | ✅ | Current flagship. Single slug, no tiers; efforts `low`→`max` (**no `none`**) plus pro mode. |
+| **GPT-5.6** | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | Reasoning (text + image in) | ✅ | Previous flagship family. Named tiers replace the old unsuffixed/mini/nano split; efforts `none`→`max` plus pro mode. |
+| **GPT-5.5** | `gpt-5.5`, `gpt-5.5-pro` | Reasoning | ✅ | Here `-pro` *is* a separate model slug, unlike GPT-5.6 / GPT-6. |
 | **GPT-5.4** | `gpt-5.4`, `gpt-5.4-pro` | Reasoning | ✅ | |
 | **GPT-5.2** | `gpt-5.2`, `gpt-5.2-pro` | Reasoning | ✅ | |
 | | `gpt-5.2-chat-latest` | Chat-tuned (non-reasoning) | ✅ | Tool calling + web search, no reasoning. |
@@ -179,7 +181,7 @@ Below are the IDs registered by default in the `MODEL_ID` valve. Trim that list 
 | | `gpt-5.1-chat-latest` | Chat-tuned (non-reasoning) | ✅ | Tool calling + web search, no reasoning. |
 | **GPT-5** | `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5-pro` | Reasoning | ✅ | The only family that accepts `minimal` effort. |
 | | `gpt-5-chat-latest` | Chat-tuned (non-reasoning) | ✅ | Tool calling + web search, no reasoning. |
-| | `gpt-5-auto` | Router (pseudo-model) | 🔄 Experimental | Not a real OpenAI ID — see [GPT-5.6 Model Support](#gpt-56-model-support). |
+| | `gpt-5-auto` | Router (pseudo-model) | 🔄 Experimental | Not a real OpenAI ID — see [`gpt-5-auto`](#gpt-5-auto-experimental-router). |
 | **GPT-4.1** | `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano` | Non-reasoning | ✅ | Good task/utility models. `gpt-4.1-nano` has no web search. |
 | **GPT-4o** | `gpt-4o`, `gpt-4o-mini` | Text + image → text | ✅ | |
 | | `chatgpt-4o-latest` | Chat-tuned (non-reasoning) | ✅ | ⚠️ No tool calling, web search, or other advanced features. |
@@ -195,10 +197,11 @@ You can add IDs that aren't listed here. Be aware that an unrecognized ID gets *
 
 Aliases are registered in the `MODEL_ID` valve alongside real IDs and follow one rule: **`<base model>` + `-<preset>`**. The manifold strips the preset, sets the matching `reasoning` parameters, and sends the base model ID upstream.
 
-An *unsuffixed* base ID sends no `reasoning.effort` at all, so OpenAI applies that model's own default (`medium` for GPT-5.6).
+An *unsuffixed* base ID sends no `reasoning.effort` at all, so OpenAI applies that model's own default (`medium` for GPT-6 and GPT-5.6).
 
 | Family | Base IDs | Effort suffixes | Pro-mode suffixes |
 |---|---|---|---|
+| **GPT-6** | `gpt-6-astra` | `-low` `-high` `-xhigh` `-max` | `-pro` `-pro-high` `-pro-xhigh` `-pro-max` |
 | **GPT-5.6** | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` | `-none` `-low` `-high` `-xhigh` `-max` | `-pro` `-pro-high` `-pro-xhigh` `-pro-max` *(sol only)* |
 | **GPT-5.5 / 5.4 / 5.2** | `gpt-5.5`, `gpt-5.4`, `gpt-5.2` | `-low` `-medium` `-high` `-xhigh` | on the separate `-pro` model: `-pro-high` `-pro-xhigh` |
 | **GPT-5.1** | `gpt-5.1` | `-low` `-medium` `-high` | — |
@@ -212,12 +215,30 @@ Plus two standalone pseudo IDs:
 | `gpt-5.6` | `gpt-5.6-sol` | Mirrors OpenAI's own routing alias. |
 | `gpt-5-auto` | `gpt-5-chat-latest`, `gpt-5`, or `gpt-5-mini` | A classifier picks the model **and** the effort per request. 🔄 Experimental. |
 
-The effort ladders differ per family because OpenAI's supported values differ: `minimal` exists only on GPT-5, `xhigh` only from GPT-5.2 onward, and `max` only on GPT-5.6. Sending an unsupported effort returns an API error.
+The effort ladders differ per family because OpenAI's supported values differ: `minimal` exists only on GPT-5, `xhigh` only from GPT-5.2 onward, `max` only on GPT-5.6 and GPT-6, and GPT-6 Astra drops `none`. Sending an unsupported effort returns an API error.
 
 ---
 
 
-## GPT-5.6 Model Support
+## GPT-6 Astra and GPT-5.6 Model Support
+
+### GPT-6 Astra
+
+`gpt-6-astra` is OpenAI's current flagship — a single slug with no tiers and no `gpt-6` routing alias. It keeps the GPT-5.6 API surface (function calling, web search, image generation, `text.verbosity`, persisted reasoning, prompt caching, pro mode) with the same 1,050,000-token context window and 128,000 max output tokens, and an Apr 30, 2026 knowledge cutoff.
+
+| Model | Input / Cached / Output per 1M | Notes |
+|---|---|---|
+| `gpt-6-astra` | $10.00 / $1.00 / $50.00 | Cache writes $12.50; prompts over 272K input tokens bill 2× input and 1.5× output for the whole request (the cost estimate doesn't model this). |
+
+What's different from GPT-5.6 when you switch:
+
+- **No `none` effort.** `reasoning.effort` accepts `low`, `medium` (default), `high`, `xhigh`, `max`. If you used `none`/`minimal` before, OpenAI's advice is to start at `low`. That's why there is no `gpt-6-astra-none` alias.
+- **`temperature`, `top_p`, and `top_logprobs` are rejected.** The manifold forwards these untouched, so clear them from the model's Custom Parameters in Open WebUI.
+- **Tool calling requires the Responses API** — which is what this manifold speaks, so nothing to do.
+- **More willing to ask before acting.** Astra pauses for clarification more often than GPT-5.6 Sol when intent is ambiguous. If that's undesirable for your use case, add explicit "bias toward action" guidance to the system prompt — see OpenAI's [prompting guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra).
+- Newer capabilities the manifold does not configure (forwarded untouched if supplied via Custom Parameters or a filter): async tool calling (`async: true` on a tool), mid-turn steering over WebSocket, `configuration_update` input items for changing effort mid-conversation, and `prompt_cache_options.ttl` (replaces `prompt_cache_retention`).
+
+### GPT-5.6
 
 GPT-5.6 changed the naming scheme. Instead of one model plus `-mini`/`-nano`/`-pro`, it ships **three named tiers** — all sharing a 1,050,000-token context window, 128,000 max output tokens, and a Feb 16, 2026 knowledge cutoff:
 
@@ -239,7 +260,7 @@ Because GPT-5.6 is more token-efficient than earlier generations, OpenAI's migra
 
 There is no `gpt-5.6-pro` model slug. Pro is an execution mode — `reasoning.mode: "pro"` — that applies more model work before returning a single final answer. It works on any GPT-5.6 model and is **independent of `reasoning.effort`**.
 
-The manifold exposes it through the `gpt-5.6-sol-pro*` aliases. Pro-mode tokens bill at the model's standard rates, but there are more of them and latency is higher, so use it where a marginal quality gain actually changes the outcome.
+The manifold exposes it through the `gpt-5.6-sol-pro*` and `gpt-6-astra-pro*` aliases. Pro-mode tokens bill at the model's standard rates, but there are more of them and latency is higher, so use it where a marginal quality gain actually changes the outcome.
 
 ### Not yet wired into the manifold
 
@@ -270,7 +291,7 @@ In the ChatGPT app, picking a model doesn't pin one endpoint — OpenAI runs a r
 4. **Output style** — GPT-5.6 is noticeably more concise by default than GPT-5.5, so blanket “be concise” instructions may now be redundant or even counterproductive. Prefer `text.verbosity` for the default level of detail and keep the prompt for task-specific requirements; Open WebUI's “More Concise” / “Add Details” regenerate buttons already map to it.
 5. **Leaner prompts win** — OpenAI reports both lower token use and better eval scores after de-duplicating instructions and tightening tool descriptions. Example prompts live in the `system_prompts` folder.
 
-**Further reading:** [Using GPT-5.6](https://developers.openai.com/api/docs/guides/latest-model) · [Reasoning models](https://developers.openai.com/api/docs/guides/reasoning) · [Model catalog](https://developers.openai.com/api/docs/models)
+**Further reading:** [Using GPT-6 Astra](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra) · [Using GPT-5.6](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6) · [Reasoning models](https://developers.openai.com/api/docs/guides/reasoning) · [Model catalog](https://developers.openai.com/api/docs/models)
 
 
 ## How It Works (Design Notes)

@@ -22,8 +22,8 @@ Line numbers are approximate and drift as the file evolves — use the symbol na
 All-classmethod static registry. Normalization (`_norm`) strips the
 `openai_responses.` prefix and `-YYYY-MM-DD` date suffixes, lowercases.
 
-- **`_SPECS`** — base model → feature set. Registered families: GPT-5.6
-  (`gpt-5.6-sol|terra|luna`), GPT-5.5/5.4/5.2 (+`-pro`), `gpt-5.1`, GPT-5
+- **`_SPECS`** — base model → feature set. Registered families: GPT-6 (`gpt-6-astra`,
+  single slug, no tiers), GPT-5.6 (`gpt-5.6-sol|terra|luna`), GPT-5.5/5.4/5.2 (+`-pro`), `gpt-5.1`, GPT-5
   (`gpt-5`, `-pro`, `-auto`, `-mini`, `-nano`), GPT-4.1 (`gpt-4.1`, `-mini`, `-nano`),
   `gpt-4o`/`-mini`, o-series (`o3`, `o3-mini`, `o3-pro`, `o4-mini`), deep research
   (`o3-deep-research`, `o4-mini-deep-research`), chat-latest snapshots
@@ -31,10 +31,11 @@ All-classmethod static registry. Normalization (`_norm`) strips the
 - **Feature flags**: `function_calling`, `reasoning`, `reasoning_summary`,
   `web_search_tool`, `image_gen_tool`, `verbosity`, `deep_research`.
 - **`_ALIASES`** — pseudo-model → `{base_model, params}`. Effort suffixes
-  (`-none/-low/-high/-xhigh/-max` per family), pro-mode aliases
-  (`gpt-5.6-sol-pro*` → `reasoning.mode="pro"`), plain remaps (`gpt-5.6` → `gpt-5.6-sol`),
-  back-compat (`o3-mini-high`, `o4-mini-high`). GPT-5.6 has **no** `-pro` model slug —
-  pro is a `reasoning.mode` param independent of `reasoning.effort`.
+  (`-none/-low/-high/-xhigh/-max` per family; GPT-6 Astra has no `-none` because the API
+  rejects that effort), pro-mode aliases (`gpt-5.6-sol-pro*`, `gpt-6-astra-pro*` →
+  `reasoning.mode="pro"`), plain remaps (`gpt-5.6` → `gpt-5.6-sol`; there is no `gpt-6`
+  alias), back-compat (`o3-mini-high`, `o4-mini-high`). GPT-5.6 and GPT-6 have **no**
+  `-pro` model slug — pro is a `reasoning.mode` param independent of `reasoning.effort`.
 - **`_PRICING`** — base model → `(input, cached_input, output)` USD per 1M tokens;
   `cached_input=None` means cached tokens bill at the full input rate. Overridable at
   runtime via the `CUSTOM_MODEL_PRICING_JSON` valve.
