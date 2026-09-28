@@ -6,7 +6,7 @@ author_url: https://github.com/jrkropp
 git_url: https://github.com/jrkropp/open-webui-developer-toolkit/blob/main/functions/pipes/openai_responses_manifold/openai_responses_manifold.py
 description: Brings OpenAI Response API support to Open WebUI, enabling features not possible via Completions API.
 required_open_webui_version: 0.6.3
-version: 0.8.28
+version: 0.9.0
 license: MIT
 """
 
@@ -48,15 +48,21 @@ from open_webui.models.models import ModelForm, Models
 # ─────────────────────────────────────────────────────────────────────────────
 # Feature flags and other module level constants
 FEATURE_SUPPORT = {
-    "web_search_tool": {"gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "o3", "o3-pro", "o4-mini", "o3-deep-research", "o4-mini-deep-research"}, # OpenAI's built-in web search tool.
-    "image_gen_tool": {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4.1-nano", "o3"}, # OpenAI's built-in image generation tool.
-    "function_calling": {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4.1-nano", "o3", "o4-mini", "o3-mini", "o3-pro", "o3-deep-research", "o4-mini-deep-research"}, # OpenAI's native function calling support.
-    "reasoning": {"gpt-5", "gpt-5-mini", "gpt-5-nano", "o3", "o4-mini", "o3-mini","o3-pro", "o3-deep-research", "o4-mini-deep-research"}, # OpenAI's reasoning models.
-    "reasoning_summary": {"gpt-5", "gpt-5-mini", "gpt-5-nano", "o3", "o4-mini", "o4-mini-high", "o3-mini", "o3-mini-high", "o3-pro", "o3-deep-research", "o4-mini-deep-research"}, # OpenAI's reasoning summary feature.  May require OpenAI org verification before use.
-    "verbosity": {"gpt-5", "gpt-5-mini", "gpt-5-nano"}, # Supports OpenAI's verbosity parameter.
+    # OpenAI's built-in web search tool.
+    "web_search_tool": {"gpt-5", "gpt-5-mini", "gpt-5-pro", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "o3", "o3-pro", "o4-mini", "o3-deep-research", "o4-mini-deep-research"},
+    # OpenAI's built-in image generation tool.
+    "image_gen_tool": {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4.1-nano", "o3"},
+    # OpenAI's native function calling support.
+    "function_calling": {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4.1-nano", "o3", "o4-mini", "o3-mini", "o3-pro", "o3-deep-research", "o4-mini-deep-research"},
+    # OpenAI's reasoning models.
+    "reasoning": {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "o3", "o4-mini", "o3-mini","o3-pro", "o3-deep-research", "o4-mini-deep-research"},
+    # OpenAI's reasoning summary feature.  May require OpenAI org verification before use.
+    "reasoning_summary": {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "o3", "o4-mini", "o4-mini-high", "o3-mini", "o3-mini-high", "o3-pro", "o3-deep-research", "o4-mini-deep-research"},
+    # Supports OpenAI's verbosity parameter.
+    "verbosity": {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro"},
 
     # NOTE: Deep Research models are not yet supported in pipe.  Work in-progress.
-    "deep_research": {"o3-deep-research", "o4-mini-deep-research"}, # OpenAI's deep research models.
+    "deep_research": {"o3-deep-research", "o4-mini-deep-research"},
 }
 
 DETAILS_RE = re.compile(
@@ -82,12 +88,15 @@ class CompletionsBody(BaseModel):
     # Sanitize the ``model`` field after validation.
     @model_validator(mode='after')
     def normalize_model(self) -> "CompletionsBody":
-        """Normalize model: strip 'openai_responses.' prefix and map '-high' pseudo-models."""
-        
-        # Remove prefix if present
+        """Normalize model: strip function/module prefixes and map '-high' pseudo-models."""
+
+        # Remove any function/module prefix if present, e.g.
+        #   "openai_responses.gpt-5-pro" → "gpt-5-pro"
+        #   "openai_responses_api_manifold.gpt-4.1-nano" → "gpt-4.1-nano"
+        # This only strips a leading segment of [a-z0-9_]+ followed by a dot,
+        # so legitimate model IDs like "gpt-4.1" are not affected.
         m = (self.model or "").strip()
-        if m.startswith("openai_responses."):
-            m = m[len("openai_responses."):]
+        m = re.sub(r'^(?:[a-z0-9_]+\.)+', '', m, flags=re.I)
 
         key = m.lower()
 
@@ -459,6 +468,22 @@ class ResponsesBody(BaseModel):
                 chat_id=chat_id,
                 openwebui_model_id=openwebui_model_id
             )
+
+        # Normalize model id: ensure no function/module prefix is sent to OpenAI
+        model_id = (sanitized_params.get("model") or completions_body.model or "").lower()
+        model_id = re.sub(r'^(?:[a-z0-9_]+\.)+', '', model_id, flags=re.I)
+        sanitized_params["model"] = model_id
+        model_family = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", model_id)
+
+        # Drop unsupported params for GPT-5 family
+        if model_family.startswith("gpt-5"):
+            for unsupported_param in ("temperature", "top_p"):
+                if unsupported_param in sanitized_params:
+                    logging.warning(
+                        "Dropping unsupported parameter for GPT-5 model: '%s'",
+                        unsupported_param,
+                    )
+                    sanitized_params.pop(unsupported_param, None)
 
         # Build the final ResponsesBody directly
         return ResponsesBody(
@@ -1353,7 +1378,10 @@ class Pipe:
 
         buf = bytearray()
         async with self.session.post(url, json=request_body, headers=headers) as resp:
-            resp.raise_for_status()
+            if resp.status >= 400:
+                error_text = await resp.text()
+                self.logger.error("OpenAI Responses API error %s: %s", resp.status, error_text)
+                resp.raise_for_status()
 
             async for chunk in resp.content.iter_chunked(4096):
                 buf.extend(chunk)
@@ -1399,7 +1427,10 @@ class Pipe:
         url = base_url.rstrip("/") + "/responses"
 
         async with self.session.post(url, json=request_params, headers=headers) as resp:
-            resp.raise_for_status()
+            if resp.status >= 400:
+                error_text = await resp.text()
+                self.logger.error("OpenAI Responses API error %s: %s", resp.status, error_text)
+                resp.raise_for_status()
             return await resp.json()
     
     async def _get_or_init_http_session(self) -> aiohttp.ClientSession:
