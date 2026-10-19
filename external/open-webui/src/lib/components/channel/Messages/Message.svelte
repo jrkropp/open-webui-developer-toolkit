@@ -14,7 +14,7 @@
 	dayjs.extend(isYesterday);
 	dayjs.extend(localizedFormat);
 
-	import { getContext } from 'svelte';
+	import { getContext, tick } from 'svelte';
 	const i18n = getContext<Writable<i18nType>>('i18n');
 
 	import { formatDate } from '$lib/utils';
@@ -23,12 +23,15 @@
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 	import { getMessageData } from '$lib/apis/channels';
 
+	import AppChannelReply from '../AppChannelReply.svelte';
+	import { getAppMessageText } from '$lib/utils/apps';
 	import Markdown from '$lib/components/chat/Messages/Markdown.svelte';
 	import StructuredOutputRenderer from '$lib/components/chat/Messages/StructuredOutputRenderer.svelte';
 	import { buildOutputDisplayItems } from '$lib/components/chat/Messages/structuredOutput';
 	import ProfileImage from '$lib/components/chat/Messages/ProfileImage.svelte';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
+	import Grid from '$lib/components/icons/Grid.svelte';
 	import Pencil from '$lib/components/icons/Pencil.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
@@ -71,6 +74,11 @@
 	let editedContent = null;
 	let showDeleteConfirmDialog = false;
 	$: renderedMessageId = message ? (id ? `${id}-${message.id}` : message.id) : null;
+	$: contentId = message?.client_id
+		? id
+			? `${id}-${message.client_id}`
+			: message.client_id
+		: renderedMessageId;
 	$: replyToMessageId = message?.reply_to_message
 		? id
 			? `${id}-${message.reply_to_message.id}`
@@ -283,10 +291,18 @@
 							{#if onEdit}
 								<Tooltip content={$i18n.t('Edit')}>
 									<button
+										id="edit-message-{renderedMessageId}"
 										class="hover:bg-gray-100 dark:hover:bg-gray-800 transition rounded-lg p-1"
-										on:click={() => {
+										on:click={async () => {
 											edit = true;
 											editedContent = message.content;
+											await tick();
+											const textarea = document
+												.getElementById(`message-${renderedMessageId}`)
+												?.querySelector('textarea');
+											textarea?.focus();
+											textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
+											textarea?.scrollIntoView({ block: 'center' });
 										}}
 									>
 										<Pencil />
@@ -351,6 +367,16 @@
 									e.currentTarget.src = '/favicon.png';
 								}}
 							/>
+						{:else if message.reply_to_message.app_id}
+							{#if message.reply_to_message.user?.profile_image_url}
+								<ProfileImage
+									src={message.reply_to_message.user.profile_image_url}
+									allowExternal
+									className="size-4 ml-0.5 rounded!"
+								/>
+							{:else}
+								<Grid className="size-4 ml-0.5" />
+							{/if}
 						{:else}
 							<img
 								src={message.reply_to_message.user?.role === 'webhook'
@@ -371,8 +397,9 @@
 							class="text-xs text-gray-500 dark:text-gray-400 line-clamp-1 min-w-0 flex-1 [&_.markdown-prose]:text-xs!"
 						>
 							<Markdown
-								id={`${renderedMessageId}-reply-to`}
-								content={message?.reply_to_message?.content}
+								id={`${contentId}-reply-to`}
+								content={getAppMessageText(message?.reply_to_message)}
+								allowHtml={!message?.reply_to_message?.app_id}
 								allowEmbeds={false}
 							/>
 						</div>
@@ -399,6 +426,22 @@
 									e.currentTarget.src = '/favicon.png';
 								}}
 							/>
+						{:else if message.app_id}
+							{#if message.user?.profile_image_url}
+								<ProfileImage
+									src={message.user.profile_image_url}
+									allowExternal
+									className="size-6 mt-0.5 rounded-lg!"
+								/>
+							{:else}
+								<span
+									class="flex size-6 mt-0.5 items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-800"
+									role="img"
+									aria-label={$i18n.t('App')}
+								>
+									<Grid className="size-4" />
+								</span>
+							{/if}
 						{:else if message.user?.role === 'webhook'}
 							<ProfileImage
 								src={`${WEBUI_API_BASE_URL}/channels/webhooks/${message.user?.id}/profile/image`}
@@ -442,6 +485,7 @@
 								{/if}
 							</div>
 
+							{#if message.app_id}<span class="text-[0.65rem] text-gray-500">App</span>{/if}
 							{#if message.created_at}
 								<div
 									class=" shrink-0 translate-y-px text-[0.6875rem] leading-4 text-gray-500 dark:text-gray-400 font-normal first-letter:capitalize"
@@ -472,6 +516,7 @@
 									</Tooltip>
 								</div>
 							{/if}
+							<slot name="status" />
 						</div>
 					{/if}
 
@@ -512,7 +557,7 @@
 					{#if edit}
 						<div class="py-2">
 							<Textarea
-								className=" bg-transparent outline-hidden w-full resize-none"
+								className=" bg-transparent outline-hidden w-full resize-none text-sm leading-[1.375rem]"
 								bind:value={editedContent}
 								onKeydown={(e) => {
 									if (e.key === 'Escape') {
@@ -531,7 +576,7 @@
 								<div class="flex space-x-1.5">
 									<button
 										id="close-edit-message-button"
-										class="px-3.5 py-1.5 bg-white dark:bg-gray-900 hover:bg-gray-100 text-gray-800 dark:text-gray-100 transition rounded-3xl"
+										class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-normal text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 disabled:opacity-60 dark:text-gray-400 dark:hover:bg-gray-850 dark:hover:text-white"
 										on:click={() => {
 											edit = false;
 											editedContent = null;
@@ -542,7 +587,7 @@
 
 									<button
 										id="confirm-edit-message-button"
-										class="px-3.5 py-1.5 bg-gray-900 dark:bg-white hover:bg-gray-850 text-gray-100 dark:text-gray-800 transition rounded-3xl"
+										class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
 										on:click={async () => {
 											onEdit(editedContent);
 											edit = false;
@@ -560,29 +605,39 @@
 								? 'opacity-50'
 								: ''}"
 						>
-							{#if hasStructuredOutput}
-								<StructuredOutputRenderer
-									id={renderedMessageId}
-									output={messageOutput}
-									done={message?.meta?.done ?? false}
-									allowEmbeds={false}
-								/>
-							{:else if (message?.content ?? '').trim() === '' && message?.meta?.model_id}
-								<Skeleton />
-							{:else}
-								<span class="markdown-prose">
-									<Markdown
+							<slot name="content">
+								{#if hasStructuredOutput}
+									<StructuredOutputRenderer
 										id={renderedMessageId}
-										content={message.content}
-										paragraphTag="span"
+										output={messageOutput}
+										done={message?.meta?.done ?? false}
 										allowEmbeds={false}
 									/>
-								</span>{#if message.created_at !== message.updated_at && (message?.meta?.model_id ?? null) === null}<span
-										class="text-gray-500 text-[0.625rem] pl-1 self-center"
-										>({$i18n.t('edited')})</span
-									>{/if}
-							{/if}
+								{:else if (message?.content ?? '').trim() === '' && message?.meta?.model_id}
+									<Skeleton />
+								{:else}
+									<div class="markdown-prose">
+										<Markdown id={contentId} content={message.content} allowEmbeds={false} />
+									</div>
+									{#if message.created_at !== message.updated_at && (message?.meta?.model_id ?? null) === null}<span
+											class="text-gray-500 text-[0.625rem] pl-1 self-center"
+											>({$i18n.t('edited')})</span
+										>{/if}
+								{/if}
+							</slot>
 						</div>
+
+						{#if message.app_id && (message?.data?.app?.embeds?.length || message?.data?.app?.actions?.length)}
+							<div class="mt-2">
+								<AppChannelReply
+									on:reply
+									appId={message.app_id}
+									channelId={channel.id}
+									source={message}
+									reply={{ embeds: message.data.app.embeds, actions: message.data.app.actions }}
+								/>
+							</div>
+						{/if}
 
 						{#if (message?.reactions ?? []).length > 0}
 							<div>

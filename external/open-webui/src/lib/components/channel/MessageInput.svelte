@@ -7,8 +7,23 @@
 
 	const i18n: any = getContext('i18n');
 
-	import { channelRequestQueues, config, mobile, settings, socket, user } from '$lib/stores';
+	import {
+		channelRequestQueues,
+		channels,
+		models,
+		config,
+		mobile,
+		settings,
+		socket,
+		user
+	} from '$lib/stores';
 	import { processingQueueChannels, processNextInQueue } from '$lib/utils/channelQueue';
+	import {
+		getMentionUserQueries,
+		resolveMentions,
+		getChannelMentionCandidates
+	} from '$lib/utils/channelMentions';
+	import type { Editor } from '@tiptap/core';
 	import QueuedMessageItem from '../chat/MessageInput/QueuedMessageItem.svelte';
 	import {
 		convertHeicToJpeg,
@@ -50,6 +65,7 @@
 
 	export let id: string | null = null;
 	export let channel: any = null;
+	export let messages: any[] | null = [];
 
 	export let typingUsers = [];
 	export let inputLoading = false;
@@ -77,6 +93,7 @@
 
 	let recording = false;
 	let content = '';
+	let inputEditor: Editor | null = null;
 	let files: any[] = [];
 	let isDestroyed = false;
 	$: parentId = id === 'root' ? null : id;
@@ -579,10 +596,43 @@
 		void processNextInQueue(queueKey);
 	};
 
+	const resolveInputMentions = async () => {
+		const targetQueueKey = queueKey;
+		const editor = inputEditor;
+		if (editor && /[@#]/.test(content)) {
+			const state = editor.state;
+			try {
+				const candidates = await getChannelMentionCandidates(
+					localStorage.token,
+					channel.id,
+					getMentionUserQueries(state.doc),
+					{
+						users: userSuggestions,
+						apps: $config?.features?.enable_apps ?? false,
+						models: $models,
+						channels: channelSuggestions ? $channels : []
+					}
+				);
+				if (isDestroyed || targetQueueKey !== queueKey || editor.isDestroyed) return false;
+				const tr = resolveMentions(state, candidates);
+				// A paste lookup may have finished while Send was waiting for the same result.
+				if (editor.state.doc.eq(tr.doc)) return true;
+				if (editor.state.doc !== state.doc) return false;
+				if (tr.docChanged) editor.view.dispatch(tr);
+			} catch (error) {
+				toast.error(`${error}`);
+				return false;
+			}
+		}
+		return true;
+	};
+
 	const submitHandler = async () => {
 		if (disabled || !$user?.id || (content === '' && files.length === 0)) return;
 
 		const targetQueueKey = queueKey;
+		if (inputEditor && /[@#]/.test(content) && !(await resolveInputMentions())) return;
+		if (content === '' && files.length === 0) return;
 		const entry = {
 			id: uuidv4(),
 			prompt: content,
@@ -624,7 +674,8 @@
 		}
 
 		await tick();
-		if (!isDestroyed && targetQueueKey === queueKey) chatInputElement?.focus();
+		if (!isDestroyed && targetQueueKey === queueKey)
+			chatInputElement?.focus({ preventScroll: true });
 	};
 
 	$: if (content) {
@@ -895,7 +946,11 @@
 						<div
 							id="message-input-container"
 							class="flex-1 flex flex-col relative w-full shadow-sm rounded-2xl border border-gray-100/60 dark:border-gray-800/50 hover:border-gray-100 focus-within:border-gray-100 hover:dark:border-gray-800 focus-within:dark:border-gray-800 transition bg-white dark:bg-gray-400/5 dark:text-gray-100"
-							dir={$settings?.chatDirection ?? 'auto'}
+							dir={$settings?.chatDirection === 'RTL'
+								? 'rtl'
+								: $settings?.chatDirection === 'LTR'
+									? 'ltr'
+									: 'auto'}
 						>
 							{#if replyToMessage !== null}
 								<div class="px-3 pt-2 text-left w-full flex flex-col z-10">
@@ -998,6 +1053,7 @@
 											id="chat-input"
 											className="input-prose min-h-fit h-full text-sm!"
 											bind:this={chatInputElement}
+											bind:editor={inputEditor}
 											json={true}
 											messageInput={true}
 											editable={!disabled}
@@ -1014,6 +1070,7 @@
 											largeTextAsFile={$settings?.largeTextAsFile ?? false}
 											floatingMenuPlacement={'top-start'}
 											{suggestions}
+											on:pasted={resolveInputMentions}
 											onChange={(e) => {
 												const { md } = e;
 												content = md;
@@ -1021,12 +1078,40 @@
 											}}
 											on:keydown={async (e) => {
 												e = e.detail.event;
+												// IME confirmation must finish before a shortcut can send and clear the editor.
+												if (e.isComposing || e.keyCode === 229 || inputEditor?.view.composing)
+													return;
+
 												const isCtrlPressed = e.ctrlKey || e.metaKey; // metaKey is for Cmd key on Mac
 
 												const suggestionsContainerElement =
 													document.getElementById('suggestions-container');
 
 												if (!suggestionsContainerElement) {
+													if (
+														e.key === 'ArrowUp' &&
+														!e.isComposing &&
+														!isCtrlPressed &&
+														!e.shiftKey &&
+														!e.altKey &&
+														!disabled &&
+														content === '' &&
+														files.length === 0
+													) {
+														const message = messages?.find(
+															(message) => message.user_id === $user?.id && !message.temp_id
+														);
+														if (message) {
+															const messageId = parentId ? `${parentId}-${message.id}` : message.id;
+															const editButton = document.getElementById(
+																`edit-message-${messageId}`
+															);
+															if (editButton) {
+																e.preventDefault();
+																editButton.click();
+															}
+														}
+													}
 													if (
 														!$mobile ||
 														!(

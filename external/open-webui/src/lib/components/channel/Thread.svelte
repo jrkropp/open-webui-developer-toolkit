@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 
 	import { socket, user } from '$lib/stores';
 
@@ -21,6 +22,8 @@
 	export let onPin = () => {};
 
 	let messages = null;
+	let searchAnchor = '';
+	let loadVersion = 0;
 	let top = false;
 
 	let messagesContainerElement = null;
@@ -32,7 +35,11 @@
 	let typingUsersTimeout = {};
 
 	$: if (threadId) {
-		initHandler();
+		initHandler(
+			$page.url.searchParams.get('thread') === threadId
+				? ($page.url.searchParams.get('message') ?? '')
+				: ''
+		);
 	}
 
 	const scrollToBottom = () => {
@@ -41,22 +48,43 @@
 		}
 	};
 
-	const initHandler = async () => {
+	const initHandler = async (anchor = '') => {
+		const version = ++loadVersion;
+		searchAnchor = anchor;
 		messages = null;
 		top = false;
+		replyToMessage = null;
 
 		typingUsers = [];
 		typingUsersTimeout = {};
 
 		if (channel) {
-			messages = await getChannelThreadMessages(localStorage.token, channel.id, threadId);
+			const loaded = await getChannelThreadMessages(
+				localStorage.token,
+				channel.id,
+				threadId,
+				0,
+				50,
+				{ around: anchor }
+			).catch((error) => {
+				toast.error(String(error));
+				return [];
+			});
+			if (version !== loadVersion) return;
+			messages = loaded;
 
 			if (messages.length < 50) {
 				top = true;
 			}
 
 			await tick();
-			scrollToBottom();
+			if (anchor) {
+				const element = document.getElementById(`message-${threadId}-${anchor}`);
+				element?.scrollIntoView({ block: 'center' });
+				element?.animate([{ backgroundColor: '#a5a5c544' }, { backgroundColor: 'transparent' }], {
+					duration: 2200
+				});
+			} else scrollToBottom();
 		} else {
 			goto('/');
 		}
@@ -217,12 +245,18 @@
 			bind:this={messagesContainerElement}
 		>
 			<div class="pt-3">
+				{#if searchAnchor}<div class="px-3 py-2 text-xs text-gray-500 flex justify-between">
+						<span>{$i18n.t('Showing search match')}</span><button
+							class="underline"
+							on:click={() => initHandler()}>{$i18n.t('Latest replies')}</button
+						>
+					</div>{/if}
 				{#if messages !== null}
 					<Messages
 						id={threadId}
 						{channel}
 						{top}
-						{messages}
+						bind:messages
 						{replyToMessage}
 						thread={true}
 						{onPin}
@@ -237,10 +271,17 @@
 								localStorage.token,
 								channel.id,
 								threadId,
-								messages.length
+								searchAnchor ? 0 : messages.length,
+								50,
+								searchAnchor ? { before: messages[messages.length - 1]?.id } : {}
 							);
 
-							messages = [...messages, ...newMessages];
+							messages = [
+								...messages,
+								...newMessages.filter(
+									(item) => !messages.some((existing) => existing.id === item.id)
+								)
+							];
 
 							if (newMessages.length < 50) {
 								top = true;
@@ -258,6 +299,7 @@
 
 		<div class=" pb-3 px-3 w-full">
 			<MessageInput
+				{messages}
 				bind:replyToMessage
 				bind:chatInputElement
 				id={threadId}

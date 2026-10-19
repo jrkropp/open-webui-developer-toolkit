@@ -1,3 +1,7 @@
+<script context="module">
+	let closeActiveHoverPreview = null;
+</script>
+
 <script>
 	import { getContext, createEventDispatcher, onMount, onDestroy, tick } from 'svelte';
 
@@ -5,6 +9,7 @@
 	const dispatch = createEventDispatcher();
 
 	import DOMPurify from 'dompurify';
+	import { LinkPreview } from 'bits-ui';
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
@@ -40,8 +45,8 @@
 	import MoreHorizontal from './icons/MoreHorizontal.svelte';
 
 	import ChatItem from './ChatItem.svelte';
+	import FolderHoverPreview from './FolderHoverPreview.svelte';
 	import FolderMenu from './Folders/FolderMenu.svelte';
-	import FolderShareModal from './Folders/FolderShareModal.svelte';
 	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import FolderModal from './Folders/FolderModal.svelte';
 	import Emoji from '$lib/components/common/Emoji.svelte';
@@ -65,8 +70,8 @@
 
 	let folderElement;
 
+	let openPreview = false;
 	let showFolderModal = false;
-	let showShareModal = false;
 	let edit = false;
 
 	let showCreateSubFolderModal = false;
@@ -76,6 +81,21 @@
 	let dragged = false;
 
 	let clickTimer = null;
+
+	$: if ($mobile || edit || dragged || parentDragged || draggedOver || showFolderModal) {
+		openPreview = false;
+	}
+
+	const closeHoverPreview = () => {
+		if (openPreview) {
+			openPreview = false;
+		}
+	};
+
+	$: if (openPreview && closeActiveHoverPreview !== closeHoverPreview) {
+		closeActiveHoverPreview?.();
+		closeActiveHoverPreview = closeHoverPreview;
+	}
 
 	let name = '';
 
@@ -430,6 +450,10 @@
 	onDestroy(() => {
 		delete folderRegistry[folderId];
 
+		if (closeActiveHoverPreview === closeHoverPreview) {
+			closeActiveHoverPreview = null;
+		}
+
 		if (folderElement) {
 			folderElement.removeEventListener('dragover', onDragOver);
 			folderElement.removeEventListener('drop', onDrop);
@@ -596,10 +620,6 @@
 		setFolderItems();
 	}
 
-	const shouldIgnoreRowClick = (target) => {
-		return target instanceof Element && !!target.closest('button, a, input, [role="menu"]');
-	};
-
 	const openFolderHandler = async () => {
 		const folder = await getFolderById(localStorage.token, folderId).catch((error) => {
 			toast.error(`${error}`);
@@ -712,8 +732,6 @@
 	onSubmit={createSubFolderHandler}
 />
 
-<FolderShareModal bind:show={showShareModal} folder={folders[folderId]} />
-
 {#if dragged && x && y}
 	<DragGhost {x} {y}>
 		<div class=" bg-black/80 backdrop-blur-2xl px-2 py-1 rounded-lg w-fit max-w-40">
@@ -744,42 +762,14 @@
 	>
 		<!-- svelte-ignore a11y-no-static-element-interactions -->
 		<div class="w-full group">
+			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 			<div
 				id="folder-{folderId}-button"
 				class="relative w-full py-1 px-1.5 rounded-xl flex items-center gap-1.5 hover:bg-gray-100 dark:hover:bg-gray-900 transition {$selectedFolder?.id ===
 				folderId
 					? 'bg-gray-100/80 dark:bg-gray-850/50 selected'
 					: ''}"
-				on:dblclick={(e) => {
-					if (!isWritable) return;
-					if (clickTimer) {
-						clearTimeout(clickTimer); // cancel the single-click action
-						clickTimer = null;
-					}
-					renameHandler();
-				}}
-				role="button"
-				tabindex="0"
-				on:click={async (e) => {
-					e.stopPropagation();
-					if (shouldIgnoreRowClick(e.target)) return;
-					if (clickTimer) {
-						clearTimeout(clickTimer);
-						clickTimer = null;
-					}
-
-					clickTimer = setTimeout(async () => {
-						await openFolderHandler();
-						clickTimer = null;
-					}, 100); // 100ms delay (typical double-click threshold)
-				}}
-				on:keydown={(e) => {
-					if (e.currentTarget !== e.target) return;
-					if (e.key === 'Enter' || e.key === ' ') {
-						e.preventDefault();
-						openFolderHandler();
-					}
-				}}
+				on:click|stopPropagation
 			>
 				<button
 					class="text-gray-600 dark:text-gray-400 transition-all p-1 hover:bg-gray-100 dark:hover:bg-gray-900 rounded-lg"
@@ -817,7 +807,9 @@
 					{/if}
 				</button>
 
-				<div class="translate-y-[0.5px] flex min-w-0 flex-1 items-center gap-1.5 pr-6 text-start">
+				<div
+					class="translate-y-[0.5px] flex min-w-0 flex-1 self-stretch items-center gap-1.5 pr-6 text-start"
+				>
 					{#if edit}
 						<input
 							id="folder-{folderId}-input"
@@ -844,32 +836,82 @@
 							class="w-full h-full bg-transparent outline-hidden"
 						/>
 					{:else}
-						<div class="min-w-0 truncate">
-							{folders[folderId].name}
-						</div>
+						<LinkPreview.Root
+							openDelay={300}
+							closeDelay={0}
+							disabled={$mobile || dragged || parentDragged || draggedOver}
+							bind:open={openPreview}
+						>
+							<LinkPreview.Trigger
+								href={`/folders/${folderId}`}
+								draggable="false"
+								class="flex min-w-0 flex-1 self-stretch -my-1 items-center gap-1.5"
+								ondblclick={(e) => {
+									if (!isWritable || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+									if (clickTimer) {
+										clearTimeout(clickTimer); // cancel the single-click action
+										clickTimer = null;
+									}
+									renameHandler();
+								}}
+								onclick={(e) => {
+									openPreview = false;
+									e.stopPropagation();
+									if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+									e.preventDefault();
+									if (clickTimer) {
+										clearTimeout(clickTimer);
+										clickTimer = null;
+									}
 
-						{#if !folders[folderId]?.shared && (folders[folderId]?.unread_count ?? 0) > 0}
-							<div
-								class="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-md bg-sky-500/10 px-1 text-[0.625rem] font-semibold leading-4 text-sky-600 dark:bg-sky-400/10 dark:text-sky-300"
-								title={$i18n.t('Unread')}
+									clickTimer = setTimeout(async () => {
+										await openFolderHandler();
+										clickTimer = null;
+									}, 100); // 100ms delay (typical double-click threshold)
+								}}
+								onkeydown={(e) => {
+									if (e.currentTarget !== e.target) return;
+									if (e.key === ' ' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+										e.preventDefault();
+										openFolderHandler();
+									}
+								}}
 							>
-								{formatUnreadCount(folders[folderId].unread_count)}
-							</div>
-						{/if}
+								<div class="min-w-0 truncate">
+									{folders[folderId].name}
+								</div>
+
+								{#if !folders[folderId]?.shared && (folders[folderId]?.unread_count ?? 0) > 0}
+									<div
+										class="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-md bg-sky-500/10 px-1 text-[0.625rem] font-semibold leading-4 text-sky-600 dark:bg-sky-400/10 dark:text-sky-300"
+										title={$i18n.t('Unread')}
+									>
+										{formatUnreadCount(folders[folderId].unread_count)}
+									</div>
+								{/if}
+							</LinkPreview.Trigger>
+							{#if openPreview}
+								<FolderHoverPreview
+									folder={folders[folderId]}
+									{isWritable}
+									onEdit={() => {
+										openPreview = false;
+										showFolderModal = true;
+									}}
+								/>
+							{/if}
+						</LinkPreview.Root>
 					{/if}
 				</div>
 
 				{#if isWritable}
 					<button
 						class="absolute z-10 right-2 hover-reveal self-center flex items-center dark:text-gray-300"
+						on:pointerdown={() => (openPreview = false)}
 					>
 						<FolderMenu
-							canShare={$user?.role === 'admin' || !folders[folderId]?.shared}
 							onEdit={() => {
 								showFolderModal = true;
-							}}
-							onShare={() => {
-								showShareModal = true;
 							}}
 							onDelete={() => {
 								showDeleteConfirm = true;
@@ -959,6 +1001,7 @@
 							lastReadAt={chat.last_read_at}
 							active={chat.active ?? false}
 							ownerName={chat.owner_name ?? null}
+							participants={chat.participants ?? []}
 							ownerUserId={folders[folderId]?.showOwnerInfo ||
 							folders[folderId]?.shared ||
 							chat.user_id !== $user?.id

@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { getContext, onMount } from 'svelte';
-	const i18n = getContext('i18n');
+	import { getContext } from 'svelte';
+	const i18n = getContext<any>('i18n');
 
-	import { removeMembersById } from '$lib/apis/channels';
+	import { config, user } from '$lib/stores';
+	import type { App } from '$lib/apis/apps';
+	import { removeMembersById, getChannelAppsById, removeAppFromChannel } from '$lib/apis/channels';
 
-	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 
 	import XMark from '$lib/components/icons/XMark.svelte';
@@ -20,6 +21,22 @@
 	export let onUpdate = () => {};
 
 	let showAddMembersModal = false;
+	let joinedApps: App[] = [];
+	$: canManage =
+		channel?.type !== 'dm' &&
+		(channel?.is_manager || $user?.role === 'admin' || channel?.user_id === $user?.id);
+	const updateMembers = async () => {
+		await init();
+		onUpdate();
+	};
+	const removeAppHandler = async (appId: string) => {
+		try {
+			await removeAppFromChannel(localStorage.token, channel.id, appId);
+			await updateMembers();
+		} catch (error) {
+			toast.error(`${error}`);
+		}
+	};
 	const submitHandler = async () => {};
 
 	const hasPublicReadGrant = (grants: any) =>
@@ -57,22 +74,31 @@
 		}
 	};
 
-	const init = () => {};
+	const init = async () => {
+		joinedApps = [];
+		if (show && channel?.type !== 'dm' && $config?.features?.enable_apps) {
+			joinedApps = await getChannelAppsById(localStorage.token, channel.id).catch((error) => {
+				toast.error(`${error}`);
+				return [];
+			});
+		}
+	};
 
 	$: if (show) {
 		init();
 	}
-
-	onMount(() => {
-		init();
-	});
 </script>
 
 {#if channel}
-	<AddMembersModal bind:show={showAddMembersModal} {channel} {onUpdate} />
+	<AddMembersModal
+		bind:show={showAddMembersModal}
+		{channel}
+		{joinedApps}
+		onUpdate={updateMembers}
+	/>
 	<Modal size="sm" bind:show>
-		<div>
-			<div class=" flex justify-between dark:text-gray-100 px-4 pt-3 mb-1">
+		<div class="flex max-h-[calc(100dvh-3rem)] flex-col">
+			<div class="flex shrink-0 justify-between dark:text-gray-100 px-4 pt-3 mb-1">
 				<div class="self-center text-base">
 					<div class="flex items-center gap-0.5 shrink-0">
 						{#if channel?.type === 'dm'}
@@ -104,19 +130,23 @@
 				</button>
 			</div>
 
-			<div class="flex flex-col md:flex-row w-full px-3 pb-4 md:space-x-4 dark:text-gray-200">
-				<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
+			<div
+				class="flex min-h-0 flex-col md:flex-row w-full px-3 pb-4 md:space-x-4 dark:text-gray-200"
+			>
+				<div class="flex min-h-0 flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
 					<form
-						class="flex flex-col w-full"
+						class="flex min-h-0 flex-col w-full"
 						on:submit={(e) => {
 							e.preventDefault();
 							submitHandler();
 						}}
 					>
-						<div class="flex flex-col w-full h-full pb-2">
+						<div class="flex min-h-0 flex-col w-full pb-2">
 							<UserList
 								{channel}
-								onAdd={channel?.type === 'group' && channel?.is_manager
+								apps={joinedApps}
+								onRemoveApp={canManage ? removeAppHandler : null}
+								onAdd={canManage && (channel?.type === 'group' || $config?.features?.enable_apps)
 									? () => {
 											showAddMembersModal = true;
 										}

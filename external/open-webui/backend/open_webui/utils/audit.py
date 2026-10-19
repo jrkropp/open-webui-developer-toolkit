@@ -43,6 +43,7 @@ class AuditLogEntry:
     request_uri: str
     user_agent: Optional[str] = None
     source_ip: Optional[str] = None
+    model_id: Optional[str] = None
     # `Request` audit level properties
     request_object: Any = None
     # `Request Response` level
@@ -254,14 +255,17 @@ class AuditLoggingMiddleware:
         if request.method not in self.audited_methods:
             return True
 
+        if request.url.path.startswith('/ws/socket.io'):
+            return True
+
         path = request.url.path.lower()
         for endpoint in self.ALWAYS_LOG_ENDPOINTS:
             if path.startswith(endpoint):
                 return False  # Do NOT skip logging for auth endpoints
 
         # Skip logging if the request is not authenticated
-        # Check both Authorization header (API keys) and token cookie (browser sessions)
-        if not request.headers.get('authorization') and not request.cookies.get('token'):
+        # Token is set by AppHTTPMiddleware from any accepted credential
+        if not getattr(request.state, 'token', None):
             return True
 
         # Whitelist mode: only log paths that match included_paths
@@ -309,6 +313,7 @@ class AuditLoggingMiddleware:
                 response_status_code=context.metadata.get('response_status_code', None),
                 source_ip=request.client.host if request.client else None,
                 user_agent=request.headers.get('user-agent'),
+                model_id=getattr(request.state, 'model_id', None),
                 request_object=request_body,
                 response_object=response_body,
             )

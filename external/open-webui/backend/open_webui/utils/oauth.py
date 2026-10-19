@@ -1008,6 +1008,12 @@ class OAuthClientManager:
                 ) as resp:
                     if resp.status < 400:
                         return True
+
+                    # Bot challenge pages echo the request URL, so their keywords say nothing about the client
+                    if resp.headers.get('cf-mitigated'):
+                        log.debug('Skipping OAuth preflight for client %s: bot challenge', client_info.client_id)
+                        return True
+
                     response_text = await resp.text()
 
                     error = None
@@ -1180,8 +1186,14 @@ class OAuthClientManager:
             if should_send_oauth_resource(client_info):
                 refresh_data['resource'] = client_info.resource
 
+            client_auth = None
             if hasattr(client, 'client_secret') and client.client_secret:
-                refresh_data['client_secret'] = client.client_secret
+                if client.client_kwargs.get('token_endpoint_auth_method') == 'client_secret_basic':
+                    client_auth = aiohttp.BasicAuth(client.client_id, client.client_secret)
+                    # Some providers reject a body client_id next to Basic as a second credential (#19415)
+                    del refresh_data['client_id']
+                else:
+                    refresh_data['client_secret'] = client.client_secret
 
             # Add scope if available in client kwargs (some providers require it on refresh)
             if (
@@ -1196,6 +1208,7 @@ class OAuthClientManager:
                 async with session_http.post(
                     token_endpoint,
                     data=refresh_data,
+                    auth=client_auth,
                     headers={'Content-Type': 'application/x-www-form-urlencoded'},
                     ssl=AIOHTTP_CLIENT_SESSION_SSL,
                 ) as r:
@@ -1532,9 +1545,15 @@ class OAuthManager:
                 'refresh_token': token_data['refresh_token'],
                 'client_id': client.client_id,
             }
+            client_auth = None
             # Add client_secret if available (some providers require it)
             if hasattr(client, 'client_secret') and client.client_secret:
-                refresh_data['client_secret'] = client.client_secret
+                if client.client_kwargs.get('token_endpoint_auth_method') == 'client_secret_basic':
+                    client_auth = aiohttp.BasicAuth(client.client_id, client.client_secret)
+                    if not OAUTH_ACCESS_TOKEN_REQUEST_INCLUDE_CLIENT_ID:
+                        del refresh_data['client_id']
+                else:
+                    refresh_data['client_secret'] = client.client_secret
 
             # Add scope if available in client kwargs (some providers require it on refresh)
             if (
@@ -1549,6 +1568,7 @@ class OAuthManager:
                 async with session_http.post(
                     token_endpoint,
                     data=refresh_data,
+                    auth=client_auth,
                     headers={'Content-Type': 'application/x-www-form-urlencoded'},
                     ssl=AIOHTTP_CLIENT_SESSION_SSL,
                 ) as r:

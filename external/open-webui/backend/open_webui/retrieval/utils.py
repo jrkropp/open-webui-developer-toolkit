@@ -120,6 +120,9 @@ def _extract_text_from_binary_response(
     if not filename or '.' not in filename:
         ext = mimetypes.guess_extension(content_type) or ''
         filename = f'download{ext}'
+    elif not mimetypes.guess_type(filename)[0] and content_type != 'application/octet-stream':
+        # The dot in names like arXiv's 1706.03762 is not an extension.
+        filename += mimetypes.guess_extension(content_type) or ''
 
     suffix = '.' + filename.split('.')[-1].lower() if '.' in filename else ''
 
@@ -236,7 +239,7 @@ async def get_content_from_url(request, url: str, *, config: dict | None = None)
 
 
 def _get_content_from_url_sync(request, url: str, config: dict):
-    from open_webui.retrieval.web.utils import validate_url, get_ssrf_safe_requests_session
+    from open_webui.retrieval.web.utils import WEB_LOADER_HEADERS, validate_url, get_ssrf_safe_requests_session
 
     # Validate URL before making any request (blocks private IPs, non-HTTP, filter list)
     validate_url(url)
@@ -261,6 +264,9 @@ def _get_content_from_url_sync(request, url: str, config: dict):
     try:
         # Probe through the connect-time SSRF guard; bare requests.get re-resolves (DNS-rebinding gap).
         session = get_ssrf_safe_requests_session()
+        # Match the web loader's request, or sites that block unknown clients make a file look like a web page.
+        session.headers = WEB_LOADER_HEADERS
+        session.verify = config['web.loader.ssl_verification']
         response = session.get(url, stream=True, timeout=30, allow_redirects=AIOHTTP_CLIENT_ALLOW_REDIRECTS)
         response.raise_for_status()
         content_type = response.headers.get('Content-Type', '')
@@ -1318,20 +1324,22 @@ async def filter_accessible_collections(
 
     validated = set()
     for name in safe_names:
-        if name == 'knowledge-bases':
+        # Some vector stores fold case and _/- together, so authorize a name as the collection it can resolve to.
+        canonical = name.lower().replace('_', '-')
+        if canonical == 'knowledge-bases':
             # System meta-collection — never exposed to non-admins.
             continue
-        elif name.startswith('file-'):
-            file_id = name[len('file-') :]
+        elif canonical.startswith('file-'):
+            file_id = canonical[len('file-') :]
             if await has_access_to_file(file_id=file_id, access_type=access_type, user=user):
                 validated.add(name)
-        elif name.startswith('user-memory-'):
-            if name == f'user-memory-{user.id}':
+        elif canonical.startswith('user-memory-'):
+            if canonical == f'user-memory-{user.id}':
                 validated.add(name)
-        elif name.startswith('web-search-'):
+        elif canonical.startswith('web-search-'):
             # Ephemeral per-query collections, owner-bound: process_web_search mints
             # them as web-search-{user.id}-<hash>, so only the creator may read/write.
-            if name.startswith(f'web-search-{user.id}-'):
+            if canonical.startswith(f'web-search-{user.id}-'):
                 validated.add(name)
         else:
             # May be a knowledge-base ID or a legacy/ephemeral collection.
@@ -1340,9 +1348,9 @@ async def filter_accessible_collections(
             # ENABLE_RETRIEVAL_UNSCOPED_COLLECTIONS:
             #   False (default) — deny (closes the unscoped namespace)
             #   True  — allow (preserves legacy behaviour)
-            if await Knowledges.check_access_by_user_id(name, user.id, permission=access_type):
+            if await Knowledges.check_access_by_user_id(canonical, user.id, permission=access_type):
                 validated.add(name)
-            elif ENABLE_RETRIEVAL_UNSCOPED_COLLECTIONS and not await Knowledges.get_knowledge_by_id(name):
+            elif ENABLE_RETRIEVAL_UNSCOPED_COLLECTIONS and not await Knowledges.get_knowledge_by_id(canonical):
                 # Not a KB at all — legacy/ephemeral collection, allow
                 validated.add(name)
     return validated
@@ -1421,7 +1429,7 @@ async def get_sources_from_items(
                     # Fallback to item content
                     query_result = {
                         'documents': [[item.get('content')]],
-                        'metadatas': [[{'file_id': item.get('id'), 'name': item.get('name')}]],
+                        'metadatas': [[{'name': item.get('name')}]],
                     }
 
         elif item.get('type') == 'note':

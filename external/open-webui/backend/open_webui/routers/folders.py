@@ -267,19 +267,22 @@ async def get_shared_folders(
     ]
 
     # Also include child folders of shared folders (inheritance)
-    seen_ids = {folder.id for folder in shared_folders}
+    result_by_id = {folder['id']: folder for folder in results}
     for folder in shared_folders:
         children = await Folders.get_children_folders_by_id_and_user_id(folder.id, folder.user_id, db=db)
         for child in children or []:
-            if child.id not in seen_ids:
-                seen_ids.add(child.id)
-                results.append(
-                    {
-                        **child.model_dump(),
-                        'owner_name': owner_names.get(child.user_id, 'Unknown'),
-                        'permission': 'write' if child.user_id == user.id else folder_perms[folder.id],
-                    }
-                )
+            permission = 'write' if folder.user_id == user.id or child.user_id == user.id else folder_perms[folder.id]
+            if child.id in result_by_id:
+                # A weaker direct grant must not hide inherited write access.
+                if permission == 'write':
+                    result_by_id[child.id]['permission'] = 'write'
+            else:
+                result_by_id[child.id] = {
+                    **child.model_dump(),
+                    'owner_name': owner_names.get(child.user_id, 'Unknown'),
+                    'permission': permission,
+                }
+                results.append(result_by_id[child.id])
 
     return results
 
@@ -629,14 +632,23 @@ async def get_shared_folder_chats(
     )
     total = await Chats.count_all_chats_by_folder_id(id, db=db) if page is not None else len(chats)
 
-    # Resolve owner names for display (avatar URLs are constructed client-side)
-    owner_cache: dict[str, str] = {}
+    participant_ids = await Chats.get_participant_ids_by_chat_ids([chat['id'] for chat in chats], db=db)
+    user_ids = {chat['user_id'] for chat in chats}
+    user_ids.update(uid for ids in participant_ids.values() for uid in ids)
+    users = await Users.get_users_by_user_ids(list(user_ids), db=db) if user_ids else []
+    names = {u.id: u.name for u in users}
     for chat in chats:
         uid = chat['user_id']
-        if uid not in owner_cache:
-            u = await Users.get_user_by_id(uid, db=db)
-            owner_cache[uid] = u.name if u else 'Unknown'
-        chat['owner_name'] = owner_cache[uid]
+        chat['owner_name'] = names.get(uid, 'Unknown')
+        chat['participants'] = sorted(
+            [{'id': author_id, 'name': names.get(author_id)} for author_id in participant_ids[chat['id']]],
+            key=lambda author: (
+                author['id'] != uid,
+                not bool(author['name']),
+                (author['name'] or '').casefold(),
+                author['id'],
+            ),
+        )
         chat['active'] = False
         if chat['user_id'] != user.id:
             chat['last_read_at'] = chat['updated_at']
