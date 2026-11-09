@@ -11,7 +11,7 @@
 
 	import { deleteChatById } from '$lib/apis/chats';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
-	import { formatNumber } from '$lib/utils';
+	import { copyToClipboard, formatNumber } from '$lib/utils';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
@@ -95,7 +95,7 @@
 	}}
 />
 
-<Modal size="lg" bind:show>
+<Modal ariaLabel={title} size="lg" bind:show>
 	<div>
 		<div class=" flex justify-between dark:text-gray-300 px-4 pt-3 pb-1">
 			<div class="flex items-center gap-2 text-sm font-medium self-center">
@@ -112,7 +112,7 @@
 			</div>
 			<button
 				aria-label={$i18n.t('Close')}
-				class="self-center rounded-lg p-1 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+				class="self-center rounded-lg py-1 text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 px-0"
 				on:click={() => {
 					show = false;
 				}}
@@ -153,6 +153,7 @@
 						<input
 							class=" w-full text-sm pr-4 py-1 rounded-r-xl outline-hidden bg-transparent"
 							bind:value={query}
+							aria-label={$i18n.t('Search Chats')}
 							placeholder={$i18n.t('Search Chats')}
 							maxlength="500"
 						/>
@@ -160,7 +161,7 @@
 						{#if query}
 							<div class="self-center pl-1.5 pr-1 translate-y-[0.5px] rounded-l-xl bg-transparent">
 								<button
-									class="p-0.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+									class="py-0.5 rounded-full transition hover:text-gray-900 dark:hover:text-gray-100 text-gray-500 dark:text-gray-400 px-0"
 									aria-label={$i18n.t('Clear search')}
 									on:click={() => {
 										query = '';
@@ -349,13 +350,14 @@
 												{#if unshareHandler && chat.share_id}
 													<Tooltip content={$i18n.t('Copy Share Link')}>
 														<button
+															aria-label={$i18n.t('Copy Share Link')}
 															class="self-center w-fit px-1 text-sm rounded-xl"
 															on:click={async (e) => {
 																e.stopImmediatePropagation();
 																e.stopPropagation();
 																const shareUrl = `${window.location.origin}/s/${chat.share_id}`;
-																await navigator.clipboard.writeText(shareUrl);
-																toast.success($i18n.t('Share link copied to clipboard.'));
+																if (await copyToClipboard(shareUrl))
+																	toast.success($i18n.t('Share link copied to clipboard.'));
 															}}
 														>
 															<Clipboard class="size-4" strokeWidth="1.5" />
@@ -369,6 +371,9 @@
 														: $i18n.t('Delete Chat')}
 												>
 													<button
+														aria-label={unshareHandler
+															? $i18n.t('Unshare Chat')
+															: $i18n.t('Delete Chat')}
 														class="self-center w-fit px-1 text-sm rounded-xl"
 														on:click={async (e) => {
 															e.stopImmediatePropagation();
@@ -479,6 +484,7 @@
 															{#if unarchiveHandler}
 																<Tooltip content={$i18n.t('Unarchive Chat')}>
 																	<button
+																		aria-label={$i18n.t('Unarchive Chat')}
 																		class="self-center w-fit text-sm px-2 py-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
 																		on:click={async () => {
 																			unarchiveHandler(chat.id);
@@ -504,6 +510,7 @@
 
 															<Tooltip content={$i18n.t('Delete Chat')}>
 																<button
+																	aria-label={$i18n.t('Delete Chat')}
 																	class="self-center w-fit text-sm px-2 py-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
 																	on:click={async () => {
 																		deleteHandler(chat.id);

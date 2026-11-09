@@ -68,11 +68,7 @@
 		selectedFeedback = null;
 	};
 
-	//////////////////////
-	//
 	// CRUD operations
-	//
-	//////////////////////
 
 	const getFeedbacks = async () => {
 		try {
@@ -119,6 +115,10 @@
 		});
 		if (response) {
 			toast.success($i18n.t('Feedback deleted successfully'));
+			await loadModelIds();
+			if (!modelIds.includes(selectedModelId)) {
+				selectedModelId = '';
+			}
 			page = 1;
 			getFeedbacks();
 		}

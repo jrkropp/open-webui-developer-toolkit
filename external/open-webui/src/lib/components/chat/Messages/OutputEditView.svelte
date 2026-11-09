@@ -12,6 +12,7 @@
 	import { oneDark } from '@codemirror/theme-one-dark';
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import { isHiddenToolCall } from './structuredOutput';
 
 	const i18n = getContext('i18n');
 
@@ -21,7 +22,7 @@
 	let viewMode: 'visual' | 'json' = 'visual';
 	let jsonError = '';
 
-	// --- CodeMirror ---
+	// CodeMirror
 	let cmContainer: HTMLDivElement;
 	let cmEditor: EditorView | null = null;
 	let editorTheme = new Compartment();
@@ -87,7 +88,7 @@
 
 	onDestroy(() => destroyCodeMirror());
 
-	// --- Display items ---
+	// Display items
 
 	interface DisplayItem {
 		type: 'message' | 'reasoning' | 'function_call' | 'code_interpreter' | 'openai_tool';
@@ -114,6 +115,7 @@
 			} else if (t === 'reasoning') {
 				result.push({ type: 'reasoning', indices: [i], item });
 			} else if (t === 'function_call') {
+				if (isHiddenToolCall(item)) continue;
 				const paired = outputByCallId[item.call_id];
 				result.push({
 					type: 'function_call',
@@ -134,7 +136,7 @@
 
 	$: displayItems = buildDisplayItems(output);
 
-	// --- Helpers ---
+	// Helpers
 
 	function getMessageText(item: any): string {
 		return (item.content ?? [])
@@ -271,8 +273,9 @@
 					<div class="flex-1 min-w-0">
 						{#if di.type === 'message'}
 							<textarea
+								aria-label={$i18n.t('Text')}
 								use:fitContent
-								class="w-full bg-transparent outline-hidden focus-visible:outline-none! resize-none overflow-hidden text-[0.9375rem] p-1.5 rounded-lg"
+								class="w-full bg-transparent outline-hidden focus-visible:outline-none! resize-none overflow-hidden text-[0.90625rem] p-1.5 rounded-lg"
 								value={getMessageText(di.item)}
 								on:input={(e) => {
 									updateMessageText(di.indices[0], e.target.value);
@@ -283,8 +286,9 @@
 							/>
 						{:else if di.type === 'reasoning'}
 							<textarea
+								aria-label={$i18n.t('Thought')}
 								use:fitContent
-								class="w-full bg-transparent outline-hidden focus-visible:outline-none! resize-none overflow-hidden text-[0.9375rem] text-gray-500 dark:text-gray-400 p-1.5 rounded-lg"
+								class="w-full bg-transparent outline-hidden focus-visible:outline-none! resize-none overflow-hidden text-[0.90625rem] text-gray-500 dark:text-gray-400 p-1.5 rounded-lg"
 								value={getReasoningText(di.item)}
 								on:input={(e) => {
 									updateReasoningText(di.indices[0], e.target.value);
@@ -294,7 +298,7 @@
 								rows="1"
 							/>
 						{:else if di.type === 'function_call'}
-							<div class="text-[0.9375rem] p-1.5 text-gray-500 dark:text-gray-400">
+							<div class="text-[0.90625rem] p-1.5 text-gray-500 dark:text-gray-400">
 								{#if di.item.arguments}
 									<pre
 										class="text-xs font-mono whitespace-pre-wrap overflow-x-auto pb-0.5">{formatArgs(
@@ -311,7 +315,7 @@
 								{/if}
 							</div>
 						{:else if di.type === 'code_interpreter'}
-							<div class="text-[0.9375rem] p-1.5 text-gray-500 dark:text-gray-400">
+							<div class="text-[0.90625rem] p-1.5 text-gray-500 dark:text-gray-400">
 								{#if di.item.code}
 									<pre class="text-xs font-mono whitespace-pre overflow-x-auto">{di.item.code}</pre>
 								{/if}
@@ -324,7 +328,7 @@
 								{/if}
 							</div>
 						{:else if di.type === 'openai_tool'}
-							<div class="text-[0.9375rem] p-1.5 text-gray-500 dark:text-gray-400">
+							<div class="text-[0.90625rem] p-1.5 text-gray-500 dark:text-gray-400">
 								{#if di.item.action?.queries || di.item.queries}
 									<span class="text-xs"
 										>{(di.item.action?.queries ?? di.item.queries ?? []).join(', ')}</span

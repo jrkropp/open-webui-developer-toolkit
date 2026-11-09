@@ -40,6 +40,7 @@
 		pdfData instanceof Uint8Array ? pdfData.slice() : pdfData.slice(0);
 
 	const updateLayout = () => {
+		if (rootEl && !rootEl.clientWidth) return;
 		hideThumbs = (rootEl?.clientWidth ?? window.innerWidth) < 720;
 	};
 
@@ -75,7 +76,7 @@
 			pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 			pdfDoc?.destroy();
-			pdfDoc = await pdfjs.getDocument({ data: pdfData }).promise;
+			pdfDoc = await pdfjs.getDocument({ data: pdfData, wasmUrl: '/wasm/' }).promise;
 
 			const rendered: string[] = [];
 			for (let i = 1; i <= pdfDoc.numPages; i++) {
@@ -219,36 +220,37 @@
 </div>
 
 <style>
-	.thumbnail-sidebar {
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar {
 		scrollbar-color: transparent transparent;
 	}
 
-	.thumbnail-sidebar:hover,
-	.thumbnail-sidebar:focus,
-	.thumbnail-sidebar:focus-within,
-	.thumbnail-sidebar:active {
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar:hover,
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar:focus,
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar:focus-within,
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar:active {
 		scrollbar-color: rgba(215, 215, 215, 0.6) transparent;
 	}
 
-	:global(.dark) .thumbnail-sidebar:hover,
-	:global(.dark) .thumbnail-sidebar:focus,
-	:global(.dark) .thumbnail-sidebar:focus-within,
-	:global(.dark) .thumbnail-sidebar:active {
+	:global(:where(html:not(.native-scrollbars)).dark) .thumbnail-sidebar:hover,
+	:global(:where(html:not(.native-scrollbars)).dark) .thumbnail-sidebar:focus,
+	:global(:where(html:not(.native-scrollbars)).dark) .thumbnail-sidebar:focus-within,
+	:global(:where(html:not(.native-scrollbars)).dark) .thumbnail-sidebar:active {
 		scrollbar-color: rgba(67, 67, 67, 0.6) transparent;
 	}
 
-	.thumbnail-sidebar::-webkit-scrollbar-thumb {
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar::-webkit-scrollbar-thumb {
 		visibility: hidden;
 	}
 
-	.thumbnail-sidebar:hover::-webkit-scrollbar-thumb,
-	.thumbnail-sidebar:focus::-webkit-scrollbar-thumb,
-	.thumbnail-sidebar:focus-within::-webkit-scrollbar-thumb,
-	.thumbnail-sidebar:active::-webkit-scrollbar-thumb {
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar:hover::-webkit-scrollbar-thumb,
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar:focus::-webkit-scrollbar-thumb,
+	:global(:where(html:not(.native-scrollbars)))
+		.thumbnail-sidebar:focus-within::-webkit-scrollbar-thumb,
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar:active::-webkit-scrollbar-thumb {
 		visibility: visible;
 	}
 
-	.thumbnail-sidebar::-webkit-scrollbar-corner {
+	:global(:where(html:not(.native-scrollbars))) .thumbnail-sidebar::-webkit-scrollbar-corner {
 		display: none;
 	}
 </style>

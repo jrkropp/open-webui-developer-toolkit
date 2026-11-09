@@ -44,6 +44,7 @@
 
 	let query = '';
 	let searchDebounceTimer: ReturnType<typeof setTimeout>;
+	let searchController: AbortController;
 	let orderBy = 'created_at'; // default sort key
 	let direction = 'asc'; // default sort order
 
@@ -95,15 +96,18 @@
 	};
 
 	const getUserList = async () => {
+		searchController?.abort();
+		searchController = new AbortController();
+		const { signal } = searchController;
 		try {
-			const res = await getUsers(localStorage.token, query, orderBy, direction, page).catch(
+			const res = await getUsers(localStorage.token, query, orderBy, direction, page, signal).catch(
 				(error) => {
 					toast.error(`${error}`);
 					return null;
 				}
 			);
 
-			if (res) {
+			if (res && !signal.aborted) {
 				users = res.users;
 				total = res.total;
 				adminUserCount.set(total);
@@ -114,6 +118,7 @@
 	};
 
 	const handleSearchInput = () => {
+		searchController?.abort();
 		clearTimeout(searchDebounceTimer);
 		searchDebounceTimer = setTimeout(() => {
 			if (page !== 1) {
@@ -129,6 +134,7 @@
 	}
 
 	onDestroy(() => {
+		searchController?.abort();
 		clearTimeout(searchDebounceTimer);
 	});
 </script>
@@ -197,7 +203,7 @@
 				{#if query}
 					<div class="self-center pl-1.5 translate-y-[0.5px] rounded-l-xl bg-transparent">
 						<button
-							class="p-0.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-900 transition"
+							class="py-0.5 rounded-full transition hover:text-gray-900 dark:hover:text-gray-100 text-gray-500 dark:text-gray-400 px-0"
 							aria-label={$i18n.t('Clear search')}
 							on:click={() => {
 								query = '';
@@ -403,12 +409,12 @@
 						<td class="px-3 py-1 min-w-[5rem] w-20">
 							<button
 								class="text-xs font-normal leading-4 capitalize transition {roleClass(user.role)}"
-								aria-label={$i18n.t('Change User Role')}
 								on:click={() => {
 									selectedUser = user;
 									showEditUserModal = !showEditUserModal;
 								}}
 							>
+								<span class="sr-only">{$i18n.t('Change User Role')}</span>
 								{$i18n.t(user.role)}
 							</button>
 						</td>

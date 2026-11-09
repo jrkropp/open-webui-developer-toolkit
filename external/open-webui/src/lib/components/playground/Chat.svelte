@@ -14,7 +14,7 @@
 		WEBUI_API_BASE_URL,
 		WEBUI_BASE_URL
 	} from '$lib/constants';
-	import { WEBUI_NAME, config, user, models, settings } from '$lib/stores';
+	import { baseModels, WEBUI_NAME, config, user, models, settings } from '$lib/stores';
 
 	import { chatCompletion } from '$lib/apis/openai';
 
@@ -93,7 +93,7 @@
 			return;
 		}
 
-		const model = $models.find((model) => model.id === selectedModelId);
+		const model = $baseModels.find((model) => model.id === selectedModelId);
 		if (!model) {
 			selectedModelId = '';
 			return;
@@ -309,18 +309,21 @@
 		}
 
 		selectedModelId =
-			resolveDefaultModelIds($models, $settings?.models, $config?.default_models?.split(','))[0] ??
-			'';
+			resolveDefaultModelIds(
+				$baseModels,
+				$settings?.models,
+				$config?.default_models?.split(',')
+			)[0] ?? '';
 		loaded = true;
 	});
 </script>
 
-<Modal size="sm" bind:show={showControls}>
+<Modal ariaLabel={$i18n.t('Controls')} size="sm" bind:show={showControls}>
 	<div class="text-gray-700 dark:text-gray-100">
 		<div class="flex justify-between px-4 pt-3 pb-1">
 			<div class="text-sm font-medium self-center">{$i18n.t('Controls')}</div>
 			<button
-				class="self-center rounded-lg p-1 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+				class="self-center rounded-lg py-1 text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 px-0"
 				aria-label={$i18n.t('Close')}
 				on:click={() => {
 					showControls = false;
@@ -379,6 +382,7 @@
 								class="w-full h-full bg-transparent resize-none outline-hidden text-sm"
 								bind:value={system}
 								placeholder={$i18n.t("You're a helpful assistant.")}
+								aria-label={$i18n.t('System Instructions')}
 								on:input={() => {
 									resizeSystemTextarea();
 								}}
@@ -457,6 +461,9 @@
 							placeholder={$i18n.t(`Enter {{role}} message here`, {
 								role: role === 'user' ? $i18n.t('a user') : $i18n.t('an assistant')
 							})}
+							aria-label={$i18n.t(`Enter {{role}} message here`, {
+								role: role === 'user' ? $i18n.t('a user') : $i18n.t('an assistant')
+							})}
 							on:input={(e) => {
 								e.target.style.height = '';
 								e.target.style.height = Math.min(e.target.scrollHeight, 150) + 'px';
@@ -503,7 +510,7 @@
 									aria-label={$i18n.t('Model')}
 									bind:value={selectedModelId}
 								>
-									{#each $models as model}
+									{#each $baseModels as model}
 										<option value={model.id} class="bg-gray-50 dark:bg-gray-700"
 											>{model.name}</option
 										>

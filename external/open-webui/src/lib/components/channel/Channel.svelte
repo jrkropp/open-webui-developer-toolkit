@@ -2,7 +2,7 @@
 	import { toast } from 'svelte-sonner';
 
 	import { onDestroy, onMount, tick } from 'svelte';
-	import { goto } from '$app/navigation';
+	import { goto, onNavigate } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { v4 as uuidv4 } from 'uuid';
 	import type { Socket } from 'socket.io-client';
@@ -87,7 +87,8 @@
 
 	let scrollEnd = true;
 	let messagesContainerElement = null;
-	let chatInputElement = null;
+	let chatInputElement: { focus: () => void } | null = null;
+	let threadChatInputElement = null;
 
 	let top = false;
 
@@ -96,6 +97,13 @@
 
 	let replyToMessage = null;
 	let threadId: any = null;
+
+	onNavigate(({ from, to }) => {
+		if (from?.url.pathname !== to.url.pathname) {
+			threadId = null;
+			return tick();
+		}
+	});
 
 	let typingUsers = [];
 	let typingUsersTimeout = {};
@@ -140,6 +148,17 @@
 		);
 	};
 
+	let threadTrigger: HTMLButtonElement | null = null;
+	const closeThread = async () => {
+		const trigger = threadTrigger;
+		threadTrigger = null;
+		threadId = null;
+		await tick();
+		if (document.activeElement === document.body) {
+			(trigger?.isConnected ? trigger : chatInputElement)?.focus();
+		}
+	};
+
 	const pinHandler = (
 		messageId: string,
 		pinned: boolean,
@@ -179,12 +198,14 @@
 		typingUsers = [];
 		typingUsersTimeout = {};
 
+		const messagesRequest = getChannelMessages(localStorage.token, id, 0).catch(() => null);
+
 		channel = await getChannelById(localStorage.token, id).catch((error) => {
 			return null;
 		});
 
 		if (channel) {
-			messages = await getChannelMessages(localStorage.token, id, 0);
+			messages = await messagesRequest;
 
 			if (messages) {
 				scrollToBottom();
@@ -204,6 +225,10 @@
 			const data = event?.data?.data ?? null;
 
 			if (type === 'message') {
+				if (document.visibilityState === 'visible') {
+					updateLastReadAt(id);
+				}
+
 				if ((data?.parent_id ?? null) === null) {
 					const idx = (messages ?? []).findIndex(
 						(message) =>
@@ -373,7 +398,7 @@
 
 		$socket?.on('events:channel', channelEventHandler);
 
-		mediaQuery = window.matchMedia('(min-width: 1024px)');
+		mediaQuery = window.matchMedia('(min-width: 768px)');
 
 		mediaQuery.addEventListener('change', handleMediaQuery);
 		handleMediaQuery(mediaQuery);
@@ -416,7 +441,7 @@
 <div
 	class="h-screen max-h-[100dvh] transition-width duration-200 ease-in-out {$showSidebar
 		? 'md:max-w-[calc(100%-var(--sidebar-width))]'
-		: ''} w-full max-w-full flex flex-col"
+		: ''} w-full max-w-full min-w-0 flex flex-col"
 	id="channel-container"
 >
 	<div class="w-full h-full flex">
@@ -475,8 +500,11 @@
 									await tick();
 									chatInputElement?.focus();
 								}}
-								onThread={(id) => {
+								onThread={async (id: string, trigger: HTMLButtonElement) => {
+									threadTrigger = trigger;
 									threadId = id;
+									await tick();
+									threadChatInputElement?.focus();
 								}}
 								onPin={pinHandler}
 								onLoad={async () => {
@@ -529,20 +557,14 @@
 
 		{#if !largeScreen}
 			{#if threadId !== null}
-				<Drawer
-					show={threadId !== null}
-					onClose={() => {
-						threadId = null;
-					}}
-				>
+				<Drawer show={threadId !== null} ariaLabel={$i18n.t('Thread')} onClose={closeThread}>
 					<div class=" {threadId !== null ? ' h-screen  w-full' : 'px-6 py-4'} h-full">
 						<Thread
 							{threadId}
 							{channel}
+							bind:chatInputElement={threadChatInputElement}
 							onPin={pinHandler}
-							onClose={() => {
-								threadId = null;
-							}}
+							onClose={closeThread}
 						/>
 					</div>
 				</Drawer>
@@ -553,16 +575,16 @@
 				bind:width={threadPanelWidth}
 				minWidth={320}
 				maxWidth={640}
+				minSiblingWidth={360}
 				className="h-full"
 			>
 				<div class="h-full w-full border-l border-gray-100/60 dark:border-gray-800/40">
 					<Thread
 						{threadId}
 						{channel}
+						bind:chatInputElement={threadChatInputElement}
 						onPin={pinHandler}
-						onClose={() => {
-							threadId = null;
-						}}
+						onClose={closeThread}
 					/>
 				</div>
 			</ResizableSidePanel>

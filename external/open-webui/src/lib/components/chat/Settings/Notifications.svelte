@@ -2,13 +2,22 @@
 	import UserSettingRow from './UserSettingRow.svelte';
 	import { canUseNotificationTargets } from '$lib/utils/settings-access';
 	import { getContext, onMount } from 'svelte';
+	import {
+		playNotificationSound,
+		setNotificationSoundEnabled,
+		notificationSoundStyles,
+		unlockNotificationAudio,
+		type NotificationSoundStyle
+	} from '$lib/utils/audio';
 	import type { Writable } from 'svelte/store';
 	import { toast } from 'svelte-sonner';
 
 	import { config, settings, user } from '$lib/stores';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Switch from '$lib/components/common/Switch.svelte';
+	import SettingsSelect from '$lib/components/common/SettingsSelect.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
+	import Play from '$lib/components/icons/Play.svelte';
 	import {
 		createNotificationTarget,
 		deleteNotificationTarget,
@@ -26,6 +35,15 @@
 
 	let notificationEnabled = false;
 	let notificationSound = true;
+	let notificationSoundType: NotificationSoundStyle = 'chime';
+	const previewSound = async () => {
+		if (!notificationSound) return;
+		setNotificationSoundEnabled(true);
+		if (!(await playNotificationSound(notificationSoundType))) {
+			toast.error($i18n.t('Unable to play notification sound.'));
+			return;
+		}
+	};
 	let targets: NotificationTarget[] = [];
 	// Keep dynamically translated event keys visible to i18next-parser.
 	// $i18n.t('Chat finished'); $i18n.t('A chat run finished successfully.');
@@ -188,6 +206,8 @@
 	onMount(async () => {
 		notificationEnabled = $settings.notificationEnabled ?? false;
 		notificationSound = $settings?.notificationSound ?? true;
+		const savedSound = $settings?.notificationSoundType ?? 'chime';
+		notificationSoundType = notificationSoundStyles.includes(savedSound) ? savedSound : 'chime';
 	});
 </script>
 
@@ -213,7 +233,10 @@
 				{$i18n.t('Allow browser notifications for completed responses.')}
 			</p>
 
-			<UserSettingRow let:labelId>
+			<UserSettingRow
+				description={$i18n.t('settings.personal.notifications.notificationSound.description')}
+				let:labelId
+			>
 				<span slot="label">
 					{$i18n.t('settings.personal.notifications.notificationSound.label')}
 				</span>
@@ -222,10 +245,45 @@
 					bind:state={notificationSound}
 					ariaLabel={$i18n.t('settings.personal.notifications.notificationSound.label')}
 					on:change={() => {
+						setNotificationSoundEnabled(notificationSound);
+						if (notificationSound) void unlockNotificationAudio();
 						saveSettings({ notificationSound });
 					}}
 				/>
 			</UserSettingRow>
+
+			{#if notificationSound}
+				<UserSettingRow
+					label={$i18n.t('settings.personal.notifications.soundStyle.label')}
+					description={$i18n.t('settings.personal.notifications.soundStyle.description')}
+					let:labelId
+				>
+					<div class="flex items-center gap-2">
+						<SettingsSelect
+							id={`${labelId}-control`}
+							aria-labelledby={labelId}
+							bind:value={notificationSoundType}
+							on:change={() => {
+								saveSettings({ notificationSoundType });
+							}}
+						>
+							<option value="chime">{$i18n.t('Chime')}</option>
+							<option value="soft">{$i18n.t('Soft')}</option>
+							<option value="bell">{$i18n.t('Bell')}</option>
+							<option value="tap">{$i18n.t('Tap')}</option>
+						</SettingsSelect>
+						<button
+							type="button"
+							class="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg text-gray-400 transition-colors duration-75 hover:text-gray-700 dark:text-gray-600 dark:hover:text-gray-300"
+							aria-label={$i18n.t('Preview notification sound')}
+							title={$i18n.t('Preview notification sound')}
+							on:click={previewSound}
+						>
+							<Play className="size-3.5" strokeWidth="2" />
+						</button>
+					</div>
+				</UserSettingRow>
+			{/if}
 
 			{#if canUseWebhooks}
 				<div class="mt-3 flex items-center justify-between">
@@ -350,7 +408,13 @@
 	</div>
 </div>
 
-<Modal size="sm" bind:show={formOpen}>
+<Modal
+	ariaLabel={editingId
+		? $i18n.t('Edit')
+		: $i18n.t('settings.personal.notifications.addNotificationTarget.label')}
+	size="sm"
+	bind:show={formOpen}
+>
 	<div class="p-4">
 		<h2 class="mb-3 text-sm font-medium text-gray-900 dark:text-white">
 			{editingId
@@ -358,10 +422,14 @@
 				: $i18n.t('settings.personal.notifications.addNotificationTarget.label')}
 		</h2>
 
-		<div class="text-[0.625rem] text-gray-400 dark:text-gray-600">
+		<label
+			for="notification-form-id"
+			class="block text-[0.625rem] text-gray-400 dark:text-gray-600"
+		>
 			{$i18n.t('Target ID for notify')}
-		</div>
+		</label>
 		<input
+			id="notification-form-id"
 			bind:value={form.id}
 			placeholder={$i18n.t('Target ID')}
 			autocomplete="off"
@@ -369,10 +437,14 @@
 			class="block w-full bg-transparent py-0.5 font-mono text-[0.8125rem] text-gray-700 outline-none placeholder:text-gray-300 dark:text-gray-300 dark:placeholder:text-gray-700"
 		/>
 
-		<div class="mt-2 text-[0.625rem] text-gray-400 dark:text-gray-600">
+		<label
+			for="notification-form-url"
+			class="block mt-2 text-[0.625rem] text-gray-400 dark:text-gray-600"
+		>
 			{$i18n.t('Webhook')}
-		</div>
+		</label>
 		<input
+			id="notification-form-url"
 			type="url"
 			bind:value={form.url}
 			placeholder={editingId

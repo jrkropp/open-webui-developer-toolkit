@@ -14,6 +14,7 @@
 	export let terminalUrl: string;
 	export let terminalKey: string;
 	export let sessionId: string | undefined = undefined;
+	export let sideOffset = 12;
 
 	let loading = true;
 	let fileContent: string | null = null;
@@ -21,6 +22,7 @@
 	let fileVideoUrl: string | null = null;
 	let fileAudioUrl: string | null = null;
 	let fileSqliteData: ArrayBuffer | null = null;
+	let fileModelData: ArrayBuffer | null = null;
 	let disposed = false;
 	const controller = new AbortController();
 	const documentPreview = supportsComments(path);
@@ -38,9 +40,10 @@
 		const isAudio = ['mp3', 'wav', 'ogg', 'oga', 'flac', 'm4a', 'aac', 'wma', 'opus'].includes(
 			extension
 		);
+		const isModel = ['glb', 'gltf', 'stl', 'obj', 'ply'].includes(extension);
 		const isSqlite = ['db', 'sqlite', 'sqlite3', 'db3'].includes(extension);
 		try {
-			if (isImage || isVideo || isAudio || isSqlite) {
+			if (isImage || isVideo || isAudio || isSqlite || isModel) {
 				const result = await downloadFileBlob(
 					terminalUrl,
 					terminalKey,
@@ -49,9 +52,12 @@
 					controller.signal
 				);
 				if (!result || disposed) return;
-				if (isSqlite) {
+				if (isSqlite || isModel) {
 					const bytes = await result.blob.arrayBuffer();
-					if (!disposed) fileSqliteData = bytes;
+					if (!disposed) {
+						if (isModel) fileModelData = bytes;
+						else fileSqliteData = bytes;
+					}
 				} else {
 					const url = URL.createObjectURL(result.blob);
 					if (isImage) fileImageUrl = url;
@@ -83,7 +89,7 @@
 		class="z-[9999] hidden w-[20rem] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl bg-white shadow-[0_16px_40px_-28px_rgba(0,0,0,0.55)] ring-1 ring-black/5 md:block dark:bg-gray-850 dark:text-white dark:ring-white/10"
 		side="top"
 		align="center"
-		sideOffset={12}
+		{sideOffset}
 		aria-label={$i18n.t('File preview')}
 	>
 		<div
@@ -100,7 +106,7 @@
 			{/if}
 		</div>
 		<div
-			class="h-60 max-h-[calc(100dvh-6rem)] overflow-hidden text-xs [&_.document-markdown]:!p-2 [&_.document-markdown_h1]:!text-sm [&_.document-markdown_h2]:!text-xs [&_.document-markdown_h3]:!text-xs [&_.document-markdown]:!text-xs [&_.cm-editor]:!text-[0.6875rem] [&_pre]:!text-[0.6875rem]"
+			class="h-60 max-h-[calc(100dvh-6rem)] overflow-hidden text-xs [&_.document-markdown]:!p-2 [&_.document-markdown_h1]:!text-sm [&_.document-markdown_h2]:!text-xs [&_.document-markdown_h3]:!text-xs [&_.document-markdown]:!text-[0.8125rem] [&_.cm-editor]:!text-[0.6875rem] [&_pre]:!text-[0.6875rem]"
 		>
 			{#if documentPreview && withinPreviewLimit}
 				<CommentFilePreview
@@ -109,7 +115,7 @@
 					apiKey={terminalKey}
 					chatId={sessionId ?? null}
 				/>
-			{:else if loading || fileContent !== null || fileImageUrl || fileVideoUrl || fileAudioUrl || fileSqliteData}
+			{:else if loading || fileContent !== null || fileImageUrl || fileVideoUrl || fileAudioUrl || fileSqliteData || fileModelData}
 				<FilePreview
 					selectedFile={path}
 					fileLoading={loading}
@@ -118,6 +124,7 @@
 					{fileVideoUrl}
 					{fileAudioUrl}
 					{fileSqliteData}
+					{fileModelData}
 					baseUrl={terminalUrl}
 					apiKey={terminalKey}
 					chatId={sessionId ?? null}

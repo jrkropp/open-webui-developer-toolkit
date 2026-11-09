@@ -13,6 +13,7 @@
 	import CheckCircle from '$lib/components/icons/CheckCircle.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
+	import MCPApp, { type MCPAppEmbed } from '$lib/components/chat/Messages/MCPApp.svelte';
 
 	import { settings } from '$lib/stores';
 
@@ -25,6 +26,8 @@
 		attributes?: {
 			type?: string;
 			name?: string;
+			display_label?: string;
+			running_label?: string;
 			done?: string;
 			id?: string;
 			status?: string;
@@ -127,7 +130,7 @@
 	$: allEmbeds = (() => {
 		if (!allowEmbeds) return [];
 
-		const result: Array<{ name: string; embed: string; args: string }> = [];
+		const result: Array<{ name: string; embed: string | MCPAppEmbed; args: string }> = [];
 		for (const t of tokens) {
 			if (t?.attributes?.type !== 'tool_calls') continue;
 			const raw = decode(t.attributes?.embeds ?? '');
@@ -179,6 +182,28 @@
 	})();
 
 	$: prefixText = hasActiveDetails ? $i18n.t('Exploring') : $i18n.t('Explored');
+	$: toolLabels = tokens
+		.filter((token) => token.attributes?.type === 'tool_calls')
+		.map((token) =>
+			['pending', 'queued', 'requires_approval', 'incomplete'].includes(
+				token.attributes?.status ?? ''
+			)
+				? ''
+				: token.attributes?.done === 'true'
+					? token.attributes?.display_label
+					: token.attributes?.running_label
+		);
+	$: toolNames = tokens
+		.filter((token) => token.attributes?.type === 'tool_calls')
+		.map((token) => token.attributes?.name ?? 'tool');
+	$: groupLabel =
+		!hasRejected &&
+		!hasError &&
+		pendingToolTokens.length === 0 &&
+		codeInterpreterCount === 0 &&
+		toolLabels.some(Boolean)
+			? toolLabels.map((label, index) => label || toolNames[index]).join(', ')
+			: '';
 </script>
 
 <div {id} class="w-full min-w-0">
@@ -188,7 +213,7 @@
 			tabindex="0"
 			class="flex-1 min-w-0 py-0.5 text-left {compactPreview
 				? 'text-xs'
-				: 'text-[0.9375rem]'} text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition cursor-pointer"
+				: 'text-[0.90625rem]'} text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition cursor-pointer"
 			aria-label={$i18n.t('Toggle details')}
 			aria-expanded={open}
 			on:click={() => {
@@ -227,11 +252,18 @@
 
 				<!-- Summary text -->
 				<div class="flex-1 line-clamp-1">
-					<span class="text-gray-600 dark:text-gray-300 {hasActiveDetails ? 'shimmer' : ''}"
-						>{prefixText}</span
-					>
-					{#if summaryText}
-						<span class="text-gray-400 dark:text-gray-500">{summaryText}</span>
+					{#if groupLabel}
+						<span
+							class="text-gray-400 dark:text-gray-500 {hasActiveDetails ? 'shimmer' : ''}"
+							title={`${prefixText} ${summaryText}`}>{groupLabel}</span
+						>
+					{:else}
+						<span class="text-gray-600 dark:text-gray-300 {hasActiveDetails ? 'shimmer' : ''}"
+							>{prefixText}</span
+						>
+						{#if summaryText}
+							<span class="text-gray-400 dark:text-gray-500">{summaryText}</span>
+						{/if}
 					{/if}
 				</div>
 
@@ -313,14 +345,18 @@
 	{#if allEmbeds.length > 0}
 		{#each allEmbeds as embedItem, idx}
 			<div id={`${id}-embed-${idx}`}>
-				<FullHeightIframe
-					src={embedItem.embed}
-					args={embedItem.args}
-					allowScripts={true}
-					allowForms={$settings?.iframeSandboxAllowForms ?? false}
-					allowSameOrigin={$settings?.iframeSandboxAllowSameOrigin ?? false}
-					allowPopups={true}
-				/>
+				{#if typeof embedItem.embed === 'object' && embedItem.embed?.type === 'mcp_app'}
+					{#key JSON.stringify(embedItem.embed)}<MCPApp app={embedItem.embed} />{/key}
+				{:else if typeof embedItem.embed === 'string'}
+					<FullHeightIframe
+						src={embedItem.embed}
+						args={embedItem.args}
+						allowScripts={true}
+						allowForms={$settings?.iframeSandboxAllowForms ?? false}
+						allowSameOrigin={$settings?.iframeSandboxAllowSameOrigin ?? false}
+						allowPopups={true}
+					/>
+				{/if}
 			</div>
 		{/each}
 	{/if}

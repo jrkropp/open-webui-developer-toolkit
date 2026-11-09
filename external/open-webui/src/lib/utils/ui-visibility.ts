@@ -38,6 +38,7 @@ export const CONTROL_LABELS = {
 	'model_editor.tools.calendar': 'settings.admin.models.builtinTools.calendar.label',
 	'model_editor.tools.subagents': 'settings.admin.models.builtinTools.subagents.label',
 	'model_editor.tools.skills': 'settings.admin.models.builtinTools.skills.label',
+	'model_editor.tools.tools': 'settings.admin.models.builtinTools.tools.label',
 	'chat.capture': 'Capture',
 	'chat.compare': 'Compare text',
 	'chat.attach_webpage': 'Attach Webpage',
@@ -45,6 +46,13 @@ export const CONTROL_LABELS = {
 	'chat.attach_notes': 'Attach Notes',
 	'chat.attach_knowledge': 'Attach Knowledge',
 	'chat.reference_chats': 'Reference Chats',
+	// Extraction hints: these keys are translated through CONTROL_LABELS[id].
+	// t('settings.admin.interface.visibility.selectedTools.label')
+	// t('settings.admin.interface.visibility.selectedSkills.label')
+	// t('settings.admin.interface.visibility.selectedFilters.label')
+	// t('settings.admin.interface.visibility.selectedWebSearch.label')
+	// t('settings.admin.interface.visibility.selectedImageGeneration.label')
+	// t('settings.admin.interface.visibility.selectedCodeInterpreter.label')
 	'chat.selected_tools': 'settings.admin.interface.visibility.selectedTools.label',
 	'chat.selected_skills': 'settings.admin.interface.visibility.selectedSkills.label',
 	'chat.selected_filters': 'settings.admin.interface.visibility.selectedFilters.label',

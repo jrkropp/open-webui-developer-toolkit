@@ -9,6 +9,7 @@
 	import type { FileEntry } from '$lib/apis/terminal';
 
 	import FileNavToolbar from './FileNav/FileNavToolbar.svelte';
+	import FilesOverlay from './MessageInput/FilesOverlay.svelte';
 	import FileEntryRow from './FileNav/FileEntryRow.svelte';
 	import FilePreview from './FileNav/FilePreview.svelte';
 	import ConfirmDialog from '../common/ConfirmDialog.svelte';
@@ -20,7 +21,7 @@
 
 	export let overlay = false;
 
-	// ── State ─────────────────────────────────────────────────────────────
+	// State
 	let currentPath = savedPyodidePath;
 	let entries: FileEntry[] = [];
 	let loading = false;
@@ -44,7 +45,7 @@
 	let newFileName = '';
 	let newFileInput: HTMLInputElement;
 
-	// ── Navigation history ──────────────────────────────────────────────────
+	// Navigation history
 	type NavEntry = { path: string; file: string | null };
 	let navHistory: NavEntry[] = [];
 	let navIndex = -1;
@@ -95,7 +96,7 @@
 	const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'ico', 'avif']);
 	const isImage = (path: string) => IMAGE_EXTS.has(path.split('.').pop()?.toLowerCase() ?? '');
 
-	// ── Worker management ─────────────────────────────────────────────────
+	// Worker management
 
 	function ensureWorker(): Worker {
 		let worker = $pyodideWorker;
@@ -127,7 +128,7 @@
 		});
 	}
 
-	// ── Breadcrumbs ───────────────────────────────────────────────────────
+	// Breadcrumbs
 
 	const buildBreadcrumbs = (path: string) => {
 		const parts = path.split('/').filter(Boolean);
@@ -143,7 +144,7 @@
 
 	$: breadcrumbs = buildBreadcrumbs(currentPath);
 
-	// ── Operations ────────────────────────────────────────────────────────
+	// Operations
 
 	const loadDir = async (path: string) => {
 		loading = true;
@@ -309,7 +310,7 @@
 		await loadDir(currentPath);
 	};
 
-	// ── Drag and drop ─────────────────────────────────────────────────────
+	// Drag and drop
 
 	const handleDragOver = (e: DragEvent) => {
 		if (selectedFile) return;
@@ -328,7 +329,7 @@
 		if (droppedFiles.length) await uploadFiles(droppedFiles);
 	};
 
-	// ── Lifecycle ─────────────────────────────────────────────────────────
+	// Lifecycle
 
 	const onFilesChanged = async () => {
 		try {
@@ -363,27 +364,8 @@
 	role="region"
 	aria-label={$i18n.t('Pyodide file browser')}
 >
-	{#if isDragOver}
-		<div
-			class="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/80 dark:bg-gray-850/80 backdrop-blur-sm pointer-events-none gap-1.5"
-		>
-			<svg
-				xmlns="http://www.w3.org/2000/svg"
-				viewBox="0 0 24 24"
-				fill="none"
-				stroke="currentColor"
-				stroke-width="1.5"
-				class="size-5 text-gray-400 dark:text-gray-500"
-			>
-				<path
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"
-				/>
-			</svg>
-			<span class="text-xs text-gray-400 dark:text-gray-500">{$i18n.t('Drop files here')}</span>
-		</div>
-	{/if}
+	<!-- Retired upload hint: keep its translation. {$i18n.t('Drop files here')} -->
+	<FilesOverlay show={isDragOver} />
 
 	{#if overlay}
 		<div class="absolute inset-0 z-10 pointer-events-none" />
@@ -446,14 +428,16 @@
 				<Spinner className="size-4" />
 			</div>
 		{:else if error}
-			<div class="flex items-center justify-center flex-1 p-6">
-				<div class="text-xs text-red-500">{error}</div>
+			<div class="flex items-center justify-center flex-1 p-6 text-center">
+				<div class="text-xs text-gray-500 dark:text-gray-400">{error}</div>
 			</div>
 		{:else if entries.length === 0 && !creatingFolder && !creatingFile}
-			<div class="flex flex-col items-center justify-center flex-1 p-6 text-center gap-2">
-				<Folder className="size-5 text-gray-300 dark:text-gray-600" />
+			<div class="flex flex-1 items-center justify-center p-6 text-center">
 				<div class="text-xs text-gray-400 dark:text-gray-500">
+					<!-- Retired empty state: keep its translation.
 					{$i18n.t('No files yet. Upload files or run Python code to create them.')}
+					-->
+					{$i18n.t('This folder is empty')}
 				</div>
 			</div>
 		{/if}

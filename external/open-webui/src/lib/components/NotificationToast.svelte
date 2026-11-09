@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { WEBUI_BASE_URL } from '$lib/constants';
-	import { settings, playingNotificationSound, isLastActiveTab } from '$lib/stores';
+	import { settings, isLastActiveTab } from '$lib/stores';
+	import { playNotificationSound } from '$lib/utils/audio';
 	import DOMPurify from 'dompurify';
 	import { marked } from 'marked';
 
@@ -14,6 +15,7 @@
 	export let onClick: Function = () => {};
 	export let title: string = 'HI';
 	export let content: string;
+	export let playSound = true;
 
 	let startX = 0,
 		startY = 0;
@@ -66,20 +68,8 @@
 	}
 
 	onMount(() => {
-		if (!navigator.userActivation.hasBeenActive) {
-			return;
-		}
-
-		if ($settings?.notificationSound ?? true) {
-			if (!$playingNotificationSound && $isLastActiveTab) {
-				playingNotificationSound.set(true);
-
-				const audio = new Audio(`/audio/notification.mp3`);
-				audio.play().finally(() => {
-					// Ensure the global state is reset after the sound finishes
-					playingNotificationSound.set(false);
-				});
-			}
+		if (playSound && ($settings?.notificationSound ?? true) && $isLastActiveTab) {
+			void playNotificationSound($settings?.notificationSoundType);
 		}
 	});
 </script>
@@ -94,6 +84,7 @@
 	on:pointerup={onPointerUp}
 	on:pointercancel={() => (moved = true)}
 	on:keydown={(e) => {
+		if (e.target !== e.currentTarget) return;
 		if (e.key === 'Enter' || e.key === ' ') {
 			e.preventDefault();
 			clickHandler();
@@ -103,7 +94,7 @@
 	<!-- Close button (visible on hover) -->
 	<button
 		bind:this={closeButtonElement}
-		class="absolute -top-0.5 -left-0.5 p-0.5 rounded-full opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity z-10"
+		class="absolute -top-0.5 -left-0.5 py-0.5 rounded-full opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-opacity z-10 px-0"
 		on:click|stopPropagation={closeHandler}
 		aria-label={$i18n.t('Dismiss notification')}
 	>

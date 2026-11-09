@@ -12,6 +12,7 @@
 	export let selectedModels = [''];
 	export let onModelSelect: (models: string[]) => void = () => {};
 	export let disabled = false;
+	export let multipleEnabled = true;
 
 	export let showSetDefault = true;
 	export let triggerClassName = 'text-lg';
@@ -48,7 +49,7 @@
 
 	$: if (selectedModels.length > 0 && $models.length > 0) {
 		const _selectedModels = selectedModels.map((model) =>
-			$models.map((m) => m.id).includes(model) ? model : ''
+			model.startsWith('agent:') || $models.map((m) => m.id).includes(model) ? model : ''
 		);
 
 		if (!equal(_selectedModels, selectedModels)) {
@@ -81,8 +82,8 @@
 					{align}
 					{showSetDefault}
 					onSetDefault={saveDefaultModel}
-					multipleEnabled={$user?.role === 'admin' ||
-						($user?.permissions?.chat?.multiple_models ?? true)}
+					multipleEnabled={multipleEnabled &&
+						($user?.role === 'admin' || ($user?.permissions?.chat?.multiple_models ?? true))}
 					{disabled}
 					bind:compareEnabled={compareModels}
 					bind:values={selectedModels}

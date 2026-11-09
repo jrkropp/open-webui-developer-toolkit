@@ -18,6 +18,8 @@
 	import ChannelInfoModal from './ChannelInfoModal.svelte';
 	import Users from '../icons/Users.svelte';
 	import Pin from '../icons/Pin.svelte';
+	import Search from '../icons/Search.svelte';
+	import SearchModal from '../layout/SearchModal.svelte';
 	import PinnedMessagesModal from './PinnedMessagesModal.svelte';
 	import ChannelMenu from './ChannelMenu.svelte';
 
@@ -25,6 +27,7 @@
 
 	let showChannelPinnedMessagesModal = false;
 	let showChannelInfoModal = false;
+	let showChannelSearchModal = false;
 
 	const hasPublicReadGrant = (grants: any) =>
 		Array.isArray(grants) &&
@@ -53,10 +56,19 @@
 </script>
 
 {#if !readOnly}
+	{#if showChannelSearchModal}
+		<SearchModal
+			bind:show={showChannelSearchModal}
+			kind="message"
+			scope={`channel:${channel.id}`}
+		/>
+	{/if}
 	<PinnedMessagesModal bind:show={showChannelPinnedMessagesModal} {channel} {onPin} />
 	<ChannelInfoModal bind:show={showChannelInfoModal} {channel} {onUpdate} />
 {/if}
-<nav class="sticky top-0 z-30 w-full px-3 py-1 -mb-8 flex items-center drag-region flex-col">
+<nav
+	class="sticky top-0 z-30 w-full px-1.5 md:px-3 py-1 -mb-8 flex items-center drag-region flex-col"
+>
 	<div
 		id="navbar-bg-gradient-to-b"
 		class=" bg-linear-to-b via-50% from-white via-white to-transparent dark:from-gray-900 dark:via-gray-900 dark:to-transparent pointer-events-none absolute inset-0 -bottom-7 z-[-1]"
@@ -68,7 +80,7 @@
 				<div
 					class="{$showSidebar
 						? 'md:hidden'
-						: ''} col-start-1 row-start-1 mr-1.5 mt-0.5 self-center flex flex-none items-center text-gray-600 dark:text-gray-400"
+						: ''} col-start-1 row-start-1 mr-1.5 self-start flex flex-none items-center text-gray-600 dark:text-gray-400"
 				>
 					<Tooltip
 						content={$showSidebar ? $i18n.t('Close Sidebar') : $i18n.t('Open Sidebar')}
@@ -131,15 +143,15 @@
 						{:else}
 							<div class=" size-4 shrink-0 justify-center flex items-center">
 								{#if isPublicChannel(channel)}
-									<Hashtag className="size-4" strokeWidth="1.5" />
+									<Hashtag className="size-3.5" strokeWidth="1.5" />
 								{:else}
-									<Lock className="size-4" strokeWidth="1.5" />
+									<Lock className="size-3.5" strokeWidth="1.5" />
 								{/if}
 							</div>
 						{/if}
 
 						<div
-							class=" min-w-0 truncate text-left text-sm font-medium leading-5 text-gray-700 dark:text-gray-300"
+							class=" min-w-0 truncate text-left text-sm leading-5 text-gray-700 dark:text-gray-300"
 						>
 							{#if channel?.name}
 								{channel.name}
@@ -170,7 +182,7 @@
 								}}
 							>
 								<div class=" flex items-center gap-1 m-auto self-center shrink-0">
-									<Pin className=" size-4" strokeWidth="1.5" />
+									<Pin className=" size-3.5" strokeWidth="1.5" />
 								</div>
 							</button>
 						</Tooltip>
@@ -195,6 +207,19 @@
 								</button>
 							</Tooltip>
 						{/if}
+						<Tooltip content={$i18n.t('Search')}>
+							<button
+								class=" flex size-7 items-center justify-center cursor-pointer rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
+								aria-label={$i18n.t('Search')}
+								type="button"
+								on:click={() => {
+									showChannelSearchModal = true;
+								}}
+							>
+								<Search className="size-3.5" strokeWidth="1.5" />
+							</button>
+						</Tooltip>
+
 						<ChannelMenu {channel} />
 					{/if}
 				</slot>

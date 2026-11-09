@@ -86,6 +86,7 @@
 				...adminConfig,
 				SKILL_CONTENT_MAX_CHARS: adminConfig.SKILL_CONTENT_MAX_CHARS ?? null,
 				SKILL_PREVIEW_MAX_CHARS: adminConfig.SKILL_PREVIEW_MAX_CHARS ?? null,
+				VIEW_CHAT_MAX_CHARS: adminConfig.VIEW_CHAT_MAX_CHARS ?? null,
 				DEFAULT_INTERFACE_SETTINGS: defaultInterfaceSettings,
 				I18N: cleaned
 			});
@@ -308,8 +309,10 @@
 					<AdminSettingField
 						label={$i18n.t('settings.admin.general.folderMaxFileCount.label')}
 						description={$i18n.t('settings.admin.general.folderMaxFileCount.description')}
+						forId="folder-max-file-count"
 					>
 						<input
+							id="folder-max-file-count"
 							class={inputClass}
 							type="number"
 							min="0"
@@ -376,12 +379,41 @@
 						bind:value={adminConfig.SKILL_PREVIEW_MAX_CHARS}
 					/>
 				</AdminSettingField>
+				<AdminSettingField
+					forId="view-chat-max-chars"
+					label={$i18n.t('settings.admin.general.viewChatMaxChars.label')}
+					description={$i18n.t('settings.admin.general.viewChatMaxChars.description')}
+				>
+					<input
+						id="view-chat-max-chars"
+						class={inputClass}
+						type="number"
+						min="1"
+						step="1"
+						placeholder={$i18n.t('No limit')}
+						bind:value={adminConfig.VIEW_CHAT_MAX_CHARS}
+					/>
+				</AdminSettingField>
 				<AdminSettingRow
 					label={$i18n.t('settings.admin.general.notes.label')}
 					description={$i18n.t('settings.admin.general.notes.description')}
 					let:labelId
 				>
 					<Switch bind:state={adminConfig.ENABLE_NOTES} ariaLabelledbyId={labelId} />
+				</AdminSettingRow>
+				<AdminSettingRow
+					label={$i18n.t('settings.admin.general.comments.label')}
+					description={$i18n.t('settings.admin.general.comments.description')}
+					let:labelId
+				>
+					<Switch bind:state={adminConfig.ENABLE_COMMENTS} ariaLabelledbyId={labelId} />
+				</AdminSettingRow>
+				<AdminSettingRow
+					label={$i18n.t('settings.admin.general.notifications.label')}
+					description={$i18n.t('settings.admin.general.notifications.description')}
+					let:labelId
+				>
+					<Switch bind:state={adminConfig.ENABLE_NOTIFICATIONS} ariaLabelledbyId={labelId} />
 				</AdminSettingRow>
 				<AdminSettingRow
 					label={$i18n.t('settings.admin.general.channels.label')}
@@ -464,8 +496,10 @@
 				<AdminSettingField
 					label={$i18n.t('settings.admin.general.webuiUrl.label')}
 					description={$i18n.t('settings.admin.general.webuiUrl.description')}
+					forId="webui-url"
 				>
 					<input
+						id="webui-url"
 						class={inputClass}
 						type="text"
 						placeholder={`e.g.) "http://localhost:3000"`}
